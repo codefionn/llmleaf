@@ -1,0 +1,14 @@
+[package]
+name = "llmleaf-model"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf internal canonical model — streaming-first, dialect-free, provider-free"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+bytes.workspace = true

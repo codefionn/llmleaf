@@ -1,0 +1,62 @@
+# Build artifacts and downloaded dependencies for the client SDKs.
+#
+# NOTE: the generated protobuf code IS committed — it is the codegen artifact each
+# client ships. Do NOT add it here:
+#   go/llmleafpb/         typescript/src/gen/      csharp/src/Gen/      zig/src/gen/
+# (Rust generates into target/ via build.rs at compile time, so it is not committed.)
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# --- Go ---
+go/bin/
+
+# --- Rust ---
+rust/target/
+
+# --- TypeScript / JavaScript ---
+typescript/node_modules/
+typescript/dist/
+typescript/*.tsbuildinfo
+
+# --- Zig ---
+zig/.zig-cache/
+zig/zig-cache/
+zig/zig-out/
+
+# --- C# / .NET ---
+csharp/**/bin/
+csharp/**/obj/
+
+# --- Kotlin / Gradle ---
+# Gradle caches / build output (root and any subproject, e.g. example/).
+kotlin/.gradle/
+kotlin/**/.gradle/
+kotlin/build/
+kotlin/**/build/
+kotlin/out/
+kotlin/**/out/
+kotlin/.gradletasknamecache
+kotlin/*.hprof
+# Kotlin compiler + Kotlin/Native local caches.
+kotlin/.kotlin/
+kotlin/**/.kotlin/
+kotlin/.konan/
+# Machine-local Gradle config (never committed).
+kotlin/local.properties
+# IDEs (IntelliJ IDEA / Android Studio / Fleet / Eclipse).
+kotlin/.idea/
+kotlin/*.iml
+kotlin/*.ipr
+kotlin/*.iws
+kotlin/.fleet/
+kotlin/.settings/
+kotlin/.classpath
+kotlin/.project
+# Keep TRACKED (needed to build / reproducible) — do NOT ignore:
+#   kotlin/gradle/wrapper/gradle-wrapper.jar   the Gradle wrapper binary
+#   kotlin/gradlew, kotlin/gradlew.bat         the wrapper scripts
+#   kotlin/kotlin-js-store/yarn.lock           JS dependency lock (if the JS target emits one)

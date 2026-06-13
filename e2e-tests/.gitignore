@@ -1,0 +1,2 @@
+# Local provider secrets — never commit. Use .env.example as the tracked template.
+.env

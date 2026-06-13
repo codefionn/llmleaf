@@ -1,0 +1,31 @@
+# `buf generate` — one command to regenerate the Go, TypeScript and Rust types from the
+# single proto. Requires network the first time (buf fetches the remote plugins).
+#
+#   cd clients && buf generate
+#
+# Kotlin Multiplatform (Wire) and Zig run their own generators from their native builds —
+# see clients/kotlin/README.md and clients/zig/README.md. The Makefile's `gen` target wraps
+# all five so contributors do not need to remember per-language commands.
+version: v2
+plugins:
+  # Go — also runnable with the locally-installed protoc-gen-go (see Makefile gen-go).
+  - remote: buf.build/protocolbuffers/go
+    out: go/llmleafpb
+    opt:
+      - paths=source_relative
+
+  # TypeScript / JavaScript — protobuf-es (ESM, browser + node).
+  - remote: buf.build/bufbuild/es
+    out: typescript/src/gen
+    opt:
+      - target=ts
+
+  # Rust — prost.
+  - remote: buf.build/community/neoeinstein-prost
+    out: rust/src/gen
+    opt:
+      - compile_well_known_types
+
+  # C# / .NET — Google.Protobuf (protoc also has a native --csharp_out; see csharp/scripts/gen.sh).
+  - remote: buf.build/protocolbuffers/csharp
+    out: csharp/src/Gen

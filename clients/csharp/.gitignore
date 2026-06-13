@@ -1,0 +1,10 @@
+# .NET build output
+bin/
+obj/
+
+# Rider / VS / VS Code per-user state
+.idea/
+.vs/
+*.user
+
+# The generated src/Gen/Llmleaf.cs IS committed (codegen artifact / schema proof) — do not ignore it.

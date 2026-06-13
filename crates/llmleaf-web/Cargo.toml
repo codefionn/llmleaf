@@ -1,0 +1,106 @@
+[package]
+name = "llmleaf-web"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf web — the Leptos control-plane app for humans. A SEPARATE component (SOUL.md 'Web server'): it serves the control endpoints the core PULLS (identity, verdicts), receives the usage events the core PUSHES, and gives operators a UI. It never reaches into the core to mutate state."
+
+# cargo-leptos builds two artifacts from this one crate: the SSR server binary (`ssr` feature) and the
+# hydration wasm bundle (`hydrate` feature). The lib is the shared app; the bin is the server.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "llmleaf-web"
+path = "src/main.rs"
+
+[dependencies]
+# --- Shared (compiled into BOTH the wasm bundle and the server) ---
+leptos = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+leptos_router = { version = "0.8" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# --- Hydrate-only (wasm) ---
+console_error_panic_hook = { version = "0.1", optional = true }
+# Pinned to the exact wasm-bindgen the installed cargo-leptos embeds (schema versions must match for
+# `cargo leptos build` to bundle the wasm). web-sys/js-sys cascade to the paired 0.3.102 automatically.
+wasm-bindgen = { version = "=0.2.125", optional = true }
+
+# --- SSR-only (the server). All optional + gated behind `ssr` so the wasm build never sees them. ---
+leptos_axum = { version = "0.8", optional = true }
+axum = { workspace = true, optional = true }
+axum-extra = { version = "0.10", features = ["cookie"], optional = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive"], optional = true }
+# Outbound HTTP: OIDC discovery/token exchange/JWKS fetch and the read-only admin GETs into the core.
+# rustls (no native-tls/openssl) to match the workspace TLS backend. `form` for the OIDC token exchange.
+reqwest = { workspace = true, optional = true, features = ["form"] }
+# OIDC id_token signature verification (JWKS). Pure crypto — the same dep the core uses for its OAuth2
+# resource-server surface; we do the SSO *login* flow (code exchange) by hand over reqwest.
+jsonwebtoken = { workspace = true, optional = true }
+# Master-password + generated consumer-key hashes: crypt(3) MCF (bcrypt), same scheme as the core keys.
+pwhash = { workspace = true, optional = true }
+# PKCE code-challenge (S256) and OIDC state/nonce hashing.
+sha2 = { version = "0.10", optional = true }
+base64 = { workspace = true, optional = true }
+rand = { version = "0.8", optional = true }
+toml = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[features]
+# So a plain `cargo build`/`cargo test` (and the workspace build) compiles this crate as the server.
+# cargo-leptos ignores this — it sets `bin-default-features = false` / `lib-default-features = false`
+# and selects `ssr` / `hydrate` explicitly per artifact (see `[package.metadata.leptos]`).
+default = ["ssr"]
+hydrate = [
+    "leptos/hydrate",
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+]
+ssr = [
+    "dep:leptos_axum",
+    "dep:axum",
+    "dep:axum-extra",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tower-http",
+    "dep:sqlx",
+    "dep:reqwest",
+    "dep:jsonwebtoken",
+    "dep:pwhash",
+    "dep:sha2",
+    "dep:base64",
+    "dep:rand",
+    "dep:toml",
+    "dep:thiserror",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+
+[package.metadata.leptos]
+output-name = "llmleaf-web"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+assets-dir = "public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+browserquery = "defaults"
+env = "DEV"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+# The `wasm-release` profile is defined at the workspace root (Cargo profiles for non-root members are
+# ignored by cargo). See the root Cargo.toml.
+lib-profile-release = "wasm-release"

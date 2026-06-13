@@ -1,0 +1,309 @@
+# Example llmleaf config — the immutable base of the core (SOUL.md principle 6).
+# Everything here is config-only operable. The control plane is OUTBOUND: llmleaf PULLS identity +
+# verdicts and PUSHES usage to the endpoints named in the optional [control] section at the bottom.
+# There is no inbound mutation surface.
+#
+# Run with:  llmleaf llmleaf.example.toml
+
+[server]
+listen = "0.0.0.0:8080"
+# Guards the read-only admin GETs (/admin/routes, /admin/health, /admin/keys). `env:VAR` reads the
+# environment. Omit entirely to disable those read-only surfaces (the proxy still serves consumers).
+admin_token = "env:LLMLEAF_ADMIN_TOKEN"
+# Set true to include full canonical payloads in lifecycle events (for archival/replay bolt-ons via
+# the [control.usage] push sink below).
+include_payloads = false
+# Seconds a node skips a provider after it fails a request (node-local HA — principle 9).
+fallback_cooldown_secs = 15
+
+# --- Providers (back-end extensions). `kind` is resolved by the binary's factory, never the core. ---
+#
+# Known kinds:
+#   distinct dialects : anthropic (claude), gemini (google), vertex (vertex-ai, google-vertex), cohere,
+#                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
+#   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
+#                       fireworks, perplexity, cerebras, zai (z.ai, glm),
+#                       moonshot (kimi, kimi-k2), azure-openai (azure)
+#   local/testing     : echo
+# The `endpoint` is optional for most kinds — each has a sensible default (the OpenAI-wire vendors'
+# public hosts; localhost for the ollama/lmstudio local runtimes).
+
+[[providers]]
+name = "openai-main"
+kind = "openai"
+credential = "env:OPENAI_API_KEY"
+settings = { organization = "org-xxxx" }
+
+[[providers]]
+name = "anthropic-main"
+kind = "anthropic"
+credential = "env:ANTHROPIC_API_KEY"
+# Prompt caching (opt-in). Stamps Anthropic `cache_control` breakpoints onto the stable prefix
+# (system prompt + tools) and the running conversation, so repeat requests read the prefix from
+# Anthropic's cache instead of re-billing it. Omit the setting (the default) to leave requests
+# untouched; un-comment one of these to enable it:
+#   settings = { prompt_cache = true }   # enable, 5-minute window (Anthropic's default)
+#   settings = { prompt_cache = "1h" }   # enable, extended 1-hour window
+
+[[providers]]
+name = "gemini-main"
+kind = "gemini"
+credential = "env:GEMINI_API_KEY"
+
+# Google Vertex AI — the enterprise Gemini surface (same generateContent dialect as `gemini`, but on
+# *-aiplatform.googleapis.com under your GCP project). Differences from `gemini`:
+#   - auth is an OAuth2 *bearer* (cloud-platform scope), NOT an API key. Supply a short-lived access
+#     token as the credential and keep it fresh out-of-band (e.g. `gcloud auth print-access-token`,
+#     an ADC sidecar, or Workload Identity). The proxy sends it verbatim and mints nothing.
+#   - `project` and `location` are REQUIRED in settings; the host is derived from the location
+#     (regional `https://{location}-aiplatform.googleapis.com`, or the bare global host when
+#     location = "global"). Override `endpoint` only to point at a proxy/private host.
+# Modalities: chat (generateContent), embeddings (`:predict`), and model listing (publisher catalog).
+# Batch is not offered (Vertex batch is a GCS/BigQuery job API — left unsupported).
+[[providers]]
+name = "vertex-main"
+kind = "vertex"
+credential = "env:GOOGLE_VERTEX_TOKEN"
+settings = { project = "my-gcp-project", location = "us-central1" }
+#   settings = { project = "my-gcp-project", location = "global" }   # global endpoint
+# For embeddings, `task_type` (e.g. RETRIEVAL_DOCUMENT) and `auto_truncate` are operator-configurable:
+#   settings = { project = "my-gcp-project", location = "us-central1", task_type = "RETRIEVAL_DOCUMENT" }
+
+[[providers]]
+name = "groq"
+kind = "groq"
+credential = "env:GROQ_API_KEY"
+
+[[providers]]
+name = "openrouter"
+kind = "openrouter"
+credential = "env:OPENROUTER_API_KEY"
+# `prefix` exposes this provider's whole catalog without a route per model: any request for
+# `<prefix>/<model>` with no explicit route goes here, upstream model = the part after `or/`.
+# e.g. `or/openai/gpt-4o` -> openrouter with model `openai/gpt-4o`. Explicit routes always win;
+# among providers the longest matching prefix wins.
+prefix = "or"
+# OpenRouter attribution headers (optional):
+settings = { http_referer = "https://your.app", x_title = "your-app" }
+# Voice catalog for `GET /v1/audio/voices` (text-to-speech). llmleaf serves voices automatically where a
+# real catalog exists: a *documented* set for OpenAI speech models (incl. via this prefix, e.g.
+# `or/openai/gpt-4o-mini-tts`, and Azure OpenAI), and a *live* fetch for a `mistral` provider (its
+# `GET /v1/audio/voices` endpoint — so a direct `[[providers]] kind = "mistral"` needs no declaration).
+# For an upstream with neither (e.g. a Mistral TTS model proxied through OpenRouter, which does not
+# expose that endpoint), DECLARE the voices keyed by the upstream model id; the endpoint returns them
+# verbatim (never a guess).
+# Switch `settings` above from the inline form to a table to add this, e.g.:
+#   [providers.settings]
+#   http_referer = "https://your.app"
+#   x_title = "your-app"
+#   [providers.settings.voices]
+#   "mistralai/voxtral-mini-tts-2603" = ["aurora", "basalt"]
+#   "some/other-tts" = [{ id = "nia", name = "Nia", languages = ["en", "sw"] }]
+
+# Requesty — another OpenAI-wire gateway (router.requesty.ai), `provider/model` ids like
+# OpenRouter and the same optional HTTP-Referer/X-Title attribution headers.
+[[providers]]
+name = "requesty"
+kind = "requesty"
+credential = "env:REQUESTY_API_KEY"
+prefix = "rq"  # e.g. `rq/openai/gpt-4o` -> requesty with model `openai/gpt-4o`
+settings = { http_referer = "https://your.app", x_title = "your-app" }
+
+# A local, always-up fallback so a route never hard-fails in dev.
+[[providers]]
+name = "echo"
+kind = "echo"
+
+# --- Routes: logical model -> ordered fallback chain (order IS the chain — principle 8). ---
+
+[[routes]]
+model = "gpt-4o"
+targets = [
+  { provider = "openai-main", model = "gpt-4o" },
+  { provider = "openrouter", model = "openai/gpt-4o" },
+  { provider = "echo" },
+]
+
+# Cross-vendor fallback: try Anthropic, fall back to an OpenAI-family model, then echo.
+[[routes]]
+model = "smart"
+targets = [
+  { provider = "anthropic-main", model = "claude-sonnet-4" },
+  { provider = "gemini-main", model = "gemini-2.0-flash" },
+  { provider = "groq", model = "llama-3.3-70b-versatile" },
+  { provider = "echo" },
+]
+
+[[routes]]
+model = "demo"
+targets = [{ provider = "echo" }]
+
+# Routes are modality-agnostic: the same logical model resolves to the same chain for chat,
+# embeddings, speech (TTS), and transcription (STT) alike — only the provider method the engine
+# calls at the end differs. So these reuse the very same provider blocks declared above; any
+# modality a provider supports is reachable through its routes. A provider that lacks the requested
+# modality returns Unsupported and is skipped with NO health penalty, so a chat-only target can sit
+# ahead of a modality-capable one in a chain without breaking it.
+
+# Embeddings (POST /v1/embeddings), with a cross-vendor fallback.
+[[routes]]
+model = "text-embedding-3-small"
+targets = [
+  { provider = "openai-main", model = "text-embedding-3-small" },
+  { provider = "openrouter", model = "openai/text-embedding-3-small" },
+]
+
+# Text-to-speech (POST /v1/audio/speech) — returns raw audio bytes.
+[[routes]]
+model = "tts-1"
+targets = [{ provider = "openai-main", model = "tts-1" }]
+
+# Speech-to-text (POST /v1/audio/transcriptions) — multipart upload, like OpenAI.
+[[routes]]
+model = "gpt-4o-transcribe"
+targets = [{ provider = "openai-main", model = "gpt-4o-transcribe" }]
+
+# Batch (asynchronous jobs) needs NO extra config — it reuses these same routes. A consumer submits an
+# inline array of OpenAI-shaped chat requests and gets back an opaque batch id:
+#   POST /v1/batches              { "requests": [ { "custom_id": "a", "body": { <chat request> } }, … ] }
+#   GET  /v1/batches/{id}         poll status
+#   POST /v1/batches/{id}/cancel  request cancellation
+#   GET  /v1/batches/{id}/results stream results as JSONL (one line per request)
+# Each request's `body` routes by its `model` exactly like a live chat call; all requests in one batch
+# must resolve to the same provider (a batch is one upstream job — a mixed-provider batch is rejected).
+# The returned id encodes which provider owns the job, so poll/cancel/results need no node-local state
+# (any node serves them; SOUL principle 9) — llmleaf stores nothing, the provider's upstream is the store.
+# Supported upstreams: anthropic (native inline) and gemini (native inline `:batchGenerateContent`);
+# the OpenAI-wire brands openai, groq, moonshot (OpenAI `/v1/batches`) and together (its `batch-api`
+# files variant); azure-openai (resource-scoped `/openai/batches?api-version=`); and mistral (its
+# `/v1/batch/jobs`). For the file-based ones the JSONL upload happens inside the create call — nothing
+# is held afterward. Brands without a batch API (deepseek, openrouter, perplexity, cerebras, zai) report
+# it unsupported and are skipped. xAI, Fireworks, and Cohere have batch APIs but
+# their own dialects (paginated/dataset-based, partly undocumented) and are not wired yet.
+
+# --- Base consumer keys. The limiter named in [control.limits] can attach verdicts at runtime, which
+#     llmleaf PULLS and caches; these file keys are always the identity base. ---
+#
+# A consumer authenticates with `Authorization: Bearer <base64(key-id:password)>` — the HTTP-Basic
+# shape (split on the first `:`, so the id holds no colon, the password may). Config stores only the
+# password's *hash*, never the plaintext: a standard Unix/crypt(3) MCF string. Generate one with, e.g.
+#   htpasswd -bnBC 12 demo-team 's3cret'   # bcrypt ($2y$…); take the part after the first ':'
+# `$1$` / `$5$` / `$6$` shadow hashes (e.g. `openssl passwd -6`) work too. `env:VAR` indirection is
+# supported, so the hash can live outside the file. For the example below the consumer would send
+#   Authorization: Bearer ZGVtby10ZWFtOnMzY3JldA==   # = base64("demo-team:s3cret")
+
+[[keys]]
+id = "demo-team"
+pw_hash = "env:LLMLEAF_DEMO_KEY_HASH"
+# Static allow-list; a verdict may narrow further at runtime but never widen past this.
+allowed_models = ["gpt-4o", "demo"]
+
+# The key the bundled examples (`cargo run -p llmleaf --example chat`) use out of the box. Its
+# password is "llmleaf-dev" — published here ON PURPOSE as a local-only demo credential (the hash is
+# bcrypt cost 12, `htpasswd -bnBC 12 example-cli llmleaf-dev`). NEVER ship a known password in a real
+# deployment. The example sends: Authorization: Bearer ZXhhbXBsZS1jbGk6bGxtbGVhZi1kZXY=
+[[keys]]
+id = "example-cli"
+pw_hash = "$2y$12$e8yd7Vi6xtWz5gUpEvKBkOtgIoq4nIBkFZ1iMtWj5T8oeAQWL/WSi"
+
+# --- OAuth2 resource server (optional). A SECOND, additive consumer-auth scheme beside [[keys]]. ---
+#
+# When configured, a consumer may present an IdP-issued JWT access token instead of a static key, on the
+# same `Authorization: Bearer <token>` header — a bearer that is a JWT (three dot-separated segments) is
+# validated here; anything else falls through to the [[keys]] store above. The gateway acts as an OAuth2
+# resource server: it verifies the JWT signature against the issuer's JWKS, checks `iss`/`aud`/`exp`, and
+# authorizes models by mapping a roles/groups claim to model sets. An authenticated token flows on as the
+# same log-safe identity (`identity_claim`, e.g. `sub`) stamped on every event — exactly like a key.
+#
+# Like keys, this is base config (principle 6): an inline `jwks` makes the JWT path operable from the file
+# alone; naming `jwks_uri` (or just `issuer`, for OIDC discovery) lets the control plane refresh the keys
+# on an interval. The JWKS pull + optional introspection are OUTBOUND HTTP and live in llmleaf-control —
+# the core only verifies crypto. Omit the whole [oauth] section to disable JWT auth (keys-only).
+#
+# [oauth]
+# issuer = "https://idp.example.com/"        # expected `iss`; OIDC discovery base for jwks_uri/introspection
+# audience = ["llmleaf"]                       # accepted `aud` values
+# jwks_uri = "https://idp.example.com/jwks"    # optional; omit to discover from `issuer`
+# algorithms = ["RS256", "ES256"]             # allow-list; `none`/HS* are refused (public-key only)
+# identity_claim = "sub"                        # claim → the log-safe identity (default "sub")
+# roles_claim = "roles"                          # claim holding roles/groups: array or space-delimited string
+# jwks_refresh_secs = 3600
+# on_error = "deny"                              # cold-start JWKS unreachable ⇒ fail closed (authentication)
+#
+# Role/group → allowed models. A token's allow-list is the union over its roles; a role mapped to ["*"]
+# grants every routed model; a token bearing no mapped role can use none.
+# [oauth.role_models]
+# "llmleaf-power" = ["gpt-4o", "smart"]
+# "llmleaf-basic" = ["demo"]
+#
+# Optional RFC 7662 introspection (revocation). Omit ⇒ liveness rests on the JWT `exp`. The `active`
+# answer is cached per token for cache_ttl_secs, so it is not a network round-trip on every request.
+# [oauth.introspection]
+# url = "https://idp.example.com/introspect"
+# credential = "env:LLMLEAF_INTROSPECT_SECRET"
+# cache_ttl_secs = 30
+# timeout_ms = 2000
+
+# --- Control plane (outbound). Omit the whole [control] section for pure data-plane operation. ---
+#
+# Inverted model (SOUL.md principle 5): llmleaf PULLS key identity + verdicts from your limiter on an
+# interval and caches them node-locally, PUSHES usage events out to a sink, and OPTIONALLY calls a sync
+# intercept hook in-flight. Every sub-table is independently optional — omit one and the core falls back
+# to the file [[keys]] above (config-only operation, principle 6).
+
+# Named auth schemes (optional). Define a credential ONCE here and reference it from any sub-table below
+# with `auth = "<id>"`, so the same token/header is centralized instead of repeated inline. Two kinds:
+#   - kind = "bearer"  ⇒  Authorization: Bearer <token>     (the conventional HTTP bearer)
+#   - kind = "header"  ⇒  <header>: <value>                 (a custom header, e.g. X-API-Key)
+# `env:VAR` indirection works for `token`/`value`. A sub-table sets `auth` OR an inline `credential`,
+# never both. Omit these entirely and each sub-table just uses its own inline `credential` (a bearer).
+# [[control.auth]]
+# id = "limiter"                              # the id sub-tables reference; unique within [[control.auth]]
+# kind = "bearer"
+# token = "env:LLMLEAF_CONTROL_TOKEN"
+#
+# [[control.auth]]
+# id = "screener"
+# kind = "header"
+# header = "X-API-Key"                        # sent verbatim as the header name
+# value = "env:LLMLEAF_SCREENER_KEY"
+
+# PULL: who exists. Replaces/augments the file [[keys]] roster. AUTHENTICATION — fails CLOSED on cold
+# start (an empty identity cache must reject), but a warm node always serves its last-good cache.
+# [control.identity]
+# url = "https://limiter.internal/llmleaf/keys"
+# auth = "limiter"                            # reference a [[control.auth]] id...
+# # credential = "env:LLMLEAF_CONTROL_TOKEN"  # ...or set an inline bearer instead (not both)
+# refresh_secs = 30
+# timeout_ms = 2000
+# on_error = "deny"                           # default for identity; shown for clarity
+
+# PULL: verdicts (block / suspend / narrow models). The mutable overlay, refreshed fast. Fails OPEN:
+# a limiter blip keeps last-good verdicts so paying keys keep serving (principle 8).
+# [control.limits]
+# url = "https://limiter.internal/llmleaf/verdicts"   # may be the same host/service as identity
+# auth = "limiter"                            # the same central scheme, shared with identity
+# refresh_secs = 5
+# timeout_ms = 2000
+# on_error = "allow"                          # default for limits; shown for clarity
+
+# PUSH: usage/lifecycle events, batched and async. Never back-pressures the hot path; a full ring
+# (server.event_buffer) drops oldest, exactly as the old broadcast tap did for slow consumers.
+# [control.usage]
+# url = "https://limiter.internal/llmleaf/usage"
+# auth = "limiter"
+# batch_ms = 1000          # flush at most once a second...
+# batch_max = 256          # ...or early once this many events accrue
+# timeout_ms = 5000
+
+# SYNC: in-flight screening (the one sanctioned hot-path insertion — principle 1). Opt-in by data:
+# with no `phases` it never fires. Pass | block | rewrite. Fails OPEN by default (availability over
+# screening); set on_error = "deny" for a hard gate.
+# [control.intercept]
+# url = "https://screener.internal/llmleaf/intercept"
+# auth = "screener"                   # a different scheme — here a custom X-API-Key header
+# phases = ["request", "response"]    # empty/omitted ⇒ disabled
+# keys = ["demo-team"]                # omit ⇒ every key
+# models = ["gpt-4o", "smart"]        # omit ⇒ every model
+# timeout_ms = 1000
+# on_error = "allow"

@@ -1,0 +1,47 @@
+[package]
+name = "llmleaf-core"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf data plane — the proxy core. Knows no provider by name."
+
+[dependencies]
+llmleaf-model.workspace = true
+llmleaf-provider.workspace = true
+llmleaf-pricing.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+# For the `Interceptor` trait (object-safe async). The trait lives in the core; its HTTP implementation
+# lives in llmleaf-control. The core itself does no outbound HTTP (principle 2).
+async-trait.workspace = true
+async-stream.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+toml.workspace = true
+bytes.workspace = true
+pwhash.workspace = true
+# Pure encoding only (no HTTP, principle 2): the opaque batch/file ids the batch surfaces hand back to
+# consumers are URL-safe base64 of `<provider-instance>\x1f<upstream-id>`, so any node can decode which
+# provider owns a batch straight from the id — no node-local batch state (principle 9). See `batch_id`.
+base64.workspace = true
+# Optional: JWT/JWKS validation for the OAuth2 resource-server surface. Crypto only — HTTP (JWKS
+# fetch, introspection) lives in llmleaf-control, keeping the core HTTP-client-free (principle 2).
+jsonwebtoken = { workspace = true, optional = true }
+
+[features]
+# OAuth2 resource-server consumer auth (JWT via JWKS + optional RFC 7662 introspection). Off by
+# default so a bare core build pulls no crypto dep; the binary enables it.
+oauth = ["dep:jsonwebtoken"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# A real WebSocket client to drive the /v1/realtime surface end-to-end in tests.
+tokio-tungstenite.workspace = true

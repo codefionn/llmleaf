@@ -1,0 +1,61 @@
+# llmleaf-web — the control-plane app for humans (SOUL.md "Web server"). A SEPARATE component from the
+# core. It is the OTHER side of the inverted control plane: it SERVES the endpoints the core PULLS
+# (identity, verdicts) and RECEIVES the usage events the core PUSHES. It never reaches into the core to
+# mutate state; its only calls into the core are the read-only admin GETs.
+#
+# Point this app at a SQLite file, set an operator login (master password and/or OIDC), and (in
+# production) a shared bearer token the core presents on the machine endpoints. Then point a core node's
+# [control] section at this app:
+#
+#   # in the core's llmleaf.toml
+#   [control.identity] url = "http://llmleaf-web:3000/llmleaf/keys"     credential = "env:LLMLEAF_CONTROL_TOKEN"
+#   [control.limits]   url = "http://llmleaf-web:3000/llmleaf/verdicts" credential = "env:LLMLEAF_CONTROL_TOKEN"
+#   [control.usage]    url = "http://llmleaf-web:3000/llmleaf/usage"    credential = "env:LLMLEAF_CONTROL_TOKEN"
+#
+# Load order: $LLMLEAF_WEB_CONFIG, else ./llmleaf-web.toml, else built-in DEV defaults (a warning is
+# logged). Every secret accepts `env:VAR` and `file:/path` indirection.
+#
+# Run with cargo-leptos (serves the UI bundle too):  LLMLEAF_WEB_CONFIG=./llmleaf-web.toml cargo leptos serve
+
+[server]
+# sqlx SQLite connection string. `?mode=rwc` creates the file if missing. Use an absolute path in prod.
+database_url = "sqlite://llmleaf-web.db?mode=rwc"
+
+# --- Machine control endpoints (what the core pulls/pushes) ---------------------------------------
+[control]
+# Shared bearer token the core presents as `Authorization: Bearer <token>` on /llmleaf/keys,
+# /llmleaf/verdicts, /llmleaf/usage. OMIT to leave the endpoints OPEN — DEV ONLY (a warning is logged).
+token = "env:LLMLEAF_CONTROL_TOKEN"
+
+# --- The core's read-only admin surface (for the dashboard's Core page) ---------------------------
+# Optional. Omit and the UI simply shows the core as "not configured". Strictly observational.
+[core]
+admin_url = "http://127.0.0.1:8080"
+admin_token = "env:LLMLEAF_ADMIN_TOKEN"   # sent as the `x-admin-token` header
+
+# --- Operator login ------------------------------------------------------------------------------
+[auth]
+# crypt(3) MCF hash (bcrypt) of the master password — generate with `htpasswd -bnBC 12 "" <password> | tr -d ':\n'`
+# or `openssl passwd -6`. OMIT for a DEV fallback password of `llmleaf-dev` (a warning is logged).
+master_password_hash = "env:LLMLEAF_WEB_ADMIN_HASH"
+session_ttl_secs = 86400
+
+# --- OIDC SSO (optional, additive to the master password) -----------------------------------------
+# Standard authorization-code flow with PKCE; the id_token is verified against the issuer JWKS.
+# [oidc]
+# issuer = "https://idp.example.com"                          # OIDC discovery base
+# client_id = "llmleaf-web"
+# client_secret = "env:LLMLEAF_WEB_OIDC_SECRET"               # omit for a public client
+# redirect_url = "https://llmleaf-web.example.com/auth/oidc/callback"  # must match the IdP registration
+# scopes = ["openid", "email", "profile"]
+# allowed_subjects = ["alice@example.com", "ops-team"]        # empty => any IdP-authenticated user
+
+# --- Automated limiter (optional; the canonical bolt-on) ------------------------------------------
+# A background loop turns pushed usage into verdicts (suspensions) the core then pulls. It only ever
+# touches suspensions it set — never an operator's block/suspension. Disabled => verdicts are
+# operator-set only (the loop still prunes expired sessions and old events).
+[limiter]
+enabled = false
+interval_secs = 30
+monthly_cost_cap = 0.0     # per-key rolling 30-day USD cap; 0 => no cap
+daily_request_cap = 0      # per-key 24h request cap; 0 => no cap

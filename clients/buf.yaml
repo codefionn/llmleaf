@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # The wire is OpenAI/OpenRouter JSON; field shapes mirror that surface, not buf's
+    # service/RPC conventions. We define messages only (no gRPC services).
+    - PACKAGE_VERSION_SUFFIX
+breaking:
+  use:
+    - FILE
