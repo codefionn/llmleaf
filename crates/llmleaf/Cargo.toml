@@ -1,0 +1,32 @@
+[package]
+name = "llmleaf"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf — a high-efficiency LLM proxy. The binary: load config, build the registry, serve."
+
+[[bin]]
+name = "llmleaf"
+path = "src/main.rs"
+
+[dependencies]
+llmleaf-core.workspace = true
+llmleaf-provider.workspace = true
+llmleaf-providers.workspace = true
+# Enable the control crate's `oauth` feature (which turns on llmleaf-core/oauth) so the shipped binary
+# can validate OAuth2 JWT bearers. A bare `cargo build -p llmleaf-core`/`-p llmleaf-control` stays lean.
+llmleaf-control = { workspace = true, features = ["oauth"] }
+
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Only the examples (e.g. `examples/chat.rs`, an HTTP consumer of the proxy) need these; they never
+# touch the release binary.
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+clap.workspace = true

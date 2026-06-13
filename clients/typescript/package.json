@@ -1,0 +1,50 @@
+{
+  "name": "@llmleaf/client",
+  "version": "0.1.0",
+  "description": "Official TypeScript/JavaScript client for the llmleaf LLM proxy.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "author": "codefionn",
+  "homepage": "https://github.com/codefionn/llmleaf/tree/main/clients/typescript",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codefionn/llmleaf.git",
+    "directory": "clients/typescript"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "scripts/gen.sh",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gen": "./scripts/gen.sh",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "example": "tsx examples/basic.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.3"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.2.3",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

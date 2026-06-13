@@ -1,0 +1,10 @@
+/target
+/llmleaf.toml
+/speech.mp3
+/speech.wav
+# llmleaf-web runtime artifacts (the SQLite store + its journals, and the local config)
+/llmleaf-web.toml
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

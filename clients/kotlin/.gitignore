@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# The Gradle wrapper jar is vendored (checked in) so `./gradlew` works without a separate
+# bootstrap step — the bootstrap itself needs the jar, so it must be present to build.
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+local.properties
+
+# OS
+.DS_Store

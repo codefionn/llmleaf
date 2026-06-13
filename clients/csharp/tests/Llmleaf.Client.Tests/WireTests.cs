@@ -1,0 +1,396 @@
+using System.Text.Json;
+using Xunit;
+
+namespace Llmleaf.Client.Tests;
+
+// End-to-end tests of the HttpClient + System.Text.Json transport against an in-process server.
+// They assert both the exact request bytes the SDK emits AND the decode of canned responses,
+// proving the SPEC.md wire mapping (snake_case keys, lowercase enum tokens, string-or-array
+// content/stop/input, raw free-form JSON splicing, base64 embedding decode, SSE/NDJSON streaming,
+// the error envelope).
+public sealed class WireTests
+{
+    private static LlmleafClient Client(TestServer server, LlmleafClientOptions? opts = null)
+        => new(server.BaseUrl, "test-key", opts);
+
+    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
+
+    // ---- chat: request encoding ----------------------------------------
+
+    [Fact]
+    public async Task ChatRequest_EmitsSnakeCaseAndLowercaseEnums()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "gpt-4o-mini",
+            Messages = [ChatMessage.Text(Role.User, "hi")],
+            MaxCompletionTokens = 64,
+            Temperature = 0.5f,
+        });
+
+        var body = Parse(server.LastRequest!.Body);
+        Assert.Equal("/v1/chat/completions", server.LastRequest.Path);
+        Assert.Equal("Bearer test-key", server.LastRequest.Headers["Authorization"]);
+        Assert.Equal("gpt-4o-mini", body.GetProperty("model").GetString());
+        Assert.False(body.GetProperty("stream").GetBoolean()); // forced false for non-streaming
+        Assert.Equal(64u, body.GetProperty("max_completion_tokens").GetUInt32());
+        var msg = body.GetProperty("messages")[0];
+        Assert.Equal("user", msg.GetProperty("role").GetString());     // lowercase token
+        Assert.Equal("hi", msg.GetProperty("content").GetString());    // bare string content
+    }
+
+    [Fact]
+    public async Task ChatRequest_StopOneElementIsBareString_MultipleIsArray()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")], Stop = ["\n"],
+        });
+        Assert.Equal(JsonValueKind.String, Parse(server.LastRequest!.Body).GetProperty("stop").ValueKind);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")], Stop = ["a", "b"],
+        });
+        Assert.Equal(JsonValueKind.Array, Parse(server.LastRequest!.Body).GetProperty("stop").ValueKind);
+    }
+
+    [Fact]
+    public async Task ChatRequest_ExtraIsMergedAtTopLevelAsRawJson()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m",
+            Messages = [ChatMessage.Text(Role.User, "hi")],
+            Extra = """{"provider":{"order":["a","b"]},"logprobs":true}""",
+        });
+
+        var body = Parse(server.LastRequest!.Body);
+        // Spliced as a JSON value, not double-encoded as a string.
+        Assert.Equal(JsonValueKind.Object, body.GetProperty("provider").ValueKind);
+        Assert.Equal("a", body.GetProperty("provider").GetProperty("order")[0].GetString());
+        Assert.True(body.GetProperty("logprobs").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ChatRequest_ToolsAndToolChoiceAndResponseFormat_RawSchemas()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m",
+            Messages = [ChatMessage.Text(Role.User, "hi")],
+            Tools = [new ToolDef("function", new FunctionDef("get_weather", "Get weather", """{"type":"object","properties":{"city":{"type":"string"}}}"""))],
+            ToolChoice = ToolChoice.Named("get_weather"),
+            ResponseFormat = new ResponseFormat("json_schema", """{"name":"out","schema":{"type":"object"}}"""),
+        });
+
+        var body = Parse(server.LastRequest!.Body);
+        var fn = body.GetProperty("tools")[0].GetProperty("function");
+        Assert.Equal("get_weather", fn.GetProperty("name").GetString());
+        Assert.Equal(JsonValueKind.Object, fn.GetProperty("parameters").ValueKind); // raw schema, not a string
+        var tc = body.GetProperty("tool_choice");
+        Assert.Equal("function", tc.GetProperty("type").GetString());
+        Assert.Equal("get_weather", tc.GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("json_schema", body.GetProperty("response_format").GetProperty("type").GetString());
+        Assert.Equal(JsonValueKind.Object, body.GetProperty("response_format").GetProperty("json_schema").ValueKind);
+    }
+
+    [Fact]
+    public async Task ChatRequest_MultimodalContentIsArray()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m",
+            Messages =
+            [
+                new ChatMessage
+                {
+                    Role = Role.User,
+                    Content = MessageContent.FromParts(
+                    [
+                        new TextPart("look:"),
+                        new ImageUrlPart("https://x/y.png", "high"),
+                    ]),
+                },
+            ],
+        });
+
+        var content = Parse(server.LastRequest!.Body).GetProperty("messages")[0].GetProperty("content");
+        Assert.Equal(JsonValueKind.Array, content.ValueKind);
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal("image_url", content[1].GetProperty("type").GetString());
+        Assert.Equal("https://x/y.png", content[1].GetProperty("image_url").GetProperty("url").GetString());
+        Assert.Equal("high", content[1].GetProperty("image_url").GetProperty("detail").GetString());
+    }
+
+    // ---- chat: response decoding ---------------------------------------
+
+    [Fact]
+    public async Task ChatResponse_DecodesChoicesEnumAndUsage()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """
+            {"id":"chatcmpl-1","object":"chat.completion","created":123,"model":"m",
+             "choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],
+             "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost_usd":0.0001}}
+            """));
+        using var client = Client(server);
+
+        var resp = await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        });
+
+        Assert.Equal("chatcmpl-1", resp.Id);
+        var choice = resp.Choices[0];
+        Assert.Equal(Role.Assistant, choice.Message.Role);
+        Assert.Equal("hello", choice.Message.Content!.Text);
+        Assert.Equal(FinishReason.Stop, choice.FinishReason);
+        Assert.Equal(4u, resp.Usage!.TotalTokens);
+        Assert.Equal(0.0001, resp.Usage.CostUsd!.Value, 6);
+    }
+
+    // ---- chat: streaming -----------------------------------------------
+
+    [Fact]
+    public async Task ChatStream_ParsesSseStopsOnDoneAndAccumulates()
+    {
+        const string sse =
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"He\"}}]}\n\n" +
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"}}]}\n\n" +
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n" +
+            "data: [DONE]\n\n";
+        using var server = new TestServer(_ => CannedResponse.Sse(sse));
+        using var client = Client(server);
+
+        var text = "";
+        Usage? usage = null;
+        var count = 0;
+        await foreach (var chunk in client.CreateChatCompletionStreamAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        }))
+        {
+            count++;
+            var delta = chunk.Choices.Count > 0 ? chunk.Choices[0].Delta.Content : null;
+            if (delta is not null) text += delta;
+            if (chunk.Usage is not null) usage = chunk.Usage;
+        }
+
+        Assert.Equal(3, count); // [DONE] not yielded
+        Assert.Equal("Hello", text);
+        Assert.Equal(3u, usage!.TotalTokens);
+        // Confirm we sent stream:true on the wire.
+        Assert.True(Parse(server.LastRequest!.Body).GetProperty("stream").GetBoolean());
+    }
+
+    // ---- embeddings ----------------------------------------------------
+
+    [Fact]
+    public async Task Embeddings_DecodesBase64LittleEndianF32()
+    {
+        // [1.0f, 2.0f] little-endian f32 -> base64.
+        var bytes = new byte[8];
+        BitConverter.GetBytes(1.0f).CopyTo(bytes, 0);
+        BitConverter.GetBytes(2.0f).CopyTo(bytes, 4);
+        var b64 = Convert.ToBase64String(bytes);
+
+        var json = "{\"object\":\"list\",\"model\":\"e\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":\""
+                   + b64
+                   + "\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0,\"total_tokens\":1}}";
+        using var server = new TestServer(req => CannedResponse.Json(json));
+        using var client = Client(server);
+
+        var resp = await client.CreateEmbeddingAsync(new EmbeddingRequest
+        {
+            Model = "e", Input = ["hello"], EncodingFormat = "base64",
+        });
+
+        Assert.Equal("base64", Parse(server.LastRequest!.Body).GetProperty("encoding_format").GetString());
+        Assert.Equal(JsonValueKind.String, Parse(server.LastRequest!.Body).GetProperty("input").ValueKind); // single -> bare string
+        var vec = resp.Data[0].Vector;
+        Assert.Equal(2, vec.Count);
+        Assert.Equal(1.0f, vec[0]);
+        Assert.Equal(2.0f, vec[1]);
+    }
+
+    [Fact]
+    public async Task Embeddings_DecodesFloatArray()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"object":"list","model":"e","data":[{"object":"embedding","index":0,"embedding":[0.5,-0.25]}]}"""));
+        using var client = Client(server);
+
+        var resp = await client.CreateEmbeddingAsync(new EmbeddingRequest { Model = "e", Input = ["a", "b"] });
+        Assert.Equal(JsonValueKind.Array, Parse(server.LastRequest!.Body).GetProperty("input").ValueKind); // multi -> array
+        Assert.Equal([0.5f, -0.25f], resp.Data[0].Vector);
+    }
+
+    // ---- models --------------------------------------------------------
+
+    [Fact]
+    public async Task ListModels_SendsQueryAndAdminTokenOnlyWhenOptedIn()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"data":[{"id":"gpt-4o-mini","canonical_slug":"openai/gpt-4o-mini","name":"GPT","created":1,"description":"d","supported_parameters":["temperature"]}]}"""));
+        using var client = Client(server, new LlmleafClientOptions { AdminToken = "admin-secret" });
+
+        var resp = await client.ListModelsAsync(new ListModelsOptions { Type = ModelType.Llm, Search = "gpt", Admin = true });
+        Assert.Contains("type=llm", server.LastRequest!.Query);
+        Assert.Contains("search=gpt", server.LastRequest.Query);
+        Assert.Equal("admin-secret", server.LastRequest.Headers["x-admin-token"]);
+        Assert.Equal("gpt-4o-mini", resp.Data[0].Id);
+        Assert.Equal("temperature", resp.Data[0].SupportedParameters[0]);
+
+        // Without Admin=true the token must not be sent.
+        await client.ListModelsAsync(new ListModelsOptions { Type = ModelType.All });
+        Assert.False(server.LastRequest!.Headers.ContainsKey("x-admin-token"));
+    }
+
+    // ---- audio: speech / voices ----------------------------------------
+
+    [Fact]
+    public async Task Speech_ReturnsBytesAndContentType()
+    {
+        using var server = new TestServer(_ => new CannedResponse(200, "audio/mpeg", "ID3audio-bytes"));
+        using var client = Client(server);
+
+        var result = await client.CreateSpeechAsync(new SpeechRequest
+        {
+            Model = "tts-1", Input = "hello", Voice = "alloy", ResponseFormat = "mp3",
+        });
+
+        Assert.Equal("audio/mpeg", result.ContentType);
+        Assert.Equal("ID3audio-bytes", System.Text.Encoding.UTF8.GetString(result.Bytes));
+        var body = Parse(server.LastRequest!.Body);
+        Assert.Equal("alloy", body.GetProperty("voice").GetString());
+        Assert.Equal("mp3", body.GetProperty("response_format").GetString());
+    }
+
+    [Fact]
+    public async Task Voices_DecodesList()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"model":"tts-1","voices":[{"id":"alloy","name":"Alloy","languages":["en-US"]}]}"""));
+        using var client = Client(server);
+
+        var resp = await client.ListVoicesAsync("tts-1");
+        Assert.Contains("model=tts-1", server.LastRequest!.Query);
+        Assert.Equal("alloy", resp.Voices[0].Id);
+        Assert.Equal("en-US", resp.Voices[0].Languages![0]);
+    }
+
+    // ---- audio: transcription ------------------------------------------
+
+    [Fact]
+    public async Task Transcription_SendsMultipartAndDecodesJson()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json("""{"text":"hello world","language":"en"}"""));
+        using var client = Client(server);
+
+        var resp = await client.CreateTranscriptionAsync(
+            new TranscriptionFile([1, 2, 3, 4], "audio.wav", "audio/wav"),
+            new TranscriptionRequest { Model = "whisper-1", ResponseFormat = "json", Language = "en" });
+
+        Assert.StartsWith("multipart/form-data", server.LastRequest!.ContentType);
+        Assert.Contains("name=\"file\"", server.LastRequest.Body);
+        Assert.Contains("filename=\"audio.wav\"", server.LastRequest.Body);
+        Assert.Contains("name=\"model\"", server.LastRequest.Body);
+        Assert.Equal("hello world", resp.Text);
+        Assert.Equal("en", resp.Language);
+    }
+
+    [Fact]
+    public async Task Transcription_PlainTextBodyReturnedVerbatim()
+    {
+        using var server = new TestServer(_ => new CannedResponse(200, "text/plain", "just the words"));
+        using var client = Client(server);
+
+        var resp = await client.CreateTranscriptionAsync(
+            new TranscriptionFile([1, 2], "a.mp3"),
+            new TranscriptionRequest { Model = "whisper-1", ResponseFormat = "text" });
+
+        Assert.Equal("just the words", resp.Text);
+        Assert.Null(resp.Language);
+    }
+
+    // ---- batches -------------------------------------------------------
+
+    [Fact]
+    public async Task Batch_CreateEncodesBodiesAndDecodesHandle()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"batch_1","status":"in_progress","counts":{"total":2,"processing":2,"succeeded":0,"errored":0,"canceled":0,"expired":0}}"""));
+        using var client = Client(server);
+
+        var handle = await client.CreateBatchAsync(new BatchCreateRequest(
+        [
+            new BatchRequestItem("a", new ChatRequest { Model = "m", Messages = [ChatMessage.Text(Role.User, "1")] }),
+            new BatchRequestItem("b", new ChatRequest { Model = "m", Messages = [ChatMessage.Text(Role.User, "2")] }),
+        ]));
+
+        var body = Parse(server.LastRequest!.Body);
+        Assert.Equal("a", body.GetProperty("requests")[0].GetProperty("custom_id").GetString());
+        Assert.Equal("m", body.GetProperty("requests")[0].GetProperty("body").GetProperty("model").GetString());
+        Assert.Equal(BatchStatus.InProgress, handle.Status); // in_progress -> InProgress
+        Assert.Equal(2ul, handle.Counts!.Total);
+    }
+
+    [Fact]
+    public async Task Batch_ResultsStreamAsNdjson()
+    {
+        const string ndjson =
+            "{\"custom_id\":\"a\",\"response\":{\"status_code\":200,\"body\":{\"id\":\"r1\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}}}\n" +
+            "{\"custom_id\":\"b\",\"error\":{\"code\":\"rate_limited\",\"message\":\"slow down\"}}\n";
+        using var server = new TestServer(_ => CannedResponse.Ndjson(ndjson));
+        using var client = Client(server);
+
+        var lines = new List<BatchResultLine>();
+        await foreach (var line in client.GetBatchResultsAsync("batch_1"))
+        {
+            lines.Add(line);
+        }
+
+        Assert.Equal(2, lines.Count);
+        Assert.Equal("ok", lines[0].Response!.Body.Choices[0].Message.Content!.Text);
+        Assert.Equal(200u, lines[0].Response!.StatusCode);
+        Assert.Equal("rate_limited", lines[1].Error!.Code);
+    }
+
+    // ---- errors --------------------------------------------------------
+
+    [Fact]
+    public async Task NonSuccess_ThrowsTypedApiExceptionFromEnvelope()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"error":{"message":"key suspended"}}""", status: 429));
+        using var client = Client(server);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() => client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        }));
+        Assert.Equal(429, ex.Status);
+        Assert.Equal("key suspended", ex.Message);
+    }
+}

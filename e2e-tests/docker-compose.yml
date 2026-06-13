@@ -1,0 +1,77 @@
+# Self-contained e2e stack: the llmleaf proxy + a capability probe that runs
+# chat / tool-calls / TTS / STT against every provider you put a key for in .env.
+#
+# Everything runs on a dedicated, isolated bridge network (`llmleaf-e2e`); the probe
+# reaches the proxy only by its service name on that network — nothing is published to
+# the host. The network is a normal bridge (NOT `internal`) so the proxy can still
+# reach the upstream provider APIs over the internet.
+#
+#   cd e2e-tests
+#   cp .env.example .env        # then fill in the provider keys you have
+#   ./run.sh                    # works with docker OR podman (see run.sh)
+#   # or, with the docker compose plugin:
+#   docker compose up --build --abort-on-container-exit --exit-code-from probe
+#
+# The probe container's exit code is the suite's: 0 = all green, N = N failed runs.
+
+name: llmleaf-e2e
+
+networks:
+  # Private bridge owned by this stack — isolated from other compose projects, but
+  # with outbound internet (the proxy must reach the provider APIs).
+  e2e:
+    name: llmleaf-e2e
+    driver: bridge
+
+services:
+  llmleaf:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+    image: llmleaf:e2e
+    env_file: .env            # provider API keys -> resolved by `env:VAR` in the config
+    environment:
+      LLMLEAF_CONFIG: /etc/llmleaf/llmleaf.toml
+      RUST_LOG: ${RUST_LOG:-info}
+      # Keep in-network hops off any host proxy that the container engine injects
+      # (podman/docker forward HTTP_PROXY & co. into containers by default). Provider
+      # egress still honours a real proxy; only the internal names + loopback bypass it.
+      NO_PROXY: "llmleaf,llmleaf-e2e-srv,localhost,127.0.0.1,::1"
+      no_proxy: "llmleaf,llmleaf-e2e-srv,localhost,127.0.0.1,::1"
+    volumes:
+      - ./llmleaf.e2e.toml:/etc/llmleaf/llmleaf.toml:ro
+    networks:
+      - e2e
+    expose:
+      - "8080"
+    # Self-contained by default: the proxy is NOT published to the host. To poke it
+    # from your machine, uncomment and run `docker compose up`:
+    # ports:
+    #   - "${LLMLEAF_HOST_PORT:-8080}:8080"
+
+  probe:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: probe-runtime
+    image: llmleaf-probe:e2e
+    depends_on:
+      - llmleaf
+    env_file: .env            # the suite reads *_API_KEY to decide what to probe
+    environment:
+      LLMLEAF_BASE_URL: http://llmleaf:8080
+      LLMLEAF_CONFIG: /etc/llmleaf/llmleaf.toml
+      LLMLEAF_HOST: llmleaf
+      LLMLEAF_PORT: "8080"
+      # The probe only ever talks to the proxy on this private network, so a host proxy
+      # injected into the container (podman/docker forward HTTP_PROXY & co. by default)
+      # must not intercept that hop — it returns a 502 against the internal hostname.
+      NO_PROXY: "llmleaf,llmleaf-e2e-srv,localhost,127.0.0.1,::1"
+      no_proxy: "llmleaf,llmleaf-e2e-srv,localhost,127.0.0.1,::1"
+    volumes:
+      - ./llmleaf.e2e.toml:/etc/llmleaf/llmleaf.toml:ro
+      - ./probe-suite.sh:/e2e/probe-suite.sh:ro
+    networks:
+      - e2e
+    entrypoint: ["bash", "/e2e/probe-suite.sh"]

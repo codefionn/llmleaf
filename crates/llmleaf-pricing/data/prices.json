@@ -1,0 +1,676 @@
+{
+  "_comment": "Bundled pricing dataset. Collected OFFLINE by the pricing crate's collector (SOUL.md: 'Collection happens offline in the pricing crate; the core only ever reads the bundled dataset'). Rates are USD per 1,000,000 tokens.",
+  "_comment_metadata": "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding) and published limits max_context/max_output/max_thinking. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.",
+  "_comment_params": "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.",
+  "version": 4,
+  "models": {
+    "aya-expanse-32b": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 5.0,
+      "modality": "llm"
+    },
+    "aya-expanse-8b": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 5.0,
+      "modality": "llm"
+    },
+    "claude-fable-5": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty",
+        "temperature",
+        "top_p",
+        "top_k"
+      ]
+    },
+    "claude-haiku-4-5": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 5.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-4": {
+      "input_per_mtok": 15.0,
+      "output_per_mtok": 75.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 32000,
+      "max_thinking": 32000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-4-1": {
+      "input_per_mtok": 15.0,
+      "output_per_mtok": 75.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 32000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-4-5": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-4-6": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-4-7": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty",
+        "temperature",
+        "top_p",
+        "top_k"
+      ]
+    },
+    "claude-opus-4-8": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty",
+        "temperature",
+        "top_p",
+        "top_k"
+      ]
+    },
+    "claude-sonnet-4": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 64000,
+      "max_thinking": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-sonnet-4-5": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-sonnet-4-6": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "codestral": {
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 0.9,
+      "modality": "llm"
+    },
+    "codestral-embed": {
+      "input_per_mtok": 0.15,
+      "modality": "llm"
+    },
+    "command": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 2.0,
+      "modality": "llm"
+    },
+    "command-light": {
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 0.6,
+      "modality": "llm"
+    },
+    "command-r-03-2024": {
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
+      "modality": "llm"
+    },
+    "command-r-plus": {
+      "modality": "llm",
+      "default_parameters": {
+        "temperature": 0.3
+      }
+    },
+    "command-r-plus-04-2024": {
+      "input_per_mtok": 3.0,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "default_parameters": {
+        "temperature": 0.3
+      }
+    },
+    "command-r-plus-08-2024": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "default_parameters": {
+        "temperature": 0.3
+      }
+    },
+    "devstral-2": {
+      "input_per_mtok": 0.4,
+      "output_per_mtok": 2.0,
+      "modality": "llm"
+    },
+    "devstral-small-2": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.3,
+      "modality": "llm"
+    },
+    "echo": {
+      "input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "modality": "llm"
+    },
+    "embed-english-v3.0": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 512
+    },
+    "embed-multilingual-v3.0": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 512
+    },
+    "gpt-3.5-turbo": {
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
+      "modality": "llm",
+      "max_context": 16385,
+      "max_output": 4096
+    },
+    "gpt-4": {
+      "input_per_mtok": 30.0,
+      "output_per_mtok": 60.0,
+      "modality": "llm",
+      "max_context": 8192,
+      "max_output": 8192
+    },
+    "gpt-4-turbo": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 30.0,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 4096
+    },
+    "gpt-4.1": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 8.0,
+      "modality": "llm",
+      "max_context": 1047576,
+      "max_output": 32768
+    },
+    "gpt-4.1-mini": {
+      "input_per_mtok": 0.4,
+      "output_per_mtok": 1.6,
+      "modality": "llm",
+      "max_context": 1047576,
+      "max_output": 32768
+    },
+    "gpt-4.1-nano": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.4,
+      "modality": "llm",
+      "max_context": 1047576,
+      "max_output": 32768
+    },
+    "gpt-4o": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 16384
+    },
+    "gpt-4o-mini": {
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.6,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 16384
+    },
+    "gpt-4o-mini-transcribe": {
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 5.0,
+      "modality": "stt"
+    },
+    "gpt-4o-mini-tts": {
+      "modality": "tts"
+    },
+    "gpt-4o-transcribe": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 10.0,
+      "modality": "stt"
+    },
+    "gpt-5": {
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5-chat-latest": {
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 16384
+    },
+    "gpt-5-mini": {
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 2.0,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5-nano": {
+      "input_per_mtok": 0.05,
+      "output_per_mtok": 0.4,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5-pro": {
+      "input_per_mtok": 15.0,
+      "output_per_mtok": 120.0,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 272000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.1": {
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.4": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.4-mini": {
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 4.5,
+      "modality": "llm",
+      "max_context": 400000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.4-nano": {
+      "input_per_mtok": 0.2,
+      "output_per_mtok": 1.25,
+      "modality": "llm",
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.4-pro": {
+      "input_per_mtok": 30.0,
+      "output_per_mtok": 180.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.5": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 30.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 128000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "gpt-5.5-pro": {
+      "input_per_mtok": 30.0,
+      "output_per_mtok": 180.0,
+      "modality": "llm",
+      "max_context": 1000000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "magistral-medium": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 5.0,
+      "modality": "llm"
+    },
+    "magistral-small": {
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
+      "modality": "llm"
+    },
+    "ministral-3-14b": {
+      "input_per_mtok": 0.2,
+      "output_per_mtok": 0.2,
+      "modality": "llm"
+    },
+    "ministral-3-3b": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.1,
+      "modality": "llm"
+    },
+    "ministral-3-8b": {
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.15,
+      "modality": "llm"
+    },
+    "mistral-embed": {
+      "input_per_mtok": 0.1,
+      "modality": "llm"
+    },
+    "mistral-large-3": {
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
+      "modality": "llm"
+    },
+    "mistral-medium-3.5": {
+      "input_per_mtok": 1.5,
+      "output_per_mtok": 7.5,
+      "modality": "llm"
+    },
+    "mistral-moderation": {
+      "input_per_mtok": 0.1,
+      "modality": "llm"
+    },
+    "mistral-nemo": {
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.15,
+      "modality": "llm"
+    },
+    "mistral-small-4": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.3,
+      "modality": "llm"
+    },
+    "o1": {
+      "input_per_mtok": 15.0,
+      "output_per_mtok": 60.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "o1-pro": {
+      "input_per_mtok": 150.0,
+      "output_per_mtok": 600.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "o3": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 8.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "o3-mini": {
+      "input_per_mtok": 1.1,
+      "output_per_mtok": 4.4,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "o3-pro": {
+      "input_per_mtok": 20.0,
+      "output_per_mtok": 80.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "o4-mini": {
+      "input_per_mtok": 1.1,
+      "output_per_mtok": 4.4,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 100000,
+      "unsupported_parameters": [
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty"
+      ],
+      "default_parameters": {
+        "temperature": 1,
+        "top_p": 1
+      }
+    },
+    "text-embedding-004": {
+      "input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 2048
+    },
+    "text-embedding-3-large": {
+      "input_per_mtok": 0.13,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 8191
+    },
+    "text-embedding-3-small": {
+      "input_per_mtok": 0.02,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 8191
+    },
+    "text-embedding-ada-002": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.0,
+      "modality": "embedding",
+      "max_context": 8191
+    },
+    "tts-1": {
+      "modality": "tts"
+    },
+    "tts-1-hd": {
+      "modality": "tts"
+    },
+    "voxtral-small": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.4,
+      "modality": "stt"
+    },
+    "whisper-1": {
+      "modality": "stt"
+    }
+  }
+}

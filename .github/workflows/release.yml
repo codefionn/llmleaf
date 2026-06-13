@@ -1,0 +1,342 @@
+name: Release
+
+# One pipeline for everything we publish:
+#
+#   • push to main      → multi-arch container image tagged `:edge` + `:sha-<sha>`
+#                         to ghcr.io, quay.io and docker.io.
+#   • push of a v* tag  → the same image tagged with the semver (`1.2.3`, `1.2`, `1`,
+#                         `latest`) on all three registries, PLUS the client SDKs:
+#                         npm, crates.io, NuGet and Maven Central.
+#   • workflow_dispatch → rebuild/push the image (optionally with an extra tag).
+#
+# Every publish is gated on the `verify` job (the same lint + test bake CI runs).
+# Versions for the SDKs are derived from the tag: `v1.2.3` → `1.2.3`.
+#
+# Required repository secrets are documented in .github/RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra image tag to publish (in addition to the git ref)"
+        required: false
+
+# Serialise releases per ref and NEVER cancel an in-flight publish midway.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Quality gate. Shares the GHA build cache with CI and the image build below, so
+  # the chef → planner → deps → source stages are compiled once across the run.
+  # ─────────────────────────────────────────────────────────────────────────────
+  verify:
+    name: lint · test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Lint and test
+        uses: docker/bake-action@v6
+        with:
+          targets: |
+            lint
+            test
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Container image → ghcr.io + quay.io + docker.io (multi-arch amd64 + arm64).
+  # Runs on main (edge) and on tags (semver). Tagging is owned by metadata-action.
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker:
+    name: image → ghcr · quay · docker.io
+    needs: verify
+    runs-on: ubuntu-latest
+    # quay.io + docker.io creds are env-scoped to `prod`; without this they resolve empty.
+    environment: prod
+    permissions:
+      contents: read
+      packages: write # ghcr.io push via GITHUB_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ vars.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Compute tags + OCI labels for all three registries and emit a bake file that
+      # REDEFINES the `docker-metadata-action` target the `release` target inherits.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            quay.io/${{ github.repository }}
+            docker.io/${{ github.repository }}
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+
+      - name: Build and push multi-arch image
+        uses: docker/bake-action@v6
+        with:
+          files: |
+            ./docker-bake.hcl
+            cwd://${{ steps.meta.outputs.bake-file }}
+          targets: release
+          push: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Client SDKs — tags only. Each is independent; one failing does not block the
+  # others or the image. Versions come from the tag (`v1.2.3` → `1.2.3`).
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  npm:
+    name: npm → @llmleaf/client
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Token auth via NPM_TOKEN (env-scoped to `prod` like the other publish creds).
+    # @llmleaf/client does not exist on the registry yet, and npm's Trusted Publisher
+    # (OIDC) can only be configured on a package that already exists — so this first
+    # publish bootstraps with a token. AFTER it lands, configure the trusted publisher on
+    # npmjs.com (codefionn/llmleaf · workflow release.yml · environment prod) and switch
+    # this job to OIDC: drop NODE_AUTH_TOKEN, add `permissions: { id-token: write }`, and
+    # add an `npm install -g npm@latest` step (Node 20 ships npm 10; OIDC needs >= 11.5.1).
+    environment: prod
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      # The protobuf-es types are committed, so no protoc/codegen step is needed. Install
+      # and build with the committed (in-sync) lockfile FIRST; stamp the version only just
+      # before publish so `npm ci`'s package.json↔lockfile sync check still passes (the build
+      # output does not embed the version).
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Stamp version from tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  crates:
+    name: crates.io → llmleaf-client
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # CARGO_REGISTRY_TOKEN is env-scoped to `prod`; without this it resolves empty.
+    environment: prod
+    defaults:
+      run:
+        working-directory: clients/rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # build.rs runs prost-build → protoc, and `cargo publish` does a verify build,
+      # so protoc must be on PATH.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stamp version from tag
+        run: sed -i -E "0,/^version = \".*\"/s//version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+
+      # `--allow-dirty`: the version bump (and this crate's git-ignored Cargo.lock)
+      # leave the tree dirty relative to git.
+      - name: Publish
+        run: cargo publish --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  nuget:
+    name: NuGet → Llmleaf.Client
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Trusted publishing (OIDC) — no NUGET_API_KEY secret. The trusted-publisher policy on
+    # nuget.org is bound to: owner codefionn / repo llmleaf / workflow release.yml / environment
+    # `prod`, so this job MUST run in that environment and request an OIDC token. NuGet/login
+    # exchanges that token for a short-lived API key.
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: clients/csharp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # The Google.Protobuf typed model (src/Gen/Llmleaf.cs) is committed — no protoc needed.
+      - name: Pack
+        run: >
+          dotnet pack src/Llmleaf.Client.csproj
+          -c Release
+          -p:Version="${GITHUB_REF_NAME#v}"
+          -o "${{ runner.temp }}/nupkg"
+
+      # OIDC → short-lived nuget.org API key. `user` is the package owner (codefionn).
+      - name: NuGet login (trusted publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: codefionn
+
+      - name: Push
+        run: >
+          dotnet nuget push "${{ runner.temp }}/nupkg/*.nupkg"
+          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+  maven:
+    name: Maven Central → eu.codefionn.llmleaf
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Maven Central creds are env-scoped to `prod`; without this they resolve empty.
+    environment: prod
+    defaults:
+      run:
+        working-directory: clients/kotlin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Wire runs the proto codegen inside the Gradle build (pure JVM, no protoc). The
+      # vanniktech plugin signs every KMP publication and uploads to the Central Portal,
+      # auto-releasing on success (see build.gradle.kts).
+      - name: Publish to Maven Central
+        run: ./gradlew publishToMavenCentral --no-configuration-cache -Pversion="${GITHUB_REF_NAME#v}"
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ vars.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_PASSWORD }}
+
+  # The Go SDK is a module in a subdirectory (github.com/codefionn/llmleaf/clients/go), so
+  # the Go toolchain only resolves it from a `clients/go/vX.Y.Z` tag — a root `vX.Y.Z` tag is
+  # invisible to `go get`. Mirror each release tag into the submodule-scoped tag. No registry,
+  # no secret: the module proxy fetches straight from the tag. (This tag does not match the
+  # `v*` trigger above, so it cannot re-trigger this workflow.)
+  go-tag:
+    name: tag → clients/go
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mirror release tag into the Go submodule path
+        run: |
+          GO_TAG="clients/go/${GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${GO_TAG}" >/dev/null 2>&1; then
+            echo "tag ${GO_TAG} already exists — skipping"
+          else
+            git tag "${GO_TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${GO_TAG}"
+          fi
+
+  # A GitHub Release for the tag: human-facing changelog, and the auto-generated source
+  # tarball is the artifact Zig consumers pin via `zig fetch <tarball-url>` (the Zig SDK has
+  # no central registry). Auto-generated notes; never marks anything as `latest` prerelease.
+  github-release:
+    name: GitHub Release
+    # The image is the core deliverable; cut the release once it is published. The SDK jobs
+    # are best-effort and independently visible — a flaky language publish must not suppress
+    # the release record (the source tarball Zig pins exists for the tag regardless).
+    needs: [docker]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create / update the release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
