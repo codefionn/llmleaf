@@ -1,0 +1,36 @@
+# Keep the build context tiny and reproducible. The Rust toolchain rebuilds
+# everything inside the image, so host build artifacts must never leak in.
+target/
+**/target/
+
+# VCS / CI / editor noise
+.git/
+.github/
+.gitignore
+.claude/
+
+# Docker assets themselves
+Dockerfile
+.dockerignore
+docker-bake.hcl
+
+# e2e stack (mounted at runtime via compose, never built into an image — and it
+# holds the gitignored .env with provider secrets)
+e2e-tests/
+
+# Local runtime state and secrets (never bake these into an image)
+llmleaf.toml
+llmleaf-web.toml
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Large non-source assets not needed to compile
+*.mp3
+*.wav
+logo.png
+
+# Docs
+README.md
+SOUL.md

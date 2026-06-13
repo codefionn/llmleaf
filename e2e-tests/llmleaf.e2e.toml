@@ -1,0 +1,226 @@
+# llmleaf e2e config — wires every first-party provider kind to a CHEAP model so the
+# capability probe can exercise chat / tool-calls / TTS / STT against real upstreams.
+#
+# Credentials come from the environment (the compose `.env`). A provider whose key is
+# unset boots fine (the `env:` ref resolves to nothing) and is simply never hit — the
+# probe suite only probes providers whose API key is present (see probe-suite.sh).
+#
+# Model names below are deliberately the cheapest tool-capable option per vendor as of
+# writing; bump them in one place here if a vendor renames or retires one.
+
+[server]
+listen = "0.0.0.0:8080"
+fallback_cooldown_secs = 15
+
+# ---------------------------------------------------------------------------------
+# Providers. `name` mirrors `kind` for legibility; routes target these names below.
+# ---------------------------------------------------------------------------------
+
+[[providers]]
+name = "openai"
+kind = "openai"
+credential = "env:OPENAI_API_KEY"
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+credential = "env:ANTHROPIC_API_KEY"
+
+[[providers]]
+name = "gemini"
+kind = "gemini"
+credential = "env:GEMINI_API_KEY"
+
+[[providers]]
+name = "cohere"
+kind = "cohere"
+credential = "env:COHERE_API_KEY"
+
+[[providers]]
+name = "groq"
+kind = "groq"
+credential = "env:GROQ_API_KEY"
+
+[[providers]]
+name = "openrouter"
+kind = "openrouter"
+credential = "env:OPENROUTER_API_KEY"
+
+[[providers]]
+name = "requesty"
+kind = "requesty"
+credential = "env:REQUESTY_API_KEY"
+
+[[providers]]
+name = "deepseek"
+kind = "deepseek"
+credential = "env:DEEPSEEK_API_KEY"
+
+[[providers]]
+name = "xai"
+kind = "xai"
+credential = "env:XAI_API_KEY"
+
+[[providers]]
+name = "mistral"
+kind = "mistral"
+credential = "env:MISTRAL_API_KEY"
+
+[[providers]]
+name = "together"
+kind = "together"
+credential = "env:TOGETHER_API_KEY"
+
+[[providers]]
+name = "fireworks"
+kind = "fireworks"
+credential = "env:FIREWORKS_API_KEY"
+
+[[providers]]
+name = "perplexity"
+kind = "perplexity"
+credential = "env:PERPLEXITY_API_KEY"
+
+[[providers]]
+name = "cerebras"
+kind = "cerebras"
+credential = "env:CEREBRAS_API_KEY"
+
+[[providers]]
+name = "zai"
+kind = "zai"
+credential = "env:ZAI_API_KEY"
+
+[[providers]]
+name = "moonshot"
+kind = "moonshot"
+credential = "env:MOONSHOT_API_KEY"
+
+# Local backends — no key, but they need a reachable endpoint. Left commented so the
+# default stack is cloud-only; uncomment and set `endpoint` to probe a local runtime.
+# These are first-class NATIVE providers (Ollama's `/api/*`, LM Studio's `/api/v0/*`) — the
+# endpoints are the bare host / `/api/v0` base, NOT the OpenAI-compat `/v1` shims.
+# [[providers]]
+# name = "ollama"
+# kind = "ollama"
+# endpoint = "http://host.docker.internal:11434"
+# [[providers]]
+# name = "lmstudio"
+# kind = "lmstudio"
+# endpoint = "http://host.docker.internal:1234/api/v0"
+
+# Always-up offline fallback for a smoke check with zero keys (chat/tts/stt PASS, tools FAIL).
+[[providers]]
+name = "echo"
+kind = "echo"
+
+# ---------------------------------------------------------------------------------
+# Routes. One logical model per (provider, modality). Single-target on purpose: no
+# echo fallback on real routes, so a probe failure means the real upstream failed.
+# ---------------------------------------------------------------------------------
+
+# --- chat + tool calls (cheap, tool-capable) ---
+[[routes]]
+model = "openai-chat"
+targets = [{ provider = "openai", model = "gpt-4o-mini" }]
+
+[[routes]]
+model = "anthropic-chat"
+targets = [{ provider = "anthropic", model = "claude-haiku-4-5" }]
+
+[[routes]]
+model = "gemini-chat"
+targets = [{ provider = "gemini", model = "gemini-3.5-flash" }]
+
+[[routes]]
+model = "cohere-chat"
+targets = [{ provider = "cohere", model = "command-r7b-12-2024" }]
+
+[[routes]]
+model = "groq-chat"
+targets = [{ provider = "groq", model = "llama-3.3-70b-versatile" }]
+
+[[routes]]
+model = "openrouter-chat"
+targets = [{ provider = "openrouter", model = "openai/gpt-4o-mini" }]
+
+[[routes]]
+model = "requesty-chat"
+targets = [{ provider = "requesty", model = "openai/gpt-4o-mini" }]
+
+[[routes]]
+model = "deepseek-chat"
+targets = [{ provider = "deepseek", model = "deepseek-chat" }]
+
+[[routes]]
+model = "xai-chat"
+targets = [{ provider = "xai", model = "grok-3-mini" }]
+
+[[routes]]
+model = "mistral-chat"
+targets = [{ provider = "mistral", model = "mistral-small-latest" }]
+
+[[routes]]
+model = "together-chat"
+targets = [{ provider = "together", model = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" }]
+
+[[routes]]
+model = "fireworks-chat"
+targets = [{ provider = "fireworks", model = "accounts/fireworks/models/llama-v3p1-8b-instruct" }]
+
+[[routes]]
+model = "cerebras-chat"
+targets = [{ provider = "cerebras", model = "gpt-oss-120b" }]
+
+[[routes]]
+model = "zai-chat"
+targets = [{ provider = "zai", model = "glm-4-flash" }]
+
+[[routes]]
+model = "moonshot-chat"
+targets = [{ provider = "moonshot", model = "moonshot-v1-8k" }]
+
+# --- chat only (Perplexity has no general tool-calling surface) ---
+[[routes]]
+model = "perplexity-chat"
+targets = [{ provider = "perplexity", model = "sonar" }]
+
+# --- text-to-speech (only vendors with a real /audio/speech endpoint) ---
+[[routes]]
+model = "openai-tts"
+targets = [{ provider = "openai", model = "gpt-4o-mini-tts" }]
+
+[[routes]]
+model = "groq-tts"
+targets = [{ provider = "groq", model = "canopylabs/orpheus-v1-english" }]
+
+[[routes]]
+model = "mistral-tts"
+targets = [{ provider = "mistral", model = "voxtral-mini-tts-2603" }]
+
+# --- speech-to-text (only vendors with a real /audio/transcriptions endpoint) ---
+[[routes]]
+model = "openai-stt"
+targets = [{ provider = "openai", model = "gpt-4o-mini-transcribe" }]
+
+[[routes]]
+model = "groq-stt"
+targets = [{ provider = "groq", model = "whisper-large-v3-turbo" }]
+
+[[routes]]
+model = "mistral-stt"
+targets = [{ provider = "mistral", model = "voxtral-mini-latest" }]
+
+# --- offline smoke route ---
+[[routes]]
+model = "demo"
+targets = [{ provider = "echo" }]
+
+# ---------------------------------------------------------------------------------
+# Consumer key. This is the published, LOCAL-ONLY example credential the probe uses
+# by default (id `example-cli`, password `llmleaf-dev`; bcrypt cost 12). No
+# `allowed_models` ⇒ every route above is reachable. NEVER ship a known password.
+# ---------------------------------------------------------------------------------
+[[keys]]
+id = "example-cli"
+pw_hash = "$2y$12$e8yd7Vi6xtWz5gUpEvKBkOtgIoq4nIBkFZ1iMtWj5T8oeAQWL/WSi"

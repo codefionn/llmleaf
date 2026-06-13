@@ -1,0 +1,7 @@
+# Compiled example binary (built by `go build ./examples/basic`)
+/basic
+/examples/basic/basic
+
+# Test/coverage artifacts
+*.out
+*.test

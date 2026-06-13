@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Target the LTS so the library is broadly consumable; the SDK 10 toolchain builds it fine. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Llmleaf.Client</RootNamespace>
+    <AssemblyName>Llmleaf.Client</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- The generated Google.Protobuf file (src/Gen/Llmleaf.cs) is #pragma-silenced internally;
+         keep the rest of the project warning-clean. CS1591 (missing XML doc) is suppressed: the
+         public records mirror the proto and are self-describing; the key types carry docs. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- NuGet package metadata. -->
+    <PackageId>Llmleaf.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>codefionn</Authors>
+    <Copyright>Copyright (C) 2026 Fionn Langhans</Copyright>
+    <Description>Official C#/.NET client for the llmleaf LLM proxy. Speaks the OpenAI/OpenRouter-shaped HTTP surface; types generated from the shared Protocol Buffers schema.</Description>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/codefionn/llmleaf/tree/main/clients/csharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/codefionn/llmleaf.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The generated typed model (src/Gen/Llmleaf.cs) uses the Google.Protobuf runtime. It is the
+         codegen artifact / schema proof; the wire transport is hand-written System.Text.Json. -->
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The test project exercises the internal wire layer (EnumWire, mappers). -->
+    <InternalsVisibleTo Include="Llmleaf.Client.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,29 @@
+[package]
+name = "llmleaf-simulation"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf seeded simulation harness — deterministic, reproducible scenario testing and a time-boxed soak runner. A QA tool; never a dependency of a production crate."
+
+# The soak runner: `cargo run -p llmleaf-simulation --release -- 5m`.
+[[bin]]
+name = "llmleaf-sim"
+path = "src/main.rs"
+
+[dependencies]
+llmleaf-model.workspace = true
+llmleaf-provider.workspace = true
+llmleaf-core.workspace = true
+# Drive a REAL provider through a SEEDED fake transport (the `provider` family). The sim crate is never
+# a dependency of a production crate, but it MAY depend on workspace crates to drive them — the
+# `test-support` feature compiles in the injectable fake transports, never into the binary.
+llmleaf-providers = { workspace = true, features = ["test-support"] }
+
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+# Generates the crypt(3) password hashes the key scenario feeds into config (the core verifies them).
+pwhash.workspace = true

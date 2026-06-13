@@ -1,0 +1,424 @@
+// llmleaf client contract — the single source of truth for every official client
+// library under clients/ (Kotlin Multiplatform, Go, Rust, TypeScript, Zig).
+//
+// SOUL.md: "Official consumer client libraries live in clients/ ... generated from a
+// single Protocol Buffers schema ... the source of truth for the canonical
+// request/response shapes the libraries expose ... on the wire the libraries still
+// speak llmleaf's existing OpenAI/OpenRouter HTTP surface (P3)."
+//
+// THE WIRE IS JSON, NOT PROTOBUF-BINARY. These messages are the typed model each
+// SDK exposes; every client's HTTP transport serialises them to / parses them from
+// the OpenAI/OpenRouter-shaped JSON the core actually speaks. Two conventions make
+// that mapping mechanical and identical in every language:
+//
+//   1. Field names are snake_case and already match the JSON keys on the wire.
+//   2. Closed-set enums map to their wire token by LOWERCASING the enum value name:
+//        FinishReason.TOOL_CALLS  <-> "tool_calls"
+//        Role.ASSISTANT           <-> "assistant"
+//        BatchStatus.IN_PROGRESS  <-> "in_progress"
+//      The `*_UNSPECIFIED` zero value means the field is absent on the wire.
+//
+// Free-form JSON (arbitrary tool parameters, response_format bodies, provider
+// passthrough) is carried as a raw-JSON `string` rather than google.protobuf.Struct,
+// so codegen needs no well-known-type support in any target language. The transport
+// splices these strings into the request body verbatim (P7 — transparent passthrough).
+
+syntax = "proto3";
+
+package llmleaf.v1;
+
+option go_package = "github.com/codefionn/llmleaf/clients/go/llmleafpb;llmleafpb";
+option java_package = "eu.codefionn.llmleaf.v1";
+option java_multiple_files = true;
+
+// ----------------------------------------------------------------------------
+// Common
+// ----------------------------------------------------------------------------
+
+// Token accounting echoed on every response. `cost_usd` is an llmleaf addition
+// (real-time price from the bundled pricing dataset); it is null/absent when the
+// model has no known price.
+message Usage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
+  optional double cost_usd = 4;
+}
+
+// The canonical error envelope returned by every endpoint:  {"error":{"message":...}}.
+message ErrorResponse {
+  ErrorBody error = 1;
+}
+
+message ErrorBody {
+  string message = 1;
+  // Present on some dialects; absent on the llmleaf core envelope.
+  optional string type = 2;
+  optional string code = 3;
+}
+
+// ----------------------------------------------------------------------------
+// Chat completions  (POST /v1/chat/completions)
+// ----------------------------------------------------------------------------
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  SYSTEM = 1;
+  USER = 2;
+  ASSISTANT = 3;
+  TOOL = 4;
+}
+
+enum FinishReason {
+  FINISH_REASON_UNSPECIFIED = 0;
+  STOP = 1;
+  LENGTH = 2;
+  TOOL_CALLS = 3;
+  CONTENT_FILTER = 4;
+}
+
+// A single content part for multimodal messages:
+//   {"type":"text","text":"..."}
+//   {"type":"image_url","image_url":{"url":"...","detail":"auto"}}
+message ContentPart {
+  oneof part {
+    TextPart text = 1;
+    ImageUrlPart image_url = 2;
+  }
+}
+
+message TextPart {
+  string text = 1;
+}
+
+message ImageUrlPart {
+  string url = 1;
+  optional string detail = 2; // "auto" | "low" | "high"
+}
+
+message ContentParts {
+  repeated ContentPart items = 1;
+}
+
+// A function the model called.  `arguments` is a JSON-encoded string (OpenAI shape).
+message FunctionCall {
+  string name = 1;
+  string arguments = 2;
+}
+
+message ToolCall {
+  string id = 1;
+  string type = 2; // always "function" today
+  FunctionCall function = 3;
+}
+
+// Incremental tool-call fragment on a streaming delta; fields arrive piecemeal.
+message FunctionCallDelta {
+  optional string name = 1;
+  optional string arguments = 2;
+}
+
+message ToolCallDelta {
+  uint32 index = 1;
+  optional string id = 2;
+  optional string type = 3;
+  optional FunctionCallDelta function = 4;
+}
+
+message ChatMessage {
+  Role role = 1;
+  // Wire `content` is either a plain string or an array of content parts.
+  oneof content {
+    string text = 2;
+    ContentParts parts = 3;
+  }
+  optional string name = 4;
+  repeated ToolCall tool_calls = 5;
+  optional string tool_call_id = 6; // set when role == TOOL
+}
+
+// A function the model MAY call.  `parameters` is a raw JSON Schema string.
+message FunctionDef {
+  string name = 1;
+  optional string description = 2;
+  optional string parameters = 3; // raw JSON object
+}
+
+message ToolDef {
+  string type = 1; // "function"
+  FunctionDef function = 2;
+}
+
+// tool_choice is either a mode string ("auto"|"none"|"required") or an object
+// pinning a specific function: {"type":"function","function":{"name":"..."}}.
+message ToolChoice {
+  oneof choice {
+    string mode = 1;
+    NamedToolChoice named = 2;
+  }
+}
+
+message NamedToolChoice {
+  string type = 1; // "function"
+  FunctionName function = 2;
+}
+
+message FunctionName {
+  string name = 1;
+}
+
+// response_format: {"type":"text"|"json_object"|"json_schema", "json_schema": {...}}
+message ResponseFormat {
+  string type = 1;
+  optional string json_schema = 2; // raw JSON object when type == "json_schema"
+}
+
+message ChatRequest {
+  string model = 1;
+  repeated ChatMessage messages = 2;
+  optional bool stream = 3;
+  optional float temperature = 4;
+  optional float top_p = 5;
+  optional uint32 max_tokens = 6;            // legacy name
+  optional uint32 max_completion_tokens = 7; // modern name (takes precedence)
+  repeated string stop = 8;                  // wire accepts string or array
+  optional uint32 n = 9;
+  optional int64 seed = 10;
+  optional float frequency_penalty = 11;
+  optional float presence_penalty = 12;
+  repeated ToolDef tools = 13;
+  optional ToolChoice tool_choice = 14;
+  optional ResponseFormat response_format = 15;
+  optional string reasoning_effort = 16; // "low" | "medium" | "high"
+  // Dialect-specific passthrough, spliced verbatim into the request body (P7).
+  optional string extra = 17; // raw JSON object
+}
+
+message Choice {
+  uint32 index = 1;
+  ChatMessage message = 2;
+  optional FinishReason finish_reason = 3;
+}
+
+message ChatResponse {
+  string id = 1;
+  string object = 2; // "chat.completion"
+  int64 created = 3; // unix seconds
+  string model = 4;
+  repeated Choice choices = 5;
+  Usage usage = 6;
+}
+
+// Streaming SSE frame: `data: <ChatCompletionChunk JSON>\n\n`, terminated by
+// the sentinel line `data: [DONE]`.
+message Delta {
+  optional Role role = 1;       // first chunk only
+  optional string content = 2;  // incremental text
+  repeated ToolCallDelta tool_calls = 3;
+}
+
+message ChunkChoice {
+  uint32 index = 1;
+  Delta delta = 2;
+  optional FinishReason finish_reason = 3;
+}
+
+message ChatCompletionChunk {
+  string id = 1;
+  string object = 2; // "chat.completion.chunk"
+  int64 created = 3;
+  string model = 4;
+  repeated ChunkChoice choices = 5;
+  optional Usage usage = 6; // terminal chunk only
+}
+
+// ----------------------------------------------------------------------------
+// Embeddings  (POST /v1/embeddings)
+// ----------------------------------------------------------------------------
+
+message EmbeddingRequest {
+  string model = 1;
+  repeated string input = 2; // wire accepts string or array of strings
+  optional uint32 dimensions = 3;
+  optional string encoding_format = 4; // "float" | "base64"
+  optional string extra = 5;           // raw JSON object passthrough
+}
+
+message Embedding {
+  string object = 1; // "embedding"
+  uint32 index = 2;
+  repeated float embedding = 3; // present when encoding_format == "float"
+  // When encoding_format == "base64" the wire carries a base64 string instead of
+  // the float array; transports decode it into `embedding`.
+}
+
+message EmbeddingResponse {
+  string object = 1; // "list"
+  repeated Embedding data = 2;
+  string model = 3;
+  Usage usage = 4;
+}
+
+// ----------------------------------------------------------------------------
+// Audio — text to speech  (POST /v1/audio/speech  ->  raw audio bytes)
+//         voice catalog    (GET  /v1/audio/voices)
+// ----------------------------------------------------------------------------
+
+message SpeechRequest {
+  string model = 1;
+  string input = 2;
+  string voice = 3;
+  optional string response_format = 4; // mp3|opus|aac|flac|wav|pcm
+  optional float speed = 5;
+  optional string extra = 6; // raw JSON object passthrough
+}
+
+// SpeechRequest returns raw audio bytes (no JSON envelope); the Content-Type
+// reflects response_format (mp3 -> audio/mpeg, wav -> audio/wav, ...).
+
+message Voice {
+  string id = 1; // value to put in SpeechRequest.voice
+  optional string name = 2;
+  repeated string languages = 3; // BCP-47 tags
+}
+
+message VoicesResponse {
+  string model = 1;
+  repeated Voice voices = 2;
+}
+
+// ----------------------------------------------------------------------------
+// Audio — speech to text  (POST /v1/audio/transcriptions, multipart/form-data)
+// ----------------------------------------------------------------------------
+
+// The audio file itself is sent as the multipart `file` part, NOT in this message;
+// these are the accompanying form fields.
+message TranscriptionRequest {
+  string model = 1;
+  optional string language = 2;        // ISO-639-1 hint
+  optional string prompt = 3;          // decoding bias
+  optional string response_format = 4; // json|text|verbose_json|srt|vtt
+  optional float temperature = 5;
+}
+
+// For response_format json/verbose_json. text/srt/vtt return a plain-text body.
+message TranscriptionResponse {
+  string text = 1;
+  optional string task = 2;     // "transcribe" (verbose_json)
+  optional string language = 3;
+  optional float duration = 4;
+  optional Usage usage = 5;
+}
+
+// ----------------------------------------------------------------------------
+// Model catalog  (GET /v1/models)  — OpenRouter-shaped
+// ----------------------------------------------------------------------------
+
+message Architecture {
+  repeated string input_modalities = 1;
+  repeated string output_modalities = 2;
+  optional string modality = 3; // "text->text" | "text->audio" | ...
+  string tokenizer = 4;
+  optional string instruct_type = 5;
+}
+
+message Pricing {
+  string prompt = 1;     // USD per token, decimal string
+  string completion = 2;
+}
+
+message TopProvider {
+  optional uint32 context_length = 1;
+  optional uint32 max_completion_tokens = 2;
+  bool is_moderated = 3;
+  optional uint32 max_thinking_tokens = 4; // llmleaf extension
+}
+
+// Admin-only fallback-chain entry (present only with a valid x-admin-token).
+message ModelEndpoint {
+  string provider = 1;
+  string model = 2;
+  bool down = 3;
+  string source = 4; // "route" | "prefix"
+}
+
+message ModelEntry {
+  string id = 1;
+  string canonical_slug = 2;
+  string name = 3;
+  int64 created = 4;
+  string description = 5;
+  optional uint32 context_length = 6;
+  Architecture architecture = 7;
+  optional Pricing pricing = 8;
+  TopProvider top_provider = 9;
+  repeated string supported_parameters = 10;
+  repeated string unsupported_parameters = 11;
+  optional string default_parameters = 12; // raw JSON object
+  repeated ModelEndpoint endpoints = 13;    // admin-only
+}
+
+message ListModelsResponse {
+  repeated ModelEntry data = 1;
+}
+
+// ----------------------------------------------------------------------------
+// Batches  (POST /v1/batches, GET /v1/batches/{id}, .../cancel, .../results)
+// ----------------------------------------------------------------------------
+
+enum BatchStatus {
+  BATCH_STATUS_UNSPECIFIED = 0;
+  VALIDATING = 1;
+  IN_PROGRESS = 2;
+  FINALIZING = 3;
+  COMPLETED = 4;
+  FAILED = 5;
+  EXPIRED = 6;
+  CANCELING = 7;
+  CANCELED = 8;
+}
+
+message BatchRequestItem {
+  string custom_id = 1;
+  ChatRequest body = 2;
+}
+
+message BatchCreateRequest {
+  repeated BatchRequestItem requests = 1;
+}
+
+message BatchCounts {
+  uint64 total = 1;
+  uint64 processing = 2;
+  uint64 succeeded = 3;
+  uint64 errored = 4;
+  uint64 canceled = 5;
+  uint64 expired = 6;
+}
+
+message BatchHandle {
+  string id = 1;
+  BatchStatus status = 2;
+  BatchCounts counts = 3;
+  optional int64 created_at = 4;
+  optional int64 expires_at = 5;
+  optional int64 ended_at = 6;
+  optional string endpoint = 7; // e.g. "/v1/chat/completions"
+}
+
+// One line of the JSONL results stream (GET /v1/batches/{id}/results).
+message BatchResultLine {
+  string custom_id = 1;
+  optional BatchResponse response = 2;
+  optional BatchError error = 3;
+}
+
+message BatchResponse {
+  uint32 status_code = 1;
+  ChatResponse body = 2;
+}
+
+message BatchError {
+  string code = 1;
+  string message = 2;
+}

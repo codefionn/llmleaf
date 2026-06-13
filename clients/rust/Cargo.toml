@@ -1,0 +1,47 @@
+# llmleaf-client — official Rust SDK for the llmleaf LLM proxy.
+#
+# IMPORTANT: this crate is its OWN workspace root, deliberately detached from the
+# repository's root Cargo workspace (which globs `crates/*`). The empty `[workspace]`
+# table below stops Cargo from walking up the tree and trying to enrol this crate as a
+# member of the core workspace. Keep it.
+[package]
+name = "llmleaf-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Official Rust client SDK for the llmleaf LLM proxy (OpenAI/OpenRouter-shaped JSON over HTTP)."
+authors = ["Fionn Langhans <fionnlanghans@codefionn.eu>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/codefionn/llmleaf"
+readme = "README.md"
+keywords = ["llmleaf", "llm", "openai", "client", "proxy"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+# Standalone workspace: do not adopt the repo-root workspace under clients/.
+[workspace]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "stream",
+    "multipart",
+] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+thiserror = "2"
+bytes = "1"
+base64 = "0.22"
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"

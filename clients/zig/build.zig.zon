@@ -1,0 +1,24 @@
+.{
+    // Package identity for the official Zig SDK of the llmleaf LLM proxy.
+    // `zig fetch --save` uses `.name` as the dependency key; consumers then
+    // `@import("llmleaf")` (the module name exposed by build.zig).
+    .name = .llmleaf,
+    .version = "0.1.0",
+    // Globally-unique, generated once, never changed. See `zig init` notes.
+    .fingerprint = 0x28355ac9fa9c0b5d, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+
+    // std-only: no third-party package dependencies.
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "scripts",
+        "README.md",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+    },
+}

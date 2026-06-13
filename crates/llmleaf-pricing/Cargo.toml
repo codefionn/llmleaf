@@ -1,0 +1,32 @@
+[package]
+name = "llmleaf-pricing"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf sidecar — bundled provider pricing dataset and lookup"
+
+[features]
+default = []
+collect = [
+    "dep:clap",
+    "dep:reqwest",
+    "dep:scraper",
+    "dep:tokio",
+    "dep:toml",
+]
+
+[[bin]]
+name = "llmleaf-pricing-collect"
+path = "src/bin/collect.rs"
+required-features = ["collect"]
+
+[dependencies]
+llmleaf-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+scraper = { version = "0.23", optional = true }
+tokio = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }

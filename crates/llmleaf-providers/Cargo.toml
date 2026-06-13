@@ -1,0 +1,29 @@
+[package]
+name = "llmleaf-providers"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf first-party compiled-in providers. NOT a dependency of the core."
+
+[features]
+# Exposes the injectable fake transports (`fake` module) for downstream test/bench/sim crates. Never
+# enabled by the binary, so the fakes stay out of release builds.
+test-support = []
+
+[dependencies]
+llmleaf-model.workspace = true
+llmleaf-provider.workspace = true
+
+async-trait.workspace = true
+async-stream.workspace = true
+# Base64 audio encoding for OpenRouter's JSON `/audio/transcriptions` shape (see openai_wire).
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# Native realtime upstream (OpenAI Realtime WS): `tokio` for the duplex pump tasks, tungstenite client.
+tokio.workspace = true
+tokio-tungstenite.workspace = true

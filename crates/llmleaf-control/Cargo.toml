@@ -1,0 +1,24 @@
+[package]
+name = "llmleaf-control"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "llmleaf control-plane client — the outbound side (pull verdicts/identity, push usage, sync intercept). Wired by the binary; NOT a dependency of the core."
+
+[dependencies]
+llmleaf-core.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+
+[features]
+# OAuth2 outbound: the JWKS pull + RFC 7662 introspection that feed the core's OAuth verifier. Enabling
+# it turns on the core's `oauth` feature; the binary enables this so the shipped binary has OAuth while
+# bare `cargo build -p llmleaf-control` stays lean.
+oauth = ["llmleaf-core/oauth"]

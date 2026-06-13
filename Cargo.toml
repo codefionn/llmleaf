@@ -1,0 +1,83 @@
+# llmleaf workspace.
+#
+# Crate boundaries enforce SOUL.md:
+#   - llmleaf-model     : the one internal canonical model (principles 3, 4). No dialect, no provider.
+#   - llmleaf-provider  : the extension boundary — Provider trait + registry (principle 2).
+#   - llmleaf-core      : the data plane. Depends on model + provider; mentions NO concrete provider.
+#   - llmleaf-providers : first-party compiled-in providers. NOT a dependency of core; wired by the binary.
+#   - llmleaf-pricing   : a sidecar crate — bundled pricing dataset + lookup.
+#   - llmleaf-control   : a sidecar crate — the outbound control client (pull/push/intercept). Owns all
+#                         outbound HTTP so the core stays HTTP-client-free (principle 2). Wired by the binary.
+#   - llmleaf           : the binary — load config, build the registry, spawn control tasks, serve.
+#   - llmleaf-web        : a SEPARATE component — the Leptos control-plane app for humans. Serves the
+#                         endpoints the core pulls (identity, verdicts), receives the usage it pushes,
+#                         and observes the core via its read-only admin GETs. The core never depends on
+#                         it; it has no backdoor into the core. NOT a dependency of any core crate.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+authors = ["Fionn Langhans <fionnlanghans@codefionn.eu>"]
+license = "LGPL-3.0-or-later"
+rust-version = "1.85"
+repository = "https://github.com/codefionn/llmleaf"
+
+[workspace.dependencies]
+llmleaf-model = { path = "crates/llmleaf-model" }
+llmleaf-provider = { path = "crates/llmleaf-provider" }
+llmleaf-core = { path = "crates/llmleaf-core" }
+llmleaf-providers = { path = "crates/llmleaf-providers" }
+llmleaf-pricing = { path = "crates/llmleaf-pricing" }
+llmleaf-control = { path = "crates/llmleaf-control" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+axum = { version = "0.8", features = ["multipart", "ws"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "multipart"] }
+# WebSocket client for first-party native realtime providers (e.g. OpenAI Realtime). Pinned to the
+# tungstenite version axum 0.8's `ws` feature uses so the workspace links one copy; rustls with webpki
+# roots matches reqwest's TLS backend (no native-tls/openssl pulled in).
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+async-trait = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "1"
+bytes = "1"
+# OpenRouter's `/audio/transcriptions` wants the audio base64-encoded in a JSON body (it rejects the
+# OpenAI multipart upload every other brand uses). Provider-edge only, never on the core hot path.
+base64 = "0.22"
+# CLI parsing for the example clients only (dev-dependency of the binary crate, never the release
+# binary). `derive` for the arg structs; `env` so each flag documents and falls back to its
+# `LLMLEAF_*` environment variable.
+clap = { version = "4", features = ["derive", "env"] }
+# Verifies consumer-key passwords against standard Unix/crypt(3) MCF hashes (bcrypt $2*$ as emitted
+# by `htpasswd -B`, plus $1$/$5$/$6$ shadow formats). Hot-path use is gated by a node-local
+# verification cache (see llmleaf-core::keys) so the slow KDF runs once per key, not per request.
+pwhash = "1"
+# JWT/JWKS validation for the optional OAuth2 resource-server surface (llmleaf-core `oauth` feature).
+# Pure crypto, no HTTP — signature verification must never be hand-rolled, so this is a justified dep,
+# gated off by default so the lean core stays lean (the shipped binary turns it on).
+jsonwebtoken = "9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Used by cargo-leptos to build the llmleaf-web hydration wasm bundle (size-optimised). Custom profiles
+# must live at the workspace root; the llmleaf-web manifest references this by name via
+# `lib-profile-release`. It has no effect on the core workspace crates.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
