@@ -333,10 +333,26 @@ fn message_to_anthropic(msg: &Message) -> Value {
             ContentPart::ImageUrl { url, .. } => {
                 json!({ "type": "image", "source": { "type": "url", "url": url } })
             }
+            // Reasoning blocks ride before the text/tool_use they precede in `content` (the canonical
+            // order Anthropic requires). The `signature` is replayed verbatim — without it Anthropic
+            // rejects the turn — and is omitted only when the block never carried one.
+            ContentPart::Thinking {
+                thinking,
+                signature,
+            } => match signature {
+                Some(sig) => {
+                    json!({ "type": "thinking", "thinking": thinking, "signature": sig })
+                }
+                None => json!({ "type": "thinking", "thinking": thinking }),
+            },
+            ContentPart::RedactedThinking { data } => {
+                json!({ "type": "redacted_thinking", "data": data })
+            }
         })
         .collect();
 
     // Assistant tool calls become `tool_use` blocks; arguments parse from the canonical JSON string.
+    // They are appended after `content`, so a thinking block in `content` precedes its `tool_use`.
     for call in &msg.tool_calls {
         let input: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
         blocks
@@ -439,6 +455,31 @@ fn anthropic_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
                         }
                     }
                 }
+                // Extended-thinking blocks precede text/tool_use in the response and must be replayed
+                // in that order, so emit them here as they appear. The `signature` follows the text so
+                // a collector reattaches it to the same block; it is opaque and replayed verbatim.
+                Some("thinking") => {
+                    if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::Thinking {
+                            index: 0,
+                            delta: text.to_string(),
+                        });
+                    }
+                    if let Some(sig) = block.get("signature").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::ThinkingSignature {
+                            index: 0,
+                            signature: sig.to_string(),
+                        });
+                    }
+                }
+                Some("redacted_thinking") => {
+                    if let Some(data) = block.get("data").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::RedactedThinking {
+                            index: 0,
+                            data: data.to_string(),
+                        });
+                    }
+                }
                 Some("tool_use") => {
                     let arguments = block.get("input").map(|v| v.to_string());
                     chunks.push(StreamChunk::ToolCall {
@@ -473,11 +514,23 @@ fn anthropic_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
             .get("output_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        // Anthropic reports cache hits/writes as siblings of `input_tokens` (which is the *uncached*
+        // input). Relayed straight through to the canonical counters — never folded into `prompt`.
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let cache_creation = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         chunks.push(StreamChunk::Usage(Usage {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
             cost_usd: None,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
         }));
     }
 
@@ -746,6 +799,88 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_thinking_signature_and_redacted() {
+        let resp = json!({
+            "id": "msg_3",
+            "model": "claude-opus-4-8",
+            "content": [
+                { "type": "thinking", "thinking": "step by step", "signature": "sig-xyz" },
+                { "type": "redacted_thinking", "data": "ENC" },
+                { "type": "text", "text": "answer" },
+                { "type": "tool_use", "id": "tu_2", "name": "f", "input": {} }
+            ],
+            "stop_reason": "tool_use",
+            "usage": { "input_tokens": 1, "output_tokens": 2 }
+        });
+        let chunks = anthropic_to_chunks(resp, "claude-opus-4-8");
+        // Reasoning chunks come first and in order: thinking text, its signature, then redacted.
+        assert!(
+            matches!(&chunks[1], StreamChunk::Thinking { delta, .. } if delta == "step by step")
+        );
+        assert!(
+            matches!(&chunks[2], StreamChunk::ThinkingSignature { signature, .. } if signature == "sig-xyz")
+        );
+        assert!(matches!(&chunks[3], StreamChunk::RedactedThinking { data, .. } if data == "ENC"));
+        assert!(matches!(&chunks[4], StreamChunk::Content { delta, .. } if delta == "answer"));
+        assert!(matches!(&chunks[5], StreamChunk::ToolCall { .. }));
+    }
+
+    #[test]
+    fn serializes_thinking_with_signature_before_tool_use() {
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentPart::Thinking {
+                    thinking: "reasoning".into(),
+                    signature: Some("sig-abc".into()),
+                },
+                ContentPart::Text {
+                    text: "calling tool".into(),
+                },
+            ],
+            tool_calls: vec![llmleaf_model::ToolCall {
+                id: "tu_1".into(),
+                name: "get_weather".into(),
+                arguments: "{\"city\":\"Paris\"}".into(),
+            }],
+            tool_call_id: None,
+            name: None,
+        };
+        let req = chat_req(vec![assistant], vec![]);
+        let wire = request_to_anthropic(&req, None);
+        let blocks = wire["messages"][0]["content"].as_array().unwrap();
+        // The on-tool-call case: thinking (with signature) leads, then text, then the tool_use it
+        // justifies — the exact order Anthropic requires to accept a continued thinking+tool turn.
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "reasoning");
+        assert_eq!(blocks[0]["signature"], "sig-abc");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[2]["type"], "tool_use");
+        assert_eq!(blocks[2]["id"], "tu_1");
+    }
+
+    #[test]
+    fn serializes_thinking_without_signature_omits_the_field() {
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::Thinking {
+                thinking: "bare".into(),
+                signature: None,
+            }],
+            tool_calls: vec![],
+            tool_call_id: None,
+            name: None,
+        };
+        let req = chat_req(vec![assistant], vec![]);
+        let wire = request_to_anthropic(&req, None);
+        let block = &wire["messages"][0]["content"][0];
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "bare");
+        assert!(block.get("signature").is_none());
     }
 
     #[test]

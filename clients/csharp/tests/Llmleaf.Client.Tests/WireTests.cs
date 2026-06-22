@@ -170,6 +170,137 @@ public sealed class WireTests
         Assert.Equal(0.0001, resp.Usage.CostUsd!.Value, 6);
     }
 
+    [Fact]
+    public async Task ChatResponse_DecodesCacheMetadataAndReasoning()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """
+            {"id":"r","object":"chat.completion","created":1,"model":"m",
+             "choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning":"let me think",
+               "reasoning_details":[
+                 {"type":"reasoning.text","text":"step","signature":"sig-1","index":0},
+                 {"type":"reasoning.encrypted","data":"opaque-blob"}]},"finish_reason":"stop"}],
+             "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
+               "prompt_tokens_details":{"cached_tokens":6},"cache_creation_tokens":4}}
+            """));
+        using var client = Client(server);
+
+        var resp = await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        });
+
+        // Cache accounting.
+        Assert.Equal(6u, resp.Usage!.PromptTokensDetails!.CachedTokens);
+        Assert.Equal(4u, resp.Usage.CacheCreationTokens);
+
+        // Reasoning: flat + structured (open text block, hidden encrypted block).
+        var msg = resp.Choices[0].Message;
+        Assert.Equal("let me think", msg.Reasoning);
+        Assert.Equal(2, msg.ReasoningDetails!.Count);
+        var open = msg.ReasoningDetails[0];
+        Assert.Equal("reasoning.text", open.Type);
+        Assert.Equal("step", open.Text);
+        Assert.Equal("sig-1", open.Signature);
+        Assert.False(open.IsHidden);
+        Assert.Equal("step", open.OpenText);
+        var hidden = msg.ReasoningDetails[1];
+        Assert.Equal("opaque-blob", hidden.Data);
+        Assert.True(hidden.IsHidden);
+        Assert.Null(hidden.OpenText);
+    }
+
+    [Fact]
+    public async Task ChatResponse_OmitsCacheMetadataWhenAbsent()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """
+            {"id":"r","object":"chat.completion","created":1,"model":"m",
+             "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+             "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+            """));
+        using var client = Client(server);
+
+        var resp = await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        });
+
+        Assert.Null(resp.Usage!.PromptTokensDetails);
+        Assert.Null(resp.Usage.CacheCreationTokens);
+        Assert.Null(resp.Choices[0].Message.Reasoning);
+        Assert.Null(resp.Choices[0].Message.ReasoningDetails);
+    }
+
+    [Fact]
+    public async Task ChatRequest_EchoesReasoningDetailsVerbatim()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}"""));
+        using var client = Client(server);
+
+        await client.CreateChatCompletionAsync(new ChatRequest
+        {
+            Model = "m",
+            Messages =
+            [
+                new ChatMessage
+                {
+                    Role = Role.Assistant,
+                    Content = "ok",
+                    Reasoning = "thought",
+                    ReasoningDetails =
+                    [
+                        new ReasoningDetail { Type = "reasoning.text", Text = "step", Signature = "sig-1", Index = 0 },
+                        new ReasoningDetail { Type = "reasoning.encrypted", Data = "opaque-blob" },
+                    ],
+                },
+            ],
+        });
+
+        var msg = Parse(server.LastRequest!.Body).GetProperty("messages")[0];
+        Assert.Equal("thought", msg.GetProperty("reasoning").GetString());
+        var details = msg.GetProperty("reasoning_details");
+        Assert.Equal(JsonValueKind.Array, details.ValueKind);
+        Assert.Equal("reasoning.text", details[0].GetProperty("type").GetString());
+        Assert.Equal("step", details[0].GetProperty("text").GetString());
+        Assert.Equal("sig-1", details[0].GetProperty("signature").GetString());
+        Assert.Equal(0u, details[0].GetProperty("index").GetUInt32());
+        Assert.Equal("reasoning.encrypted", details[1].GetProperty("type").GetString());
+        Assert.Equal("opaque-blob", details[1].GetProperty("data").GetString());
+        // Unset opaque fields are omitted, not emitted as null.
+        Assert.False(details[1].TryGetProperty("text", out _));
+        Assert.False(details[1].TryGetProperty("signature", out _));
+    }
+
+    [Fact]
+    public async Task ChatStream_DecodesIncrementalReasoning()
+    {
+        const string sse =
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"thin\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"thin\"}]}}]}\n\n" +
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"king\"}}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var server = new TestServer(_ => CannedResponse.Sse(sse));
+        using var client = Client(server);
+
+        var reasoning = "";
+        ReasoningDetail? firstDetail = null;
+        await foreach (var chunk in client.CreateChatCompletionStreamAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "hi")],
+        }))
+        {
+            var delta = chunk.Choices.Count > 0 ? chunk.Choices[0].Delta : null;
+            if (delta?.Reasoning is { } r) reasoning += r;
+            if (delta?.ReasoningDetails is { Count: > 0 } d) firstDetail ??= d[0];
+        }
+
+        Assert.Equal("thinking", reasoning);
+        Assert.NotNull(firstDetail);
+        Assert.Equal("reasoning.text", firstDetail!.Type);
+        Assert.Equal("thin", firstDetail.Text);
+    }
+
     // ---- chat: streaming -----------------------------------------------
 
     [Fact]

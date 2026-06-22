@@ -24,15 +24,20 @@ export {
   enumFromWire,
 } from "./enums.js";
 
+// Ergonomic accessor for the cached-prompt-tokens count on a Usage.
+export { cachedTokens } from "./types.js";
+
 // The public typed model.
 export type {
   Usage,
+  PromptTokensDetails,
   TextPart,
   ImageUrlPart,
   ContentPart,
   MessageContent,
   FunctionCall,
   ToolCall,
+  ReasoningDetail,
   ChatMessage,
   FunctionDef,
   ToolDef,

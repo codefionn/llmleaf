@@ -13,6 +13,44 @@ import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
 
 /**
+ * One structured reasoning ("thinking") block (OpenRouter `reasoning_details[]`). It expresses
+ * both *open* reasoning — visible text, optionally signed — and *hidden* reasoning — an
+ * encrypted/redacted blob the provider returns in place of the text. [type] is the wire
+ * discriminator and selects which field is set:
+ *
+ *  - `"reasoning.text"`    → [text] (+ optional [signature]) — **open** (visible reasoning)
+ *  - `"reasoning.summary"` → [summary]                        — **open** (a summarised view)
+ *  - `"reasoning.encrypted"` → [data]                         — **hidden** (redacted / opaque)
+ *
+ * [signature] and [data] are opaque and MUST be echoed back verbatim in the next request's
+ * `reasoning_details` to continue a signed/encrypted reasoning turn (the upstream rejects an
+ * altered or dropped block — e.g. before a tool call). Use [isHidden] / [openText] to branch
+ * without matching on the raw [type] string.
+ */
+@Serializable
+public data class ReasoningDetail(
+    @SerialName("type") val type: String,
+    @SerialName("text") val text: String? = null, // "reasoning.text"
+    @SerialName("summary") val summary: String? = null, // "reasoning.summary"
+    @SerialName("data") val data: String? = null, // "reasoning.encrypted" (hidden)
+    @SerialName("signature") val signature: String? = null, // opaque, replayed verbatim
+    @SerialName("id") val id: String? = null,
+    @SerialName("format") val format: String? = null, // e.g. "anthropic-claude-v1"
+    @SerialName("index") val index: Int? = null,
+) {
+    /** Whether this block is hidden (redacted / encrypted) rather than open visible reasoning. */
+    val isHidden: Boolean
+        get() = type == "reasoning.encrypted" || (data != null && text == null)
+
+    /**
+     * The visible reasoning text of an open block — its [text], falling back to its [summary].
+     * `null` for a hidden block.
+     */
+    val openText: String?
+        get() = text ?: summary
+}
+
+/**
  * A chat message. `content` is the string-or-parts union; `role` serialises to its lowercase
  * wire token. A message is valid with content, tool calls (assistant), or a tool result.
  */
@@ -23,6 +61,16 @@ public data class ChatMessage(
     @SerialName("name") val name: String? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCall> = emptyList(),
     @SerialName("tool_call_id") val toolCallId: String? = null,
+    /**
+     * Open reasoning text the assistant emitted (OpenRouter `reasoning`), if any. The flat,
+     * human-readable form; the structured [reasoningDetails] is the replay-safe one.
+     */
+    @SerialName("reasoning") val reasoning: String? = null,
+    /**
+     * Structured reasoning blocks (open and hidden, with signatures — see [ReasoningDetail]).
+     * Echo these back verbatim on the next request to preserve signed reasoning across a turn.
+     */
+    @SerialName("reasoning_details") val reasoningDetails: List<ReasoningDetail> = emptyList(),
 ) {
     public companion object {
         public fun system(text: String): ChatMessage =
@@ -182,6 +230,10 @@ public data class Delta(
     @SerialName("role") val role: Role? = null,
     @SerialName("content") val content: String? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCallDelta> = emptyList(),
+    /** Incremental open reasoning text, if any. */
+    @SerialName("reasoning") val reasoning: String? = null,
+    /** Incremental structured reasoning blocks (open / hidden — see [ReasoningDetail]). */
+    @SerialName("reasoning_details") val reasoningDetails: List<ReasoningDetail> = emptyList(),
 )
 
 @Serializable

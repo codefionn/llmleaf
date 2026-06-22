@@ -51,6 +51,8 @@ impl Provider for MockProvider {
                 completion_tokens: 3,
                 total_tokens: 7,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))

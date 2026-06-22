@@ -77,6 +77,8 @@ const CHAT_USAGE: Usage = Usage {
     completion_tokens: 7,
     total_tokens: 18,
     cost_usd: None,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
 };
 
 /// The canonical vector + usage a healthy embeddings response carries (the source of truth for both the
@@ -88,6 +90,8 @@ const EMBED_USAGE: Usage = Usage {
     completion_tokens: 0,
     total_tokens: 4,
     cost_usd: None,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
 };
 
 /// A canned, well-formed OpenAI-wire SSE chat stream: a start frame (id/model), one content delta, a

@@ -15,6 +15,12 @@ admin_token = "env:LLMLEAF_ADMIN_TOKEN"
 include_payloads = false
 # Seconds a node skips a provider after it fails a request (node-local HA — principle 9).
 fallback_cooldown_secs = 15
+# Upper bound (ms) on how long the hot path may WAIT for rate-limit capacity when every target on a
+# chain is over its limit (see [providers.limits] below). The engine first falls through the fallback
+# chain; only if all targets are saturated does it sleep until the soonest frees up, capped here, then
+# serve — returning 429 (with Retry-After) only if this elapses. `0` ⇒ never wait (fall through, then
+# 429 immediately). This is latency you opt into knowingly (principle 1: the hot path is sacred).
+rate_limit_max_wait_ms = 5000
 
 # --- Providers (back-end extensions). `kind` is resolved by the binary's factory, never the core. ---
 #
@@ -33,6 +39,25 @@ name = "openai-main"
 kind = "openai"
 credential = "env:OPENAI_API_KEY"
 settings = { organization = "org-xxxx" }
+# Node-local rate limits (optional) — flow control TOWARD this provider so a node never pushes it past
+# its published limits and eats 429s. This is the node-local HA family (principles 8 and 9), NOT per-key
+# usage accounting (that is the pulled [control.limits] verdicts, principle 5). Each dimension is
+# independently optional (omit ⇒ unlimited). MULTI-NODE: every node enforces its OWN slice with no
+# cross-node coordination, so divide a cluster-wide cap by the node count (or treat it as approximate) —
+# exactly like fallback_cooldown_secs. Over-limit behavior is governed by rate_limit_max_wait_ms above.
+[providers.limits]                 # provider-global: applies to EVERY request to this instance
+requests_per_min = 10000           # token bucket on request count (burst = this value)
+tokens_per_min   = 2000000         # token bucket on provider-reported tokens (debited as usage arrives)
+max_concurrent   = 200             # max simultaneous in-flight requests (a semaphore)
+# Per-model overrides, keyed by the UPSTREAM model id (what this provider sees — a route target's
+# `model`, not the consumer's logical model). A request must pass BOTH the global limits above AND the
+# matching per-model entry; the stricter binds. A model absent here is governed by the global limit alone.
+[providers.model_limits."gpt-4o"]
+requests_per_min = 5000
+tokens_per_min   = 800000
+max_concurrent   = 100
+[providers.model_limits."gpt-4o-mini"]
+requests_per_min = 8000            # only an RPM cap; tokens/min and concurrency inherit no per-model limit
 
 [[providers]]
 name = "anthropic-main"

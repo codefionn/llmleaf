@@ -25,6 +25,34 @@ export interface Usage {
   totalTokens: number;
   /** llmleaf addition; absent when the model has no known price. */
   costUsd?: number;
+  /**
+   * Prompt-cache hit accounting (OpenAI `usage.prompt_tokens_details`). Absent when the
+   * upstream reported no caching; {@link cachedTokens} flattens it to a plain count.
+   */
+  promptTokensDetails?: PromptTokensDetails;
+  /**
+   * Input tokens written to the provider's prompt cache this request — a cache *write*
+   * (creation). An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do not);
+   * absent when there were none.
+   */
+  cacheCreationTokens?: number;
+}
+
+/**
+ * Breakdown of {@link Usage.promptTokens}. Today only the cache-read (hit) share is
+ * surfaced — the count of prompt tokens served from the provider's cache rather than
+ * processed fresh.
+ */
+export interface PromptTokensDetails {
+  cachedTokens?: number;
+}
+
+/**
+ * Prompt tokens served from the provider's cache this request — a cache *read* (hit).
+ * `0` when the upstream reported no caching.
+ */
+export function cachedTokens(usage: Usage): number {
+  return usage.promptTokensDetails?.cachedTokens ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +91,37 @@ export interface ToolCall {
   function: FunctionCall;
 }
 
+/**
+ * One structured reasoning ("thinking") block (OpenRouter `reasoning_details[]`). It
+ * expresses both *open* reasoning — visible text, optionally signed — and *hidden*
+ * reasoning — an encrypted/redacted blob the provider returns in place of the text.
+ * `type` is the wire discriminator and selects which field is set:
+ *
+ * - `"reasoning.text"` → {@link text} (+ optional {@link signature}) — **open** (visible)
+ * - `"reasoning.summary"` → {@link summary} — **open** (a summarised view)
+ * - `"reasoning.encrypted"` → {@link data} — **hidden** (redacted / opaque)
+ *
+ * {@link signature} and {@link data} are opaque to the client and MUST be echoed back
+ * verbatim in the next request's `reasoning_details` to continue a signed/encrypted
+ * reasoning turn (the upstream rejects an altered or dropped block — e.g. before a tool
+ * call). {@link format} tags the provider encoding when known.
+ */
+export interface ReasoningDetail {
+  type: string;
+  /** set for `"reasoning.text"` */
+  text?: string;
+  /** set for `"reasoning.summary"` */
+  summary?: string;
+  /** set for `"reasoning.encrypted"` (hidden) */
+  data?: string;
+  /** opaque, replayed verbatim */
+  signature?: string;
+  id?: string;
+  /** e.g. "anthropic-claude-v1" */
+  format?: string;
+  index?: number;
+}
+
 export interface ChatMessage {
   role: Role;
   content?: MessageContent;
@@ -70,6 +129,17 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   /** set when role == TOOL */
   toolCallId?: string;
+  /**
+   * Open reasoning text the assistant emitted (OpenRouter `reasoning`), if any. The flat,
+   * human-readable form; {@link reasoningDetails} is the structured, replay-safe one.
+   */
+  reasoning?: string;
+  /**
+   * Structured reasoning blocks (open and hidden, with signatures — see
+   * {@link ReasoningDetail}). Echo these back verbatim on the next request to preserve
+   * signed reasoning across a turn.
+   */
+  reasoningDetails?: ReasoningDetail[];
 }
 
 export interface FunctionDef {
@@ -161,6 +231,10 @@ export interface Delta {
   /** incremental text */
   content?: string;
   toolCalls?: ToolCallDelta[];
+  /** incremental open reasoning text, if any */
+  reasoning?: string;
+  /** incremental structured reasoning blocks (open / hidden — see {@link ReasoningDetail}). */
+  reasoningDetails?: ReasoningDetail[];
 }
 
 export interface ChunkChoice {

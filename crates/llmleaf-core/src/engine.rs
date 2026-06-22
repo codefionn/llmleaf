@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_stream::stream;
 use futures::StreamExt;
@@ -26,10 +27,12 @@ use llmleaf_pricing::Pricing;
 use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry, RealtimeParams};
 use serde_json::Value;
 use thiserror::Error;
+use tokio::time::Instant;
 
 use crate::batch_id;
 use crate::config::{Config, InterceptPhase, ProviderConfig};
 use crate::events::{Event, EventBus};
+use crate::ratelimit::{RateGuard, RateLimiter};
 use crate::route::{HealthTable, Router};
 
 #[derive(Debug, Error)]
@@ -41,6 +44,11 @@ pub enum EngineError {
     /// Every target in the chain was down or failed to connect.
     #[error("all targets failed: {0}")]
     AllTargetsFailed(ModelError),
+    /// Every target on the chain was over its node-local rate limit, and the bounded wait for capacity
+    /// (`server.rate_limit_max_wait_ms`) elapsed without a slot freeing up. `retry_after_secs` is the
+    /// soonest estimated time capacity returns — surfaced to the consumer as a `Retry-After` header.
+    #[error("rate limited; retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
     /// A sync interceptor blocked this request in-flight (principle 1: the one sanctioned hot-path
     /// insertion). Carries the reason for the consumer.
     #[error("blocked by interceptor: {0}")]
@@ -97,6 +105,13 @@ struct Dispatched<T> {
     request_id: String,
     key: String,
     logical_model: String,
+    /// The config name of the provider instance that served, and the upstream model id it served as —
+    /// what the tokens/min rate-limit debit keys on (per-model buckets are keyed by *upstream* model).
+    provider: String,
+    upstream_model: String,
+    /// The rate-limit admission guard (concurrency permits). Kept alive for the life of the request:
+    /// moved into the instrumented stream for streaming modalities, held until return for batch ones.
+    guard: RateGuard,
 }
 
 /// A native-realtime-capable target the realtime edge can drive directly (the analogue, for sessions,
@@ -121,6 +136,11 @@ pub struct Engine {
     events: EventBus,
     pricing: Arc<Pricing>,
     health: HealthTable,
+    /// Node-local rate limiter (per-provider + per-model flow control). Shared into instrumented streams
+    /// behind an `Arc` so the tokens/min debit can fire as usage is observed (principles 1, 8, 9).
+    rate: Arc<RateLimiter>,
+    /// Upper bound on the hot-path wait for rate-limit capacity when every target is saturated.
+    rate_max_wait: Duration,
     include_payloads: bool,
     cooldown_secs: u64,
     /// The optional in-flight sync interceptor (`[control.intercept]`), wired by the binary. `None` ⇒
@@ -148,6 +168,8 @@ impl Engine {
             events,
             pricing,
             health: HealthTable::new(),
+            rate: Arc::new(RateLimiter::new(&config.providers)),
+            rate_max_wait: Duration::from_millis(config.server.rate_limit_max_wait_ms),
             include_payloads: config.server.include_payloads,
             cooldown_secs: config.server.fallback_cooldown_secs,
             interceptor,
@@ -194,6 +216,11 @@ impl Engine {
 
     pub fn health(&self) -> &HealthTable {
         &self.health
+    }
+
+    /// The node-local rate limiter, for read-only observability surfaces.
+    pub fn rate(&self) -> &RateLimiter {
+        &self.rate
     }
 
     /// Read-only access to the bundled model catalog (modality + limits + rates) for the model-listing
@@ -313,6 +340,9 @@ impl Engine {
             dispatched.request_id,
             dispatched.key,
             dispatched.logical_model,
+            dispatched.provider,
+            dispatched.upstream_model,
+            dispatched.guard,
         ))
     }
 
@@ -348,9 +378,21 @@ impl Engine {
             request_id,
             key,
             logical_model,
+            provider,
+            upstream_model,
+            guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
+        // Debit the observed tokens against this provider/model's tokens/min bucket (the cost was unknown
+        // at admission); then release the concurrency permit by dropping the guard.
+        self.rate.debit_tokens(
+            &provider,
+            &upstream_model,
+            resp.usage.total_tokens,
+            Instant::now(),
+        );
         self.emit_batch_tail(&request_id, &key, &logical_model, resp.usage);
+        drop(guard);
         Ok(resp)
     }
 
@@ -385,6 +427,9 @@ impl Engine {
             dispatched.request_id,
             dispatched.key,
             dispatched.logical_model,
+            dispatched.provider,
+            dispatched.upstream_model,
+            dispatched.guard,
         ))
     }
 
@@ -450,9 +495,19 @@ impl Engine {
             request_id,
             key,
             logical_model,
+            provider,
+            upstream_model,
+            guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
+        self.rate.debit_tokens(
+            &provider,
+            &upstream_model,
+            resp.usage.total_tokens,
+            Instant::now(),
+        );
         self.emit_batch_tail(&request_id, &key, &logical_model, resp.usage);
+        drop(guard);
         Ok(resp)
     }
 
@@ -690,81 +745,136 @@ impl Engine {
             request: payload,
         });
 
-        let mut last_err: Option<ModelError> = None;
-        // Two passes over the chain. The first honors node-local cooldown: the ordinary switchover
-        // that routes away from a provider this node currently considers degraded (principle 8). The
-        // second runs ONLY when the first attempted nothing — i.e. every target is cooling down — and
-        // then tries the chain anyway: health is a *preference*, not a veto, so a stale cooldown must
-        // never black out the only provider(s) we have (the common case for a prefix or single-target
-        // route). A real failure still re-penalizes below; a recovered provider clears and serves.
-        // Splitting it this way keeps the happy path at one health read per attempted target
-        // (principle 1) rather than re-scanning the whole chain up front.
-        for honor_cooldown in [true, false] {
-            for target in targets.iter() {
-                if honor_cooldown && self.health.is_down(&target.provider, now) {
-                    continue;
+        // Walk the chain, now also honoring node-local rate limits. An over-limit target is skipped
+        // exactly like a cooled-down one (fall toward availability, principle 8); only when *every*
+        // target is over its limit — and nothing actually failed — do we wait, bounded by
+        // `rate_max_wait`, for the soonest target to free up, then retry the whole walk. A real
+        // connect/transport failure still short-circuits to `AllTargetsFailed` (waiting cannot help it).
+        let mut wait_budget = self.rate_max_wait;
+        loop {
+            // Fresh per walk: a monotonic clock for the rate buckets (advances across each wait), and the
+            // soonest moment any rate-limited target could admit.
+            let now_instant = Instant::now();
+            let mut last_err: Option<ModelError> = None;
+            let mut soonest_wait: Option<Duration> = None;
+
+            // Two passes, unchanged in spirit (principle 1: one health read per attempted target). The
+            // first honors cooldown; the second runs only when the first attempted nothing — every target
+            // cooling down or rate-limited — so a stale cooldown never blacks out the only provider we
+            // have. Rate-limited targets count as "attempted nothing", so a fully saturated chain reaches
+            // the wait path below rather than the fail-open retry quietly consuming the budget.
+            for honor_cooldown in [true, false] {
+                for target in targets.iter() {
+                    if honor_cooldown && self.health.is_down(&target.provider, now) {
+                        continue;
+                    }
+                    let Some(provider) = self.registry.get(&target.provider) else {
+                        last_err = Some(ModelError::Unavailable(format!(
+                            "provider '{}' is not registered",
+                            target.provider
+                        )));
+                        continue;
+                    };
+
+                    let upstream_model = target
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| logical_model.clone());
+
+                    // Node-local admission: take a request token + concurrency permit and check the
+                    // tokens/min floor (principle 9 — a fast local decision, never a round-trip). Over
+                    // limit ⇒ skip this target and remember the soonest moment it could admit, just like a
+                    // cooldown skip. The guard holds the concurrency permits until the request's stream ends.
+                    let guard =
+                        match self
+                            .rate
+                            .try_admit(&target.provider, &upstream_model, now_instant)
+                        {
+                            Ok(g) => g,
+                            Err(wait) => {
+                                soonest_wait = Some(soonest_wait.map_or(wait, |w| w.min(wait)));
+                                continue;
+                            }
+                        };
+
+                    let cx = self.build_cx(&target.provider, &request_id);
+
+                    match op(provider, cx, upstream_model.clone()).await {
+                        Ok(value) => {
+                            self.health.clear(&target.provider);
+                            self.events.emit(Event::RequestRouted {
+                                id: request_id.clone(),
+                                provider: target.provider.clone(),
+                                upstream_model: upstream_model.clone(),
+                            });
+                            return Ok(Dispatched {
+                                value,
+                                request_id,
+                                key,
+                                logical_model,
+                                provider: target.provider.clone(),
+                                upstream_model,
+                                guard,
+                            });
+                        }
+                        // The provider lacks this modality: not a failure, not a health signal. Release the
+                        // admission guard and try the next link without penalizing.
+                        Err(e @ ModelError::Unsupported(_)) => {
+                            drop(guard);
+                            last_err = Some(e);
+                        }
+                        Err(e) => {
+                            // Node-local switchover: release the permit, penalize, try the next link.
+                            drop(guard);
+                            self.health
+                                .penalize(&target.provider, now, self.cooldown_secs);
+                            self.events.emit(Event::ProviderHealth {
+                                provider: target.provider.clone(),
+                                status: "degraded".to_string(),
+                            });
+                            last_err = Some(e);
+                        }
+                    }
                 }
-                let Some(provider) = self.registry.get(&target.provider) else {
-                    last_err = Some(ModelError::Unavailable(format!(
-                        "provider '{}' is not registered",
-                        target.provider
-                    )));
-                    continue;
-                };
+                // The cooldown-honoring pass attempted at least one target — its outcome stands. Only when
+                // it attempted nothing do we fall through to the fail-open pass.
+                if last_err.is_some() {
+                    break;
+                }
+            }
 
-                let upstream_model = target
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| logical_model.clone());
-                let cx = self.build_cx(&target.provider, &request_id);
-
-                match op(provider, cx, upstream_model.clone()).await {
-                    Ok(value) => {
-                        self.health.clear(&target.provider);
-                        self.events.emit(Event::RequestRouted {
+            // Pure rate-limit saturation: nothing failed, but every target was over its limit. Wait
+            // (bounded) for the soonest target to free up, then retry; a single `sleep`, never a spin.
+            // The wait is the operator's opted-in latency (principle 1), capped by `rate_max_wait` —
+            // exhaust it (or `rate_limit_max_wait_ms = 0`) and the consumer gets a `429`. `soonest_wait`
+            // is only ever `Some` when a configured limit threw a target back (an unconfigured limiter
+            // returns `Ok` from every `try_admit`), so this branch — and `rate_max_wait`'s non-zero
+            // default — is dead weight unless `[providers.limits]`/`model_limits` are set.
+            if last_err.is_none() {
+                if let Some(wait) = soonest_wait {
+                    let nap = wait.min(wait_budget);
+                    if nap.is_zero() {
+                        let retry_after_secs = wait.as_secs().max(1);
+                        self.events.emit(Event::RequestFailed {
                             id: request_id.clone(),
-                            provider: target.provider.clone(),
-                            upstream_model: upstream_model.clone(),
+                            error: format!("rate limited; retry after {retry_after_secs}s"),
                         });
-                        return Ok(Dispatched {
-                            value,
-                            request_id,
-                            key,
-                            logical_model,
-                        });
+                        return Err(EngineError::RateLimited { retry_after_secs });
                     }
-                    // The provider lacks this modality: not a failure, not a health signal. Try the next
-                    // link without penalizing — the chain finds the next provider that *does* support it.
-                    Err(e @ ModelError::Unsupported(_)) => {
-                        last_err = Some(e);
-                    }
-                    Err(e) => {
-                        // Node-local switchover: penalize and try the next link in the chain.
-                        self.health
-                            .penalize(&target.provider, now, self.cooldown_secs);
-                        self.events.emit(Event::ProviderHealth {
-                            provider: target.provider.clone(),
-                            status: "degraded".to_string(),
-                        });
-                        last_err = Some(e);
-                    }
+                    tokio::time::sleep(nap).await;
+                    wait_budget -= nap;
+                    continue;
                 }
             }
-            // The cooldown-honoring pass attempted at least one target — its outcome stands. Only when
-            // it attempted nothing (every target was cooling down) do we fall through to the fail-open
-            // pass; otherwise stop, so a fail-open retry never piles onto a chain that already ran.
-            if last_err.is_some() {
-                break;
-            }
-        }
 
-        let err =
-            last_err.unwrap_or_else(|| ModelError::Unavailable("no eligible targets".to_string()));
-        self.events.emit(Event::RequestFailed {
-            id: request_id,
-            error: err.to_string(),
-        });
-        Err(EngineError::AllTargetsFailed(err))
+            let err = last_err
+                .unwrap_or_else(|| ModelError::Unavailable("no eligible targets".to_string()));
+            self.events.emit(Event::RequestFailed {
+                id: request_id,
+                error: err.to_string(),
+            });
+            return Err(EngineError::AllTargetsFailed(err));
+        }
     }
 
     /// Serialize a request for the lifecycle event, but only when the operator opted into payloads.
@@ -812,22 +922,35 @@ impl Engine {
     /// Wrap a provider stream so usage/lifecycle events flow out the bus, and so provider-reported
     /// usage is priced from the bundled dataset (a lookup + multiply — never a fetch). The core does
     /// not count tokens; it relays what the provider emits (principle 5).
+    // The instrumented-stream context is irreducible: the lifecycle ids (request/key/logical model), the
+    // rate-debit keys (provider/upstream model), and the admission guard each flow into the stream.
+    #[allow(clippy::too_many_arguments)]
     fn instrument(
         &self,
         inner: ResponseStream,
         request_id: String,
         key: String,
         model: String,
+        provider: String,
+        upstream_model: String,
+        guard: RateGuard,
     ) -> ResponseStream {
         let events = self.events.clone();
         let pricing = self.pricing.clone();
+        let rate = self.rate.clone();
         Box::pin(stream! {
+            // Hold the concurrency permit for the life of the stream; the generator dropping (normal end,
+            // error, or client disconnect) releases it.
+            let _guard = guard;
             let mut inner = inner;
             let mut finish: Option<FinishReason> = None;
             while let Some(item) = inner.next().await {
                 match item {
                     Ok(StreamChunk::Usage(u)) => {
                         let priced = pricing.price(&model, u);
+                        // Debit observed tokens against this provider/model's tokens/min bucket (the cost
+                        // was unknown at admission).
+                        rate.debit_tokens(&provider, &upstream_model, priced.total_tokens, Instant::now());
                         events.emit(Event::Usage {
                             id: request_id.clone(),
                             key: key.clone(),
@@ -858,21 +981,28 @@ impl Engine {
     /// The audio analogue of [`Self::instrument`]: wrap a provider [`AudioStream`] so usage is priced
     /// and usage/lifecycle events flow as audio bytes pass. The core does not measure audio; it relays
     /// what the provider emits (principle 5).
+    #[allow(clippy::too_many_arguments)]
     fn instrument_audio(
         &self,
         inner: AudioStream,
         request_id: String,
         key: String,
         model: String,
+        provider: String,
+        upstream_model: String,
+        guard: RateGuard,
     ) -> AudioStream {
         let events = self.events.clone();
         let pricing = self.pricing.clone();
+        let rate = self.rate.clone();
         Box::pin(stream! {
+            let _guard = guard;
             let mut inner = inner;
             while let Some(item) = inner.next().await {
                 match item {
                     Ok(AudioChunk::Usage(u)) => {
                         let priced = pricing.price(&model, u);
+                        rate.debit_tokens(&provider, &upstream_model, priced.total_tokens, Instant::now());
                         events.emit(Event::Usage {
                             id: request_id.clone(),
                             key: key.clone(),
@@ -900,7 +1030,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{RouteConfig, ServerConfig, Target};
+    use crate::config::{RateLimitConfig, RouteConfig, ServerConfig, Target};
     use async_trait::async_trait;
     use llmleaf_model::{collect, Message, Role, StreamChunk, Usage};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -944,6 +1074,8 @@ mod tests {
                     completion_tokens: 1,
                     total_tokens: 2,
                     cost_usd: None,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                 })),
             ];
             Ok(Box::pin(futures::stream::iter(chunks)))
@@ -979,6 +1111,8 @@ mod tests {
                     credential: None,
                     prefix: None,
                     settings: Default::default(),
+                    limits: None,
+                    model_limits: Default::default(),
                 })
                 .collect(),
             routes: vec![RouteConfig {
@@ -1095,5 +1229,148 @@ mod tests {
     async fn realtime_none_when_no_native_capable_target() {
         let engine = engine_with(&[("p", false, false)]);
         assert!(engine.realtime_target("solo-model", "r1", 110).is_none());
+    }
+
+    // ---- Rate limiting ----------------------------------------------------------------------------
+
+    fn rl(rpm: Option<u64>, tpm: Option<u64>, conc: Option<u32>) -> RateLimitConfig {
+        RateLimitConfig {
+            requests_per_min: rpm,
+            tokens_per_min: tpm,
+            max_concurrent: conc,
+        }
+    }
+
+    /// Build an engine routing `solo-model` through the given targets in order, each with optional node-
+    /// local limits and every provider healthy. `max_wait_ms` is the bounded hot-path wait for capacity.
+    /// Each target's upstream model equals its name, so `resp.model` identifies which target served.
+    fn rate_limited_engine(
+        targets: &[(&str, Option<RateLimitConfig>)],
+        max_wait_ms: u64,
+    ) -> Engine {
+        let mut registry = ProviderRegistry::new();
+        for (name, _) in targets {
+            registry.register(
+                *name,
+                Arc::new(FlakyProvider {
+                    name: (*name).into(),
+                    down: AtomicBool::new(false),
+                    realtime: false,
+                }),
+            );
+        }
+        let config = Config {
+            server: ServerConfig {
+                fallback_cooldown_secs: 30,
+                rate_limit_max_wait_ms: max_wait_ms,
+                ..Default::default()
+            },
+            providers: targets
+                .iter()
+                .map(|(name, limits)| ProviderConfig {
+                    name: (*name).into(),
+                    kind: "test".into(),
+                    endpoint: None,
+                    credential: None,
+                    prefix: None,
+                    settings: Default::default(),
+                    limits: limits.clone(),
+                    model_limits: Default::default(),
+                })
+                .collect(),
+            routes: vec![RouteConfig {
+                model: "solo-model".into(),
+                targets: targets
+                    .iter()
+                    .map(|(name, _)| Target {
+                        provider: (*name).into(),
+                        model: Some((*name).into()),
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        };
+        Engine::new(
+            &config,
+            Arc::new(registry),
+            EventBus::new(16),
+            Arc::new(Pricing::bundled().expect("bundled prices")),
+            None,
+        )
+    }
+
+    // An over-limit target is skipped exactly like a cooled-down one: a permanently saturated primary
+    // (max_concurrent = 0 ⇒ no permit ever) falls through to the next, healthy target (principle 8).
+    #[tokio::test]
+    async fn rate_limited_target_falls_through_to_next() {
+        let engine = rate_limited_engine(
+            &[("limited", Some(rl(None, None, Some(0)))), ("good", None)],
+            5000,
+        );
+        let stream = engine
+            .run(chat_req(), "k".into(), "r1".into(), 0)
+            .await
+            .expect("falls through to the healthy target");
+        let resp = collect(stream).await.expect("stream completes");
+        assert_eq!(resp.model, "good", "the rate-limited primary was skipped");
+    }
+
+    // When the *only* target is saturated and the wait budget is zero, the consumer gets a `RateLimited`
+    // (429) rather than a hang or a 502 — fall through, then reject.
+    #[tokio::test]
+    async fn all_saturated_with_zero_wait_yields_rate_limited() {
+        let engine = rate_limited_engine(&[("limited", Some(rl(None, None, Some(0))))], 0);
+        let err = match engine.run(chat_req(), "k".into(), "r1".into(), 0).await {
+            Ok(_) => panic!("a fully saturated chain with no wait budget must reject"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, EngineError::RateLimited { retry_after_secs } if retry_after_secs >= 1),
+            "got {err:?}"
+        );
+    }
+
+    // With a positive wait budget the engine waits for token-bucket capacity to refill, then serves —
+    // the over-limit behavior the user chose. Paused virtual time auto-advances across the engine's
+    // internal `sleep`, so this is deterministic.
+    #[tokio::test(start_paused = true)]
+    async fn waits_for_capacity_then_serves() {
+        // 60 requests/min = 1/sec, burst 60. Drain the burst, then a fresh request must wait ~1s.
+        let engine = rate_limited_engine(&[("p", Some(rl(Some(60), None, None)))], 5000);
+        for _ in 0..60 {
+            engine
+                .rate()
+                .try_admit("p", "p", Instant::now())
+                .expect("drain the burst");
+        }
+        // The bucket is empty; this request waits for one token to refill (~1s < 5s budget) then serves.
+        let stream = engine
+            .run(chat_req(), "k".into(), "r1".into(), 0)
+            .await
+            .expect("waited for capacity, then served");
+        let resp = collect(stream).await.expect("stream completes");
+        assert_eq!(resp.model, "p");
+    }
+
+    // A concurrency permit is held for the life of the response stream and released when it ends, so a
+    // second request is admitted only after the first stream is consumed.
+    #[tokio::test]
+    async fn concurrency_permit_released_after_stream_ends() {
+        let engine = rate_limited_engine(&[("p", Some(rl(None, None, Some(1))))], 0);
+        let s1 = engine
+            .run(chat_req(), "k".into(), "r1".into(), 0)
+            .await
+            .expect("first request takes the only permit");
+        // While the first stream is live, the single permit is in use — a fresh admission is refused.
+        assert!(
+            engine.rate().try_admit("p", "p", Instant::now()).is_err(),
+            "the only permit is held by the in-flight stream"
+        );
+        // Draining the stream to completion drops its guard and releases the permit.
+        collect(s1).await.expect("stream completes");
+        assert!(
+            engine.rate().try_admit("p", "p", Instant::now()).is_ok(),
+            "the permit was released when the stream ended"
+        );
     }
 }

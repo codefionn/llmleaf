@@ -33,6 +33,7 @@
     "gen": "./scripts/gen.sh",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
     "example": "tsx examples/basic.ts"
   },
   "dependencies": {

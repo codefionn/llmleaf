@@ -62,6 +62,8 @@ impl Provider for SimProvider {
                 completion_tokens: 2,
                 total_tokens: 5,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -160,6 +162,8 @@ fn build_config(topo: &Topology) -> Config {
             credential: None,
             prefix: None,
             settings: Default::default(),
+            limits: None,
+            model_limits: Default::default(),
         })
         .collect();
 
@@ -185,6 +189,7 @@ fn build_config(topo: &Topology) -> Config {
             event_buffer: 8192,
             include_payloads: false,
             fallback_cooldown_secs: topo.cooldown_secs,
+            ..Default::default()
         },
         providers,
         routes,

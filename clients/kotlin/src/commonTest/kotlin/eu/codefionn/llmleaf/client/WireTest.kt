@@ -3,6 +3,7 @@ package eu.codefionn.llmleaf.client
 import eu.codefionn.llmleaf.client.model.ChatMessage
 import eu.codefionn.llmleaf.client.model.ChatRequest
 import eu.codefionn.llmleaf.client.model.MessageContent
+import eu.codefionn.llmleaf.client.model.ReasoningDetail
 import eu.codefionn.llmleaf.client.model.Role
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -159,6 +161,99 @@ class WireTest {
         )
         assertEquals(listOf(1.0f, 2.0f), resp.data.single().embedding)
         client.close()
+    }
+
+    @Test
+    fun reasoningAndCachedTokensRoundTrip() = runTest {
+        // Response carries flat `reasoning`, an OPEN signed text block and a HIDDEN encrypted
+        // block in `reasoning_details`, plus prompt-cache hit (`prompt_tokens_details.cached_tokens`)
+        // and write (`cache_creation_tokens`) accounting.
+        val engine = MockEngine {
+            respond(
+                content = """
+                    {"id":"c1","object":"chat.completion","created":1,"model":"m",
+                     "choices":[{"index":0,"message":{"role":"assistant","content":"hi",
+                       "reasoning":"let me think",
+                       "reasoning_details":[
+                         {"type":"reasoning.text","text":"step one","signature":"sig-abc","index":0},
+                         {"type":"reasoning.encrypted","data":"OPAQUE==","format":"anthropic-claude-v1","index":1}
+                       ]},
+                       "finish_reason":"stop"}],
+                     "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
+                       "prompt_tokens_details":{"cached_tokens":7},"cache_creation_tokens":3}}
+                """.trimIndent(),
+                status = HttpStatusCode.OK,
+                headers = jsonHeaders,
+            )
+        }
+        val client = LlmleafClient("https://gw.example.com", "test", engine)
+        val resp = client.chat(ChatRequest("m", listOf(ChatMessage.user("hi"))))
+        val msg = resp.choices.single().message
+        assertEquals("let me think", msg.reasoning)
+        assertEquals(2, msg.reasoningDetails.size)
+
+        val open = msg.reasoningDetails[0]
+        assertEquals("reasoning.text", open.type)
+        assertEquals("step one", open.text)
+        assertEquals("sig-abc", open.signature)
+        assertFalse(open.isHidden)
+        assertEquals("step one", open.openText)
+
+        val hidden = msg.reasoningDetails[1]
+        assertEquals("reasoning.encrypted", hidden.type)
+        assertEquals("OPAQUE==", hidden.data)
+        assertEquals("anthropic-claude-v1", hidden.format)
+        assertTrue(hidden.isHidden)
+        assertNull(hidden.openText)
+
+        // Usage cache accounting.
+        assertEquals(7, resp.usage!!.cachedTokens)
+        assertEquals(7, resp.usage!!.promptTokensDetails!!.cachedTokens)
+        assertEquals(3, resp.usage!!.cacheWrites)
+        assertEquals(3, resp.usage!!.cacheCreationTokens)
+        client.close()
+    }
+
+    @Test
+    fun assistantReasoningDetailsSerialiseOnRequest() = runTest {
+        // Echoing a prior assistant turn back: `reasoning_details` (with the opaque signature/data
+        // round-tripped verbatim) must serialise under the snake_case wire keys; an empty list is
+        // omitted entirely.
+        val priorTurn = ChatMessage(
+            role = Role.ASSISTANT,
+            content = MessageContent.text("done"),
+            reasoning = "because",
+            reasoningDetails = listOf(
+                ReasoningDetail(type = "reasoning.text", text = "step one", signature = "sig-abc"),
+                ReasoningDetail(type = "reasoning.encrypted", data = "OPAQUE=="),
+            ),
+        )
+        val req = ChatRequest(
+            model = "m",
+            messages = listOf(ChatMessage.user("hi"), priorTurn, ChatMessage.user("continue")),
+        )
+        val body = Json.parseToJsonElement(
+            LenientJson.encodeToString(ChatRequest.serializer(), req),
+        ).jsonObject
+        val messages = body["messages"] as JsonArray
+
+        val assistant = messages[1].jsonObject
+        assertEquals("because", assistant["reasoning"]!!.jsonPrimitive.content)
+        val details = assistant["reasoning_details"] as JsonArray
+        assertEquals(2, details.size)
+        val first = details[0].jsonObject
+        assertEquals("reasoning.text", first["type"]!!.jsonPrimitive.content)
+        assertEquals("sig-abc", first["signature"]!!.jsonPrimitive.content)
+        // unset optional fields stay off the wire.
+        assertNull(first["data"])
+        assertNull(first["summary"])
+        val second = details[1].jsonObject
+        assertEquals("OPAQUE==", second["data"]!!.jsonPrimitive.content)
+
+        // a plain user message carries neither key (empty list / null are omitted).
+        val user = messages[0].jsonObject
+        assertNull(user["reasoning"])
+        assertNull(user["reasoning_details"])
     }
 
     @Test

@@ -35,12 +35,38 @@ const std = @import("std");
 // Common
 // ---------------------------------------------------------------------------
 
+/// Breakdown of `Usage.prompt_tokens`. Today only the cache-read (hit) share is surfaced —
+/// the count of prompt tokens served from the provider's cache rather than processed fresh.
+pub const PromptTokensDetails = struct {
+    cached_tokens: ?u32 = null,
+};
+
 /// Token accounting echoed on every response. `cost_usd` is an llmleaf addition.
 pub const Usage = struct {
     prompt_tokens: u32 = 0,
     completion_tokens: u32 = 0,
     total_tokens: u32 = 0,
     cost_usd: ?f64 = null,
+    /// Prompt-cache hit accounting (OpenAI `usage.prompt_tokens_details`). Absent when the
+    /// upstream reported no caching; `cachedTokens` flattens it to a plain count.
+    prompt_tokens_details: ?PromptTokensDetails = null,
+    /// Input tokens written to the provider's prompt cache this request — a cache *write*
+    /// (creation). An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do not);
+    /// absent when there were none.
+    cache_creation_tokens: ?u32 = null,
+
+    /// Prompt tokens served from the provider's cache this request — a cache *read* (hit).
+    /// `0` when the upstream reported no caching.
+    pub fn cachedTokens(self: Usage) u32 {
+        const d = self.prompt_tokens_details orelse return 0;
+        return d.cached_tokens orelse 0;
+    }
+
+    /// Input tokens written to the provider's cache this request — a cache *write* (creation).
+    /// `0` when there were none (or the provider does not report writes).
+    pub fn cacheWrites(self: Usage) u32 {
+        return self.cache_creation_tokens orelse 0;
+    }
 };
 
 /// Canonical error envelope:  {"error":{"message":...}}.
@@ -127,12 +153,51 @@ pub const ToolCallDelta = struct {
     function: ?FunctionCallDelta = null,
 };
 
+/// One structured reasoning ("thinking") block (OpenRouter `reasoning_details[]`). It
+/// expresses both *open* reasoning — visible text, optionally signed — and *hidden*
+/// reasoning — an encrypted/redacted blob the provider returns in place of the text.
+/// `type` is the wire discriminator:
+///   "reasoning.text"      -> text (+ optional signature)  — OPEN  (visible)
+///   "reasoning.summary"   -> summary                       — OPEN  (a summarised view)
+///   "reasoning.encrypted" -> data                          — HIDDEN (redacted / opaque)
+/// `signature` and `data` are opaque and MUST be echoed back verbatim in the next request's
+/// `reasoning_details` to continue a signed/encrypted reasoning turn. Use `isHidden` /
+/// `openText` to branch without matching on the raw `type` string.
+pub const ReasoningDetail = struct {
+    type: []const u8,
+    text: ?[]const u8 = null, // "reasoning.text"
+    summary: ?[]const u8 = null, // "reasoning.summary"
+    data: ?[]const u8 = null, // "reasoning.encrypted" (hidden)
+    signature: ?[]const u8 = null, // opaque, replayed verbatim
+    id: ?[]const u8 = null,
+    format: ?[]const u8 = null, // e.g. "anthropic-claude-v1"
+    index: ?u32 = null,
+
+    /// Whether this block is hidden (redacted / encrypted) rather than open visible reasoning.
+    pub fn isHidden(self: ReasoningDetail) bool {
+        return std.mem.eql(u8, self.type, "reasoning.encrypted") or
+            (self.data != null and self.text == null);
+    }
+
+    /// The visible reasoning text of an open block — its `text`, falling back to its
+    /// `summary`. `null` for a hidden block.
+    pub fn openText(self: ReasoningDetail) ?[]const u8 {
+        return self.text orelse self.summary;
+    }
+};
+
 pub const ChatMessage = struct {
     role: Role,
     content: ?Content = null,
     name: ?[]const u8 = null,
     tool_calls: []const ToolCall = &.{},
     tool_call_id: ?[]const u8 = null, // set when role == .tool
+    /// Open reasoning text the assistant emitted (OpenRouter `reasoning`), if any. The flat,
+    /// human-readable form; the structured `reasoning_details` is the replay-safe one.
+    reasoning: ?[]const u8 = null,
+    /// Structured reasoning blocks (open and hidden, with signatures — see `ReasoningDetail`).
+    /// Echo these back verbatim on the next request to preserve signed reasoning across a turn.
+    reasoning_details: []const ReasoningDetail = &.{},
 
     /// Convenience constructor for the common plain-text message.
     pub fn textMsg(role: Role, text: []const u8) ChatMessage {
@@ -214,6 +279,10 @@ pub const Delta = struct {
     role: ?Role = null, // first chunk only
     content: ?[]const u8 = null, // incremental text
     tool_calls: []const ToolCallDelta = &.{},
+    /// Incremental open reasoning text, if any.
+    reasoning: ?[]const u8 = null,
+    /// Incremental structured reasoning blocks (open / hidden — see `ReasoningDetail`).
+    reasoning_details: []const ReasoningDetail = &.{},
 };
 
 pub const ChunkChoice = struct {

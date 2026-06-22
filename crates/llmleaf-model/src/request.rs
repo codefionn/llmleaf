@@ -142,6 +142,24 @@ pub enum ContentPart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// An extended-thinking (reasoning) block emitted by an assistant turn. `signature` is the
+    /// upstream's cryptographic signature over the reasoning: it is opaque to the core and **must be
+    /// replayed verbatim** on the next turn, or the upstream rejects the turn (Anthropic refuses a
+    /// `tool_use` turn whose preceding thinking block is missing or altered). Modeled here so multi-turn
+    /// replay — the stateful Realtime bridge, or a stateless client echoing the prior turn back —
+    /// preserves it rather than silently dropping it (principle 7). A thinking block ordered before the
+    /// `tool_use` it justifies is the on-tool-call case.
+    Thinking {
+        thinking: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    /// A redacted (encrypted) thinking block — opaque `data` the upstream emitted in place of reasoning
+    /// it chose not to surface. Same replay contract as [`ContentPart::Thinking`]: carried through and
+    /// replayed verbatim.
+    RedactedThinking {
+        data: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

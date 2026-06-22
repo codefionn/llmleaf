@@ -35,7 +35,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file llmleaf/v1/llmleaf.proto.
  */
 export const file_llmleaf_v1_llmleaf: GenFile = /*@__PURE__*/
-  fileDesc("ChhsbG1sZWFmL3YxL2xsbWxlYWYucHJvdG8SCmxsbWxlYWYudjEicwoFVXNhZ2USFQoNcHJvbXB0X3Rva2VucxgBIAEoDRIZChFjb21wbGV0aW9uX3Rva2VucxgCIAEoDRIUCgx0b3RhbF90b2tlbnMYAyABKA0SFQoIY29zdF91c2QYBCABKAFIAIgBAUILCglfY29zdF91c2QiNQoNRXJyb3JSZXNwb25zZRIkCgVlcnJvchgBIAEoCzIVLmxsbWxlYWYudjEuRXJyb3JCb2R5IlQKCUVycm9yQm9keRIPCgdtZXNzYWdlGAEgASgJEhEKBHR5cGUYAiABKAlIAIgBARIRCgRjb2RlGAMgASgJSAGIAQFCBwoFX3R5cGVCBwoFX2NvZGUiagoLQ29udGVudFBhcnQSJAoEdGV4dBgBIAEoCzIULmxsbWxlYWYudjEuVGV4dFBhcnRIABItCglpbWFnZV91cmwYAiABKAsyGC5sbG1sZWFmLnYxLkltYWdlVXJsUGFydEgAQgYKBHBhcnQiGAoIVGV4dFBhcnQSDAoEdGV4dBgBIAEoCSI7CgxJbWFnZVVybFBhcnQSCwoDdXJsGAEgASgJEhMKBmRldGFpbBgCIAEoCUgAiAEBQgkKB19kZXRhaWwiNgoMQ29udGVudFBhcnRzEiYKBWl0ZW1zGAEgAygLMhcubGxtbGVhZi52MS5Db250ZW50UGFydCIvCgxGdW5jdGlvbkNhbGwSDAoEbmFtZRgBIAEoCRIRCglhcmd1bWVudHMYAiABKAkiUAoIVG9vbENhbGwSCgoCaWQYASABKAkSDAoEdHlwZRgCIAEoCRIqCghmdW5jdGlvbhgDIAEoCzIYLmxsbWxlYWYudjEuRnVuY3Rpb25DYWxsIlUKEUZ1bmN0aW9uQ2FsbERlbHRhEhEKBG5hbWUYASABKAlIAIgBARIWCglhcmd1bWVudHMYAiABKAlIAYgBAUIHCgVfbmFtZUIMCgpfYXJndW1lbnRzIpUBCg1Ub29sQ2FsbERlbHRhEg0KBWluZGV4GAEgASgNEg8KAmlkGAIgASgJSACIAQESEQoEdHlwZRgDIAEoCUgBiAEBEjQKCGZ1bmN0aW9uGAQgASgLMh0ubGxtbGVhZi52MS5GdW5jdGlvbkNhbGxEZWx0YUgCiAEBQgUKA19pZEIHCgVfdHlwZUILCglfZnVuY3Rpb24i5QEKC0NoYXRNZXNzYWdlEh4KBHJvbGUYASABKA4yEC5sbG1sZWFmLnYxLlJvbGUSDgoEdGV4dBgCIAEoCUgAEikKBXBhcnRzGAMgASgLMhgubGxtbGVhZi52MS5Db250ZW50UGFydHNIABIRCgRuYW1lGAQgASgJSAGIAQESKAoKdG9vbF9jYWxscxgFIAMoCzIULmxsbWxlYWYudjEuVG9vbENhbGwSGQoMdG9vbF9jYWxsX2lkGAYgASgJSAKIAQFCCQoHY29udGVudEIHCgVfbmFtZUIPCg1fdG9vbF9jYWxsX2lkIm0KC0Z1bmN0aW9uRGVmEgwKBG5hbWUYASABKAkSGAoLZGVzY3JpcHRpb24YAiABKAlIAIgBARIXCgpwYXJhbWV0ZXJzGAMgASgJSAGIAQFCDgoMX2Rlc2NyaXB0aW9uQg0KC19wYXJhbWV0ZXJzIkIKB1Rvb2xEZWYSDAoEdHlwZRgBIAEoCRIpCghmdW5jdGlvbhgCIAEoCzIXLmxsbWxlYWYudjEuRnVuY3Rpb25EZWYiVAoKVG9vbENob2ljZRIOCgRtb2RlGAEgASgJSAASLAoFbmFtZWQYAiABKAsyGy5sbG1sZWFmLnYxLk5hbWVkVG9vbENob2ljZUgAQggKBmNob2ljZSJLCg9OYW1lZFRvb2xDaG9pY2USDAoEdHlwZRgBIAEoCRIqCghmdW5jdGlvbhgCIAEoCzIYLmxsbWxlYWYudjEuRnVuY3Rpb25OYW1lIhwKDEZ1bmN0aW9uTmFtZRIMCgRuYW1lGAEgASgJIkgKDlJlc3BvbnNlRm9ybWF0EgwKBHR5cGUYASABKAkSGAoLanNvbl9zY2hlbWEYAiABKAlIAIgBAUIOCgxfanNvbl9zY2hlbWEixQUKC0NoYXRSZXF1ZXN0Eg0KBW1vZGVsGAEgASgJEikKCG1lc3NhZ2VzGAIgAygLMhcubGxtbGVhZi52MS5DaGF0TWVzc2FnZRITCgZzdHJlYW0YAyABKAhIAIgBARIYCgt0ZW1wZXJhdHVyZRgEIAEoAkgBiAEBEhIKBXRvcF9wGAUgASgCSAKIAQESFwoKbWF4X3Rva2VucxgGIAEoDUgDiAEBEiIKFW1heF9jb21wbGV0aW9uX3Rva2VucxgHIAEoDUgEiAEBEgwKBHN0b3AYCCADKAkSDgoBbhgJIAEoDUgFiAEBEhEKBHNlZWQYCiABKANIBogBARIeChFmcmVxdWVuY3lfcGVuYWx0eRgLIAEoAkgHiAEBEh0KEHByZXNlbmNlX3BlbmFsdHkYDCABKAJICIgBARIiCgV0b29scxgNIAMoCzITLmxsbWxlYWYudjEuVG9vbERlZhIwCgt0b29sX2Nob2ljZRgOIAEoCzIWLmxsbWxlYWYudjEuVG9vbENob2ljZUgJiAEBEjgKD3Jlc3BvbnNlX2Zvcm1hdBgPIAEoCzIaLmxsbWxlYWYudjEuUmVzcG9uc2VGb3JtYXRICogBARIdChByZWFzb25pbmdfZWZmb3J0GBAgASgJSAuIAQESEgoFZXh0cmEYESABKAlIDIgBAUIJCgdfc3RyZWFtQg4KDF90ZW1wZXJhdHVyZUIICgZfdG9wX3BCDQoLX21heF90b2tlbnNCGAoWX21heF9jb21wbGV0aW9uX3Rva2Vuc0IECgJfbkIHCgVfc2VlZEIUChJfZnJlcXVlbmN5X3BlbmFsdHlCEwoRX3ByZXNlbmNlX3BlbmFsdHlCDgoMX3Rvb2xfY2hvaWNlQhIKEF9yZXNwb25zZV9mb3JtYXRCEwoRX3JlYXNvbmluZ19lZmZvcnRCCAoGX2V4dHJhIokBCgZDaG9pY2USDQoFaW5kZXgYASABKA0SKAoHbWVzc2FnZRgCIAEoCzIXLmxsbWxlYWYudjEuQ2hhdE1lc3NhZ2USNAoNZmluaXNoX3JlYXNvbhgDIAEoDjIYLmxsbWxlYWYudjEuRmluaXNoUmVhc29uSACIAQFCEAoOX2ZpbmlzaF9yZWFzb24ikQEKDENoYXRSZXNwb25zZRIKCgJpZBgBIAEoCRIOCgZvYmplY3QYAiABKAkSDwoHY3JlYXRlZBgDIAEoAxINCgVtb2RlbBgEIAEoCRIjCgdjaG9pY2VzGAUgAygLMhIubGxtbGVhZi52MS5DaG9pY2USIAoFdXNhZ2UYBiABKAsyES5sbG1sZWFmLnYxLlVzYWdlIoYBCgVEZWx0YRIjCgRyb2xlGAEgASgOMhAubGxtbGVhZi52MS5Sb2xlSACIAQESFAoHY29udGVudBgCIAEoCUgBiAEBEi0KCnRvb2xfY2FsbHMYAyADKAsyGS5sbG1sZWFmLnYxLlRvb2xDYWxsRGVsdGFCBwoFX3JvbGVCCgoIX2NvbnRlbnQihgEKC0NodW5rQ2hvaWNlEg0KBWluZGV4GAEgASgNEiAKBWRlbHRhGAIgASgLMhEubGxtbGVhZi52MS5EZWx0YRI0Cg1maW5pc2hfcmVhc29uGAMgASgOMhgubGxtbGVhZi52MS5GaW5pc2hSZWFzb25IAIgBAUIQCg5fZmluaXNoX3JlYXNvbiKsAQoTQ2hhdENvbXBsZXRpb25DaHVuaxIKCgJpZBgBIAEoCRIOCgZvYmplY3QYAiABKAkSDwoHY3JlYXRlZBgDIAEoAxINCgVtb2RlbBgEIAEoCRIoCgdjaG9pY2VzGAUgAygLMhcubGxtbGVhZi52MS5DaHVua0Nob2ljZRIlCgV1c2FnZRgGIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2VIAIgBAUIICgZfdXNhZ2UiqAEKEEVtYmVkZGluZ1JlcXVlc3QSDQoFbW9kZWwYASABKAkSDQoFaW5wdXQYAiADKAkSFwoKZGltZW5zaW9ucxgDIAEoDUgAiAEBEhwKD2VuY29kaW5nX2Zvcm1hdBgEIAEoCUgBiAEBEhIKBWV4dHJhGAUgASgJSAKIAQFCDQoLX2RpbWVuc2lvbnNCEgoQX2VuY29kaW5nX2Zvcm1hdEIICgZfZXh0cmEiPQoJRW1iZWRkaW5nEg4KBm9iamVjdBgBIAEoCRINCgVpbmRleBgCIAEoDRIRCgllbWJlZGRpbmcYAyADKAIieQoRRW1iZWRkaW5nUmVzcG9uc2USDgoGb2JqZWN0GAEgASgJEiMKBGRhdGEYAiADKAsyFS5sbG1sZWFmLnYxLkVtYmVkZGluZxINCgVtb2RlbBgDIAEoCRIgCgV1c2FnZRgEIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2UiqgEKDVNwZWVjaFJlcXVlc3QSDQoFbW9kZWwYASABKAkSDQoFaW5wdXQYAiABKAkSDQoFdm9pY2UYAyABKAkSHAoPcmVzcG9uc2VfZm9ybWF0GAQgASgJSACIAQESEgoFc3BlZWQYBSABKAJIAYgBARISCgVleHRyYRgGIAEoCUgCiAEBQhIKEF9yZXNwb25zZV9mb3JtYXRCCAoGX3NwZWVkQggKBl9leHRyYSJCCgVWb2ljZRIKCgJpZBgBIAEoCRIRCgRuYW1lGAIgASgJSACIAQESEQoJbGFuZ3VhZ2VzGAMgAygJQgcKBV9uYW1lIkIKDlZvaWNlc1Jlc3BvbnNlEg0KBW1vZGVsGAEgASgJEiEKBnZvaWNlcxgCIAMoCzIRLmxsbWxlYWYudjEuVm9pY2UixQEKFFRyYW5zY3JpcHRpb25SZXF1ZXN0Eg0KBW1vZGVsGAEgASgJEhUKCGxhbmd1YWdlGAIgASgJSACIAQESEwoGcHJvbXB0GAMgASgJSAGIAQESHAoPcmVzcG9uc2VfZm9ybWF0GAQgASgJSAKIAQESGAoLdGVtcGVyYXR1cmUYBSABKAJIA4gBAUILCglfbGFuZ3VhZ2VCCQoHX3Byb21wdEISChBfcmVzcG9uc2VfZm9ybWF0Qg4KDF90ZW1wZXJhdHVyZSK6AQoVVHJhbnNjcmlwdGlvblJlc3BvbnNlEgwKBHRleHQYASABKAkSEQoEdGFzaxgCIAEoCUgAiAEBEhUKCGxhbmd1YWdlGAMgASgJSAGIAQESFQoIZHVyYXRpb24YBCABKAJIAogBARIlCgV1c2FnZRgFIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2VIA4gBAUIHCgVfdGFza0ILCglfbGFuZ3VhZ2VCCwoJX2R1cmF0aW9uQggKBl91c2FnZSKoAQoMQXJjaGl0ZWN0dXJlEhgKEGlucHV0X21vZGFsaXRpZXMYASADKAkSGQoRb3V0cHV0X21vZGFsaXRpZXMYAiADKAkSFQoIbW9kYWxpdHkYAyABKAlIAIgBARIRCgl0b2tlbml6ZXIYBCABKAkSGgoNaW5zdHJ1Y3RfdHlwZRgFIAEoCUgBiAEBQgsKCV9tb2RhbGl0eUIQCg5faW5zdHJ1Y3RfdHlwZSItCgdQcmljaW5nEg4KBnByb21wdBgBIAEoCRISCgpjb21wbGV0aW9uGAIgASgJIssBCgtUb3BQcm92aWRlchIbCg5jb250ZXh0X2xlbmd0aBgBIAEoDUgAiAEBEiIKFW1heF9jb21wbGV0aW9uX3Rva2VucxgCIAEoDUgBiAEBEhQKDGlzX21vZGVyYXRlZBgDIAEoCBIgChNtYXhfdGhpbmtpbmdfdG9rZW5zGAQgASgNSAKIAQFCEQoPX2NvbnRleHRfbGVuZ3RoQhgKFl9tYXhfY29tcGxldGlvbl90b2tlbnNCFgoUX21heF90aGlua2luZ190b2tlbnMiTgoNTW9kZWxFbmRwb2ludBIQCghwcm92aWRlchgBIAEoCRINCgVtb2RlbBgCIAEoCRIMCgRkb3duGAMgASgIEg4KBnNvdXJjZRgEIAEoCSLOAwoKTW9kZWxFbnRyeRIKCgJpZBgBIAEoCRIWCg5jYW5vbmljYWxfc2x1ZxgCIAEoCRIMCgRuYW1lGAMgASgJEg8KB2NyZWF0ZWQYBCABKAMSEwoLZGVzY3JpcHRpb24YBSABKAkSGwoOY29udGV4dF9sZW5ndGgYBiABKA1IAIgBARIuCgxhcmNoaXRlY3R1cmUYByABKAsyGC5sbG1sZWFmLnYxLkFyY2hpdGVjdHVyZRIpCgdwcmljaW5nGAggASgLMhMubGxtbGVhZi52MS5QcmljaW5nSAGIAQESLQoMdG9wX3Byb3ZpZGVyGAkgASgLMhcubGxtbGVhZi52MS5Ub3BQcm92aWRlchIcChRzdXBwb3J0ZWRfcGFyYW1ldGVycxgKIAMoCRIeChZ1bnN1cHBvcnRlZF9wYXJhbWV0ZXJzGAsgAygJEh8KEmRlZmF1bHRfcGFyYW1ldGVycxgMIAEoCUgCiAEBEiwKCWVuZHBvaW50cxgNIAMoCzIZLmxsbWxlYWYudjEuTW9kZWxFbmRwb2ludEIRCg9fY29udGV4dF9sZW5ndGhCCgoIX3ByaWNpbmdCFQoTX2RlZmF1bHRfcGFyYW1ldGVycyI6ChJMaXN0TW9kZWxzUmVzcG9uc2USJAoEZGF0YRgBIAMoCzIWLmxsbWxlYWYudjEuTW9kZWxFbnRyeSJMChBCYXRjaFJlcXVlc3RJdGVtEhEKCWN1c3RvbV9pZBgBIAEoCRIlCgRib2R5GAIgASgLMhcubGxtbGVhZi52MS5DaGF0UmVxdWVzdCJEChJCYXRjaENyZWF0ZVJlcXVlc3QSLgoIcmVxdWVzdHMYASADKAsyHC5sbG1sZWFmLnYxLkJhdGNoUmVxdWVzdEl0ZW0idwoLQmF0Y2hDb3VudHMSDQoFdG90YWwYASABKAQSEgoKcHJvY2Vzc2luZxgCIAEoBBIRCglzdWNjZWVkZWQYAyABKAQSDwoHZXJyb3JlZBgEIAEoBBIQCghjYW5jZWxlZBgFIAEoBBIPCgdleHBpcmVkGAYgASgEIoMCCgtCYXRjaEhhbmRsZRIKCgJpZBgBIAEoCRInCgZzdGF0dXMYAiABKA4yFy5sbG1sZWFmLnYxLkJhdGNoU3RhdHVzEicKBmNvdW50cxgDIAEoCzIXLmxsbWxlYWYudjEuQmF0Y2hDb3VudHMSFwoKY3JlYXRlZF9hdBgEIAEoA0gAiAEBEhcKCmV4cGlyZXNfYXQYBSABKANIAYgBARIVCghlbmRlZF9hdBgGIAEoA0gCiAEBEhUKCGVuZHBvaW50GAcgASgJSAOIAQFCDQoLX2NyZWF0ZWRfYXRCDQoLX2V4cGlyZXNfYXRCCwoJX2VuZGVkX2F0QgsKCV9lbmRwb2ludCKZAQoPQmF0Y2hSZXN1bHRMaW5lEhEKCWN1c3RvbV9pZBgBIAEoCRIwCghyZXNwb25zZRgCIAEoCzIZLmxsbWxlYWYudjEuQmF0Y2hSZXNwb25zZUgAiAEBEioKBWVycm9yGAMgASgLMhYubGxtbGVhZi52MS5CYXRjaEVycm9ySAGIAQFCCwoJX3Jlc3BvbnNlQggKBl9lcnJvciJMCg1CYXRjaFJlc3BvbnNlEhMKC3N0YXR1c19jb2RlGAEgASgNEiYKBGJvZHkYAiABKAsyGC5sbG1sZWFmLnYxLkNoYXRSZXNwb25zZSIrCgpCYXRjaEVycm9yEgwKBGNvZGUYASABKAkSDwoHbWVzc2FnZRgCIAEoCSpLCgRSb2xlEhQKEFJPTEVfVU5TUEVDSUZJRUQQABIKCgZTWVNURU0QARIICgRVU0VSEAISDQoJQVNTSVNUQU5UEAMSCAoEVE9PTBAEKmcKDEZpbmlzaFJlYXNvbhIdChlGSU5JU0hfUkVBU09OX1VOU1BFQ0lGSUVEEAASCAoEU1RPUBABEgoKBkxFTkdUSBACEg4KClRPT0xfQ0FMTFMQAxISCg5DT05URU5UX0ZJTFRFUhAEKqEBCgtCYXRjaFN0YXR1cxIcChhCQVRDSF9TVEFUVVNfVU5TUEVDSUZJRUQQABIOCgpWQUxJREFUSU5HEAESDwoLSU5fUFJPR1JFU1MQAhIOCgpGSU5BTElaSU5HEAMSDQoJQ09NUExFVEVEEAQSCgoGRkFJTEVEEAUSCwoHRVhQSVJFRBAGEg0KCUNBTkNFTElORxAHEgwKCENBTkNFTEVEEAhCWAoXZXUuY29kZWZpb25uLmxsbWxlYWYudjFQAVo7Z2l0aHViLmNvbS9jb2RlZmlvbm4vbGxtbGVhZi9jbGllbnRzL2dvL2xsbWxlYWZwYjtsbG1sZWFmcGJiBnByb3RvMw");
+  fileDesc("ChhsbG1sZWFmL3YxL2xsbWxlYWYucHJvdG8SCmxsbWxlYWYudjEikAIKBVVzYWdlEhUKDXByb21wdF90b2tlbnMYASABKA0SGQoRY29tcGxldGlvbl90b2tlbnMYAiABKA0SFAoMdG90YWxfdG9rZW5zGAMgASgNEhUKCGNvc3RfdXNkGAQgASgBSACIAQESQwoVcHJvbXB0X3Rva2Vuc19kZXRhaWxzGAUgASgLMh8ubGxtbGVhZi52MS5Qcm9tcHRUb2tlbnNEZXRhaWxzSAGIAQESIgoVY2FjaGVfY3JlYXRpb25fdG9rZW5zGAYgASgNSAKIAQFCCwoJX2Nvc3RfdXNkQhgKFl9wcm9tcHRfdG9rZW5zX2RldGFpbHNCGAoWX2NhY2hlX2NyZWF0aW9uX3Rva2VucyJDChNQcm9tcHRUb2tlbnNEZXRhaWxzEhoKDWNhY2hlZF90b2tlbnMYASABKA1IAIgBAUIQCg5fY2FjaGVkX3Rva2VucyI1Cg1FcnJvclJlc3BvbnNlEiQKBWVycm9yGAEgASgLMhUubGxtbGVhZi52MS5FcnJvckJvZHkiVAoJRXJyb3JCb2R5Eg8KB21lc3NhZ2UYASABKAkSEQoEdHlwZRgCIAEoCUgAiAEBEhEKBGNvZGUYAyABKAlIAYgBAUIHCgVfdHlwZUIHCgVfY29kZSJqCgtDb250ZW50UGFydBIkCgR0ZXh0GAEgASgLMhQubGxtbGVhZi52MS5UZXh0UGFydEgAEi0KCWltYWdlX3VybBgCIAEoCzIYLmxsbWxlYWYudjEuSW1hZ2VVcmxQYXJ0SABCBgoEcGFydCIYCghUZXh0UGFydBIMCgR0ZXh0GAEgASgJIjsKDEltYWdlVXJsUGFydBILCgN1cmwYASABKAkSEwoGZGV0YWlsGAIgASgJSACIAQFCCQoHX2RldGFpbCI2CgxDb250ZW50UGFydHMSJgoFaXRlbXMYASADKAsyFy5sbG1sZWFmLnYxLkNvbnRlbnRQYXJ0Ii8KDEZ1bmN0aW9uQ2FsbBIMCgRuYW1lGAEgASgJEhEKCWFyZ3VtZW50cxgCIAEoCSJQCghUb29sQ2FsbBIKCgJpZBgBIAEoCRIMCgR0eXBlGAIgASgJEioKCGZ1bmN0aW9uGAMgASgLMhgubGxtbGVhZi52MS5GdW5jdGlvbkNhbGwiVQoRRnVuY3Rpb25DYWxsRGVsdGESEQoEbmFtZRgBIAEoCUgAiAEBEhYKCWFyZ3VtZW50cxgCIAEoCUgBiAEBQgcKBV9uYW1lQgwKCl9hcmd1bWVudHMilQEKDVRvb2xDYWxsRGVsdGESDQoFaW5kZXgYASABKA0SDwoCaWQYAiABKAlIAIgBARIRCgR0eXBlGAMgASgJSAGIAQESNAoIZnVuY3Rpb24YBCABKAsyHS5sbG1sZWFmLnYxLkZ1bmN0aW9uQ2FsbERlbHRhSAKIAQFCBQoDX2lkQgcKBV90eXBlQgsKCV9mdW5jdGlvbiL1AQoPUmVhc29uaW5nRGV0YWlsEgwKBHR5cGUYASABKAkSEQoEdGV4dBgCIAEoCUgAiAEBEhQKB3N1bW1hcnkYAyABKAlIAYgBARIRCgRkYXRhGAQgASgJSAKIAQESFgoJc2lnbmF0dXJlGAUgASgJSAOIAQESDwoCaWQYBiABKAlIBIgBARITCgZmb3JtYXQYByABKAlIBYgBARISCgVpbmRleBgIIAEoDUgGiAEBQgcKBV90ZXh0QgoKCF9zdW1tYXJ5QgcKBV9kYXRhQgwKCl9zaWduYXR1cmVCBQoDX2lkQgkKB19mb3JtYXRCCAoGX2luZGV4IsMCCgtDaGF0TWVzc2FnZRIeCgRyb2xlGAEgASgOMhAubGxtbGVhZi52MS5Sb2xlEg4KBHRleHQYAiABKAlIABIpCgVwYXJ0cxgDIAEoCzIYLmxsbWxlYWYudjEuQ29udGVudFBhcnRzSAASEQoEbmFtZRgEIAEoCUgBiAEBEigKCnRvb2xfY2FsbHMYBSADKAsyFC5sbG1sZWFmLnYxLlRvb2xDYWxsEhkKDHRvb2xfY2FsbF9pZBgGIAEoCUgCiAEBEhYKCXJlYXNvbmluZxgHIAEoCUgDiAEBEjYKEXJlYXNvbmluZ19kZXRhaWxzGAggAygLMhsubGxtbGVhZi52MS5SZWFzb25pbmdEZXRhaWxCCQoHY29udGVudEIHCgVfbmFtZUIPCg1fdG9vbF9jYWxsX2lkQgwKCl9yZWFzb25pbmcibQoLRnVuY3Rpb25EZWYSDAoEbmFtZRgBIAEoCRIYCgtkZXNjcmlwdGlvbhgCIAEoCUgAiAEBEhcKCnBhcmFtZXRlcnMYAyABKAlIAYgBAUIOCgxfZGVzY3JpcHRpb25CDQoLX3BhcmFtZXRlcnMiQgoHVG9vbERlZhIMCgR0eXBlGAEgASgJEikKCGZ1bmN0aW9uGAIgASgLMhcubGxtbGVhZi52MS5GdW5jdGlvbkRlZiJUCgpUb29sQ2hvaWNlEg4KBG1vZGUYASABKAlIABIsCgVuYW1lZBgCIAEoCzIbLmxsbWxlYWYudjEuTmFtZWRUb29sQ2hvaWNlSABCCAoGY2hvaWNlIksKD05hbWVkVG9vbENob2ljZRIMCgR0eXBlGAEgASgJEioKCGZ1bmN0aW9uGAIgASgLMhgubGxtbGVhZi52MS5GdW5jdGlvbk5hbWUiHAoMRnVuY3Rpb25OYW1lEgwKBG5hbWUYASABKAkiSAoOUmVzcG9uc2VGb3JtYXQSDAoEdHlwZRgBIAEoCRIYCgtqc29uX3NjaGVtYRgCIAEoCUgAiAEBQg4KDF9qc29uX3NjaGVtYSLFBQoLQ2hhdFJlcXVlc3QSDQoFbW9kZWwYASABKAkSKQoIbWVzc2FnZXMYAiADKAsyFy5sbG1sZWFmLnYxLkNoYXRNZXNzYWdlEhMKBnN0cmVhbRgDIAEoCEgAiAEBEhgKC3RlbXBlcmF0dXJlGAQgASgCSAGIAQESEgoFdG9wX3AYBSABKAJIAogBARIXCgptYXhfdG9rZW5zGAYgASgNSAOIAQESIgoVbWF4X2NvbXBsZXRpb25fdG9rZW5zGAcgASgNSASIAQESDAoEc3RvcBgIIAMoCRIOCgFuGAkgASgNSAWIAQESEQoEc2VlZBgKIAEoA0gGiAEBEh4KEWZyZXF1ZW5jeV9wZW5hbHR5GAsgASgCSAeIAQESHQoQcHJlc2VuY2VfcGVuYWx0eRgMIAEoAkgIiAEBEiIKBXRvb2xzGA0gAygLMhMubGxtbGVhZi52MS5Ub29sRGVmEjAKC3Rvb2xfY2hvaWNlGA4gASgLMhYubGxtbGVhZi52MS5Ub29sQ2hvaWNlSAmIAQESOAoPcmVzcG9uc2VfZm9ybWF0GA8gASgLMhoubGxtbGVhZi52MS5SZXNwb25zZUZvcm1hdEgKiAEBEh0KEHJlYXNvbmluZ19lZmZvcnQYECABKAlIC4gBARISCgVleHRyYRgRIAEoCUgMiAEBQgkKB19zdHJlYW1CDgoMX3RlbXBlcmF0dXJlQggKBl90b3BfcEINCgtfbWF4X3Rva2Vuc0IYChZfbWF4X2NvbXBsZXRpb25fdG9rZW5zQgQKAl9uQgcKBV9zZWVkQhQKEl9mcmVxdWVuY3lfcGVuYWx0eUITChFfcHJlc2VuY2VfcGVuYWx0eUIOCgxfdG9vbF9jaG9pY2VCEgoQX3Jlc3BvbnNlX2Zvcm1hdEITChFfcmVhc29uaW5nX2VmZm9ydEIICgZfZXh0cmEiiQEKBkNob2ljZRINCgVpbmRleBgBIAEoDRIoCgdtZXNzYWdlGAIgASgLMhcubGxtbGVhZi52MS5DaGF0TWVzc2FnZRI0Cg1maW5pc2hfcmVhc29uGAMgASgOMhgubGxtbGVhZi52MS5GaW5pc2hSZWFzb25IAIgBAUIQCg5fZmluaXNoX3JlYXNvbiKRAQoMQ2hhdFJlc3BvbnNlEgoKAmlkGAEgASgJEg4KBm9iamVjdBgCIAEoCRIPCgdjcmVhdGVkGAMgASgDEg0KBW1vZGVsGAQgASgJEiMKB2Nob2ljZXMYBSADKAsyEi5sbG1sZWFmLnYxLkNob2ljZRIgCgV1c2FnZRgGIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2Ui5AEKBURlbHRhEiMKBHJvbGUYASABKA4yEC5sbG1sZWFmLnYxLlJvbGVIAIgBARIUCgdjb250ZW50GAIgASgJSAGIAQESLQoKdG9vbF9jYWxscxgDIAMoCzIZLmxsbWxlYWYudjEuVG9vbENhbGxEZWx0YRIWCglyZWFzb25pbmcYBCABKAlIAogBARI2ChFyZWFzb25pbmdfZGV0YWlscxgFIAMoCzIbLmxsbWxlYWYudjEuUmVhc29uaW5nRGV0YWlsQgcKBV9yb2xlQgoKCF9jb250ZW50QgwKCl9yZWFzb25pbmcihgEKC0NodW5rQ2hvaWNlEg0KBWluZGV4GAEgASgNEiAKBWRlbHRhGAIgASgLMhEubGxtbGVhZi52MS5EZWx0YRI0Cg1maW5pc2hfcmVhc29uGAMgASgOMhgubGxtbGVhZi52MS5GaW5pc2hSZWFzb25IAIgBAUIQCg5fZmluaXNoX3JlYXNvbiKsAQoTQ2hhdENvbXBsZXRpb25DaHVuaxIKCgJpZBgBIAEoCRIOCgZvYmplY3QYAiABKAkSDwoHY3JlYXRlZBgDIAEoAxINCgVtb2RlbBgEIAEoCRIoCgdjaG9pY2VzGAUgAygLMhcubGxtbGVhZi52MS5DaHVua0Nob2ljZRIlCgV1c2FnZRgGIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2VIAIgBAUIICgZfdXNhZ2UiqAEKEEVtYmVkZGluZ1JlcXVlc3QSDQoFbW9kZWwYASABKAkSDQoFaW5wdXQYAiADKAkSFwoKZGltZW5zaW9ucxgDIAEoDUgAiAEBEhwKD2VuY29kaW5nX2Zvcm1hdBgEIAEoCUgBiAEBEhIKBWV4dHJhGAUgASgJSAKIAQFCDQoLX2RpbWVuc2lvbnNCEgoQX2VuY29kaW5nX2Zvcm1hdEIICgZfZXh0cmEiPQoJRW1iZWRkaW5nEg4KBm9iamVjdBgBIAEoCRINCgVpbmRleBgCIAEoDRIRCgllbWJlZGRpbmcYAyADKAIieQoRRW1iZWRkaW5nUmVzcG9uc2USDgoGb2JqZWN0GAEgASgJEiMKBGRhdGEYAiADKAsyFS5sbG1sZWFmLnYxLkVtYmVkZGluZxINCgVtb2RlbBgDIAEoCRIgCgV1c2FnZRgEIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2UiqgEKDVNwZWVjaFJlcXVlc3QSDQoFbW9kZWwYASABKAkSDQoFaW5wdXQYAiABKAkSDQoFdm9pY2UYAyABKAkSHAoPcmVzcG9uc2VfZm9ybWF0GAQgASgJSACIAQESEgoFc3BlZWQYBSABKAJIAYgBARISCgVleHRyYRgGIAEoCUgCiAEBQhIKEF9yZXNwb25zZV9mb3JtYXRCCAoGX3NwZWVkQggKBl9leHRyYSJCCgVWb2ljZRIKCgJpZBgBIAEoCRIRCgRuYW1lGAIgASgJSACIAQESEQoJbGFuZ3VhZ2VzGAMgAygJQgcKBV9uYW1lIkIKDlZvaWNlc1Jlc3BvbnNlEg0KBW1vZGVsGAEgASgJEiEKBnZvaWNlcxgCIAMoCzIRLmxsbWxlYWYudjEuVm9pY2UixQEKFFRyYW5zY3JpcHRpb25SZXF1ZXN0Eg0KBW1vZGVsGAEgASgJEhUKCGxhbmd1YWdlGAIgASgJSACIAQESEwoGcHJvbXB0GAMgASgJSAGIAQESHAoPcmVzcG9uc2VfZm9ybWF0GAQgASgJSAKIAQESGAoLdGVtcGVyYXR1cmUYBSABKAJIA4gBAUILCglfbGFuZ3VhZ2VCCQoHX3Byb21wdEISChBfcmVzcG9uc2VfZm9ybWF0Qg4KDF90ZW1wZXJhdHVyZSK6AQoVVHJhbnNjcmlwdGlvblJlc3BvbnNlEgwKBHRleHQYASABKAkSEQoEdGFzaxgCIAEoCUgAiAEBEhUKCGxhbmd1YWdlGAMgASgJSAGIAQESFQoIZHVyYXRpb24YBCABKAJIAogBARIlCgV1c2FnZRgFIAEoCzIRLmxsbWxlYWYudjEuVXNhZ2VIA4gBAUIHCgVfdGFza0ILCglfbGFuZ3VhZ2VCCwoJX2R1cmF0aW9uQggKBl91c2FnZSKoAQoMQXJjaGl0ZWN0dXJlEhgKEGlucHV0X21vZGFsaXRpZXMYASADKAkSGQoRb3V0cHV0X21vZGFsaXRpZXMYAiADKAkSFQoIbW9kYWxpdHkYAyABKAlIAIgBARIRCgl0b2tlbml6ZXIYBCABKAkSGgoNaW5zdHJ1Y3RfdHlwZRgFIAEoCUgBiAEBQgsKCV9tb2RhbGl0eUIQCg5faW5zdHJ1Y3RfdHlwZSItCgdQcmljaW5nEg4KBnByb21wdBgBIAEoCRISCgpjb21wbGV0aW9uGAIgASgJIssBCgtUb3BQcm92aWRlchIbCg5jb250ZXh0X2xlbmd0aBgBIAEoDUgAiAEBEiIKFW1heF9jb21wbGV0aW9uX3Rva2VucxgCIAEoDUgBiAEBEhQKDGlzX21vZGVyYXRlZBgDIAEoCBIgChNtYXhfdGhpbmtpbmdfdG9rZW5zGAQgASgNSAKIAQFCEQoPX2NvbnRleHRfbGVuZ3RoQhgKFl9tYXhfY29tcGxldGlvbl90b2tlbnNCFgoUX21heF90aGlua2luZ190b2tlbnMiTgoNTW9kZWxFbmRwb2ludBIQCghwcm92aWRlchgBIAEoCRINCgVtb2RlbBgCIAEoCRIMCgRkb3duGAMgASgIEg4KBnNvdXJjZRgEIAEoCSLOAwoKTW9kZWxFbnRyeRIKCgJpZBgBIAEoCRIWCg5jYW5vbmljYWxfc2x1ZxgCIAEoCRIMCgRuYW1lGAMgASgJEg8KB2NyZWF0ZWQYBCABKAMSEwoLZGVzY3JpcHRpb24YBSABKAkSGwoOY29udGV4dF9sZW5ndGgYBiABKA1IAIgBARIuCgxhcmNoaXRlY3R1cmUYByABKAsyGC5sbG1sZWFmLnYxLkFyY2hpdGVjdHVyZRIpCgdwcmljaW5nGAggASgLMhMubGxtbGVhZi52MS5QcmljaW5nSAGIAQESLQoMdG9wX3Byb3ZpZGVyGAkgASgLMhcubGxtbGVhZi52MS5Ub3BQcm92aWRlchIcChRzdXBwb3J0ZWRfcGFyYW1ldGVycxgKIAMoCRIeChZ1bnN1cHBvcnRlZF9wYXJhbWV0ZXJzGAsgAygJEh8KEmRlZmF1bHRfcGFyYW1ldGVycxgMIAEoCUgCiAEBEiwKCWVuZHBvaW50cxgNIAMoCzIZLmxsbWxlYWYudjEuTW9kZWxFbmRwb2ludEIRCg9fY29udGV4dF9sZW5ndGhCCgoIX3ByaWNpbmdCFQoTX2RlZmF1bHRfcGFyYW1ldGVycyI6ChJMaXN0TW9kZWxzUmVzcG9uc2USJAoEZGF0YRgBIAMoCzIWLmxsbWxlYWYudjEuTW9kZWxFbnRyeSJMChBCYXRjaFJlcXVlc3RJdGVtEhEKCWN1c3RvbV9pZBgBIAEoCRIlCgRib2R5GAIgASgLMhcubGxtbGVhZi52MS5DaGF0UmVxdWVzdCJEChJCYXRjaENyZWF0ZVJlcXVlc3QSLgoIcmVxdWVzdHMYASADKAsyHC5sbG1sZWFmLnYxLkJhdGNoUmVxdWVzdEl0ZW0idwoLQmF0Y2hDb3VudHMSDQoFdG90YWwYASABKAQSEgoKcHJvY2Vzc2luZxgCIAEoBBIRCglzdWNjZWVkZWQYAyABKAQSDwoHZXJyb3JlZBgEIAEoBBIQCghjYW5jZWxlZBgFIAEoBBIPCgdleHBpcmVkGAYgASgEIoMCCgtCYXRjaEhhbmRsZRIKCgJpZBgBIAEoCRInCgZzdGF0dXMYAiABKA4yFy5sbG1sZWFmLnYxLkJhdGNoU3RhdHVzEicKBmNvdW50cxgDIAEoCzIXLmxsbWxlYWYudjEuQmF0Y2hDb3VudHMSFwoKY3JlYXRlZF9hdBgEIAEoA0gAiAEBEhcKCmV4cGlyZXNfYXQYBSABKANIAYgBARIVCghlbmRlZF9hdBgGIAEoA0gCiAEBEhUKCGVuZHBvaW50GAcgASgJSAOIAQFCDQoLX2NyZWF0ZWRfYXRCDQoLX2V4cGlyZXNfYXRCCwoJX2VuZGVkX2F0QgsKCV9lbmRwb2ludCKZAQoPQmF0Y2hSZXN1bHRMaW5lEhEKCWN1c3RvbV9pZBgBIAEoCRIwCghyZXNwb25zZRgCIAEoCzIZLmxsbWxlYWYudjEuQmF0Y2hSZXNwb25zZUgAiAEBEioKBWVycm9yGAMgASgLMhYubGxtbGVhZi52MS5CYXRjaEVycm9ySAGIAQFCCwoJX3Jlc3BvbnNlQggKBl9lcnJvciJMCg1CYXRjaFJlc3BvbnNlEhMKC3N0YXR1c19jb2RlGAEgASgNEiYKBGJvZHkYAiABKAsyGC5sbG1sZWFmLnYxLkNoYXRSZXNwb25zZSIrCgpCYXRjaEVycm9yEgwKBGNvZGUYASABKAkSDwoHbWVzc2FnZRgCIAEoCSpLCgRSb2xlEhQKEFJPTEVfVU5TUEVDSUZJRUQQABIKCgZTWVNURU0QARIICgRVU0VSEAISDQoJQVNTSVNUQU5UEAMSCAoEVE9PTBAEKmcKDEZpbmlzaFJlYXNvbhIdChlGSU5JU0hfUkVBU09OX1VOU1BFQ0lGSUVEEAASCAoEU1RPUBABEgoKBkxFTkdUSBACEg4KClRPT0xfQ0FMTFMQAxISCg5DT05URU5UX0ZJTFRFUhAEKqEBCgtCYXRjaFN0YXR1cxIcChhCQVRDSF9TVEFUVVNfVU5TUEVDSUZJRUQQABIOCgpWQUxJREFUSU5HEAESDwoLSU5fUFJPR1JFU1MQAhIOCgpGSU5BTElaSU5HEAMSDQoJQ09NUExFVEVEEAQSCgoGRkFJTEVEEAUSCwoHRVhQSVJFRBAGEg0KCUNBTkNFTElORxAHEgwKCENBTkNFTEVEEAhCWAoXZXUuY29kZWZpb25uLmxsbWxlYWYudjFQAVo7Z2l0aHViLmNvbS9jb2RlZmlvbm4vbGxtbGVhZi9jbGllbnRzL2dvL2xsbWxlYWZwYjtsbG1sZWFmcGJiBnByb3RvMw");
 
 /**
  * Token accounting echoed on every response. `cost_usd` is an llmleaf addition
@@ -64,6 +64,22 @@ export type Usage = Message<"llmleaf.v1.Usage"> & {
    * @generated from field: optional double cost_usd = 4;
    */
   costUsd?: number | undefined;
+
+  /**
+   * Prompt-cache hit accounting, OpenAI-shaped (`usage.prompt_tokens_details`). Absent when the
+   * upstream reported no caching. `cached_tokens` is how many of `prompt_tokens` were a cache *read*.
+   *
+   * @generated from field: optional llmleaf.v1.PromptTokensDetails prompt_tokens_details = 5;
+   */
+  promptTokensDetails?: PromptTokensDetails | undefined;
+
+  /**
+   * Input tokens written to the provider's prompt cache this request — a cache *write* (creation).
+   * An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do not), absent/0 when there was none.
+   *
+   * @generated from field: optional uint32 cache_creation_tokens = 6;
+   */
+  cacheCreationTokens?: number | undefined;
 };
 
 /**
@@ -72,6 +88,26 @@ export type Usage = Message<"llmleaf.v1.Usage"> & {
  */
 export const UsageSchema: GenMessage<Usage> = /*@__PURE__*/
   messageDesc(file_llmleaf_v1_llmleaf, 0);
+
+/**
+ * Breakdown of `Usage.prompt_tokens`. Today only the cached (cache-read / hit) share is surfaced —
+ * the count of prompt tokens served from the provider's cache rather than processed fresh.
+ *
+ * @generated from message llmleaf.v1.PromptTokensDetails
+ */
+export type PromptTokensDetails = Message<"llmleaf.v1.PromptTokensDetails"> & {
+  /**
+   * @generated from field: optional uint32 cached_tokens = 1;
+   */
+  cachedTokens?: number | undefined;
+};
+
+/**
+ * Describes the message llmleaf.v1.PromptTokensDetails.
+ * Use `create(PromptTokensDetailsSchema)` to create a new message.
+ */
+export const PromptTokensDetailsSchema: GenMessage<PromptTokensDetails> = /*@__PURE__*/
+  messageDesc(file_llmleaf_v1_llmleaf, 1);
 
 /**
  * The canonical error envelope returned by every endpoint:  {"error":{"message":...}}.
@@ -90,7 +126,7 @@ export type ErrorResponse = Message<"llmleaf.v1.ErrorResponse"> & {
  * Use `create(ErrorResponseSchema)` to create a new message.
  */
 export const ErrorResponseSchema: GenMessage<ErrorResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 1);
+  messageDesc(file_llmleaf_v1_llmleaf, 2);
 
 /**
  * @generated from message llmleaf.v1.ErrorBody
@@ -119,7 +155,7 @@ export type ErrorBody = Message<"llmleaf.v1.ErrorBody"> & {
  * Use `create(ErrorBodySchema)` to create a new message.
  */
 export const ErrorBodySchema: GenMessage<ErrorBody> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 2);
+  messageDesc(file_llmleaf_v1_llmleaf, 3);
 
 /**
  * A single content part for multimodal messages:
@@ -152,7 +188,7 @@ export type ContentPart = Message<"llmleaf.v1.ContentPart"> & {
  * Use `create(ContentPartSchema)` to create a new message.
  */
 export const ContentPartSchema: GenMessage<ContentPart> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 3);
+  messageDesc(file_llmleaf_v1_llmleaf, 4);
 
 /**
  * @generated from message llmleaf.v1.TextPart
@@ -169,7 +205,7 @@ export type TextPart = Message<"llmleaf.v1.TextPart"> & {
  * Use `create(TextPartSchema)` to create a new message.
  */
 export const TextPartSchema: GenMessage<TextPart> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 4);
+  messageDesc(file_llmleaf_v1_llmleaf, 5);
 
 /**
  * @generated from message llmleaf.v1.ImageUrlPart
@@ -193,7 +229,7 @@ export type ImageUrlPart = Message<"llmleaf.v1.ImageUrlPart"> & {
  * Use `create(ImageUrlPartSchema)` to create a new message.
  */
 export const ImageUrlPartSchema: GenMessage<ImageUrlPart> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 5);
+  messageDesc(file_llmleaf_v1_llmleaf, 6);
 
 /**
  * @generated from message llmleaf.v1.ContentParts
@@ -210,7 +246,7 @@ export type ContentParts = Message<"llmleaf.v1.ContentParts"> & {
  * Use `create(ContentPartsSchema)` to create a new message.
  */
 export const ContentPartsSchema: GenMessage<ContentParts> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 6);
+  messageDesc(file_llmleaf_v1_llmleaf, 7);
 
 /**
  * A function the model called.  `arguments` is a JSON-encoded string (OpenAI shape).
@@ -234,7 +270,7 @@ export type FunctionCall = Message<"llmleaf.v1.FunctionCall"> & {
  * Use `create(FunctionCallSchema)` to create a new message.
  */
 export const FunctionCallSchema: GenMessage<FunctionCall> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 7);
+  messageDesc(file_llmleaf_v1_llmleaf, 8);
 
 /**
  * @generated from message llmleaf.v1.ToolCall
@@ -263,7 +299,7 @@ export type ToolCall = Message<"llmleaf.v1.ToolCall"> & {
  * Use `create(ToolCallSchema)` to create a new message.
  */
 export const ToolCallSchema: GenMessage<ToolCall> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 8);
+  messageDesc(file_llmleaf_v1_llmleaf, 9);
 
 /**
  * Incremental tool-call fragment on a streaming delta; fields arrive piecemeal.
@@ -287,7 +323,7 @@ export type FunctionCallDelta = Message<"llmleaf.v1.FunctionCallDelta"> & {
  * Use `create(FunctionCallDeltaSchema)` to create a new message.
  */
 export const FunctionCallDeltaSchema: GenMessage<FunctionCallDelta> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 9);
+  messageDesc(file_llmleaf_v1_llmleaf, 10);
 
 /**
  * @generated from message llmleaf.v1.ToolCallDelta
@@ -319,7 +355,80 @@ export type ToolCallDelta = Message<"llmleaf.v1.ToolCallDelta"> & {
  * Use `create(ToolCallDeltaSchema)` to create a new message.
  */
 export const ToolCallDeltaSchema: GenMessage<ToolCallDelta> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 10);
+  messageDesc(file_llmleaf_v1_llmleaf, 11);
+
+/**
+ * One structured reasoning ("thinking") block, OpenRouter-shaped
+ * (`message.reasoning_details[]` / `delta.reasoning_details[]`). It expresses both *open* reasoning
+ * (visible text, optionally signed) and *hidden* reasoning (an encrypted/redacted blob the provider
+ * returns in place of the text). `type` is the wire discriminator and selects which field is set:
+ *   "reasoning.text"      -> text (+ optional signature)   — OPEN  (visible reasoning)
+ *   "reasoning.summary"   -> summary                        — OPEN  (a summarised view)
+ *   "reasoning.encrypted" -> data                           — HIDDEN (redacted / opaque)
+ * `signature` and `data` are opaque to the client and MUST be echoed back verbatim in the next
+ * request's reasoning_details to continue a signed/encrypted reasoning turn (the upstream rejects an
+ * altered or dropped block — e.g. before a tool call). `format` tags the provider encoding when known.
+ *
+ * @generated from message llmleaf.v1.ReasoningDetail
+ */
+export type ReasoningDetail = Message<"llmleaf.v1.ReasoningDetail"> & {
+  /**
+   * @generated from field: string type = 1;
+   */
+  type: string;
+
+  /**
+   * "reasoning.text"
+   *
+   * @generated from field: optional string text = 2;
+   */
+  text?: string | undefined;
+
+  /**
+   * "reasoning.summary"
+   *
+   * @generated from field: optional string summary = 3;
+   */
+  summary?: string | undefined;
+
+  /**
+   * "reasoning.encrypted" (hidden)
+   *
+   * @generated from field: optional string data = 4;
+   */
+  data?: string | undefined;
+
+  /**
+   * opaque, replayed verbatim
+   *
+   * @generated from field: optional string signature = 5;
+   */
+  signature?: string | undefined;
+
+  /**
+   * @generated from field: optional string id = 6;
+   */
+  id?: string | undefined;
+
+  /**
+   * e.g. "anthropic-claude-v1"
+   *
+   * @generated from field: optional string format = 7;
+   */
+  format?: string | undefined;
+
+  /**
+   * @generated from field: optional uint32 index = 8;
+   */
+  index?: number | undefined;
+};
+
+/**
+ * Describes the message llmleaf.v1.ReasoningDetail.
+ * Use `create(ReasoningDetailSchema)` to create a new message.
+ */
+export const ReasoningDetailSchema: GenMessage<ReasoningDetail> = /*@__PURE__*/
+  messageDesc(file_llmleaf_v1_llmleaf, 12);
 
 /**
  * @generated from message llmleaf.v1.ChatMessage
@@ -365,6 +474,20 @@ export type ChatMessage = Message<"llmleaf.v1.ChatMessage"> & {
    * @generated from field: optional string tool_call_id = 6;
    */
   toolCallId?: string | undefined;
+
+  /**
+   * Reasoning the assistant emitted (OpenRouter surface). `reasoning` is the flat open text; the
+   * structured `reasoning_details` additionally carries signatures and hidden/encrypted blocks. Send
+   * `reasoning_details` back verbatim on the next turn to preserve signed reasoning (see ReasoningDetail).
+   *
+   * @generated from field: optional string reasoning = 7;
+   */
+  reasoning?: string | undefined;
+
+  /**
+   * @generated from field: repeated llmleaf.v1.ReasoningDetail reasoning_details = 8;
+   */
+  reasoningDetails: ReasoningDetail[];
 };
 
 /**
@@ -372,7 +495,7 @@ export type ChatMessage = Message<"llmleaf.v1.ChatMessage"> & {
  * Use `create(ChatMessageSchema)` to create a new message.
  */
 export const ChatMessageSchema: GenMessage<ChatMessage> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 11);
+  messageDesc(file_llmleaf_v1_llmleaf, 13);
 
 /**
  * A function the model MAY call.  `parameters` is a raw JSON Schema string.
@@ -403,7 +526,7 @@ export type FunctionDef = Message<"llmleaf.v1.FunctionDef"> & {
  * Use `create(FunctionDefSchema)` to create a new message.
  */
 export const FunctionDefSchema: GenMessage<FunctionDef> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 12);
+  messageDesc(file_llmleaf_v1_llmleaf, 14);
 
 /**
  * @generated from message llmleaf.v1.ToolDef
@@ -427,7 +550,7 @@ export type ToolDef = Message<"llmleaf.v1.ToolDef"> & {
  * Use `create(ToolDefSchema)` to create a new message.
  */
 export const ToolDefSchema: GenMessage<ToolDef> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 13);
+  messageDesc(file_llmleaf_v1_llmleaf, 15);
 
 /**
  * tool_choice is either a mode string ("auto"|"none"|"required") or an object
@@ -459,7 +582,7 @@ export type ToolChoice = Message<"llmleaf.v1.ToolChoice"> & {
  * Use `create(ToolChoiceSchema)` to create a new message.
  */
 export const ToolChoiceSchema: GenMessage<ToolChoice> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 14);
+  messageDesc(file_llmleaf_v1_llmleaf, 16);
 
 /**
  * @generated from message llmleaf.v1.NamedToolChoice
@@ -483,7 +606,7 @@ export type NamedToolChoice = Message<"llmleaf.v1.NamedToolChoice"> & {
  * Use `create(NamedToolChoiceSchema)` to create a new message.
  */
 export const NamedToolChoiceSchema: GenMessage<NamedToolChoice> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 15);
+  messageDesc(file_llmleaf_v1_llmleaf, 17);
 
 /**
  * @generated from message llmleaf.v1.FunctionName
@@ -500,7 +623,7 @@ export type FunctionName = Message<"llmleaf.v1.FunctionName"> & {
  * Use `create(FunctionNameSchema)` to create a new message.
  */
 export const FunctionNameSchema: GenMessage<FunctionName> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 16);
+  messageDesc(file_llmleaf_v1_llmleaf, 18);
 
 /**
  * response_format: {"type":"text"|"json_object"|"json_schema", "json_schema": {...}}
@@ -526,7 +649,7 @@ export type ResponseFormat = Message<"llmleaf.v1.ResponseFormat"> & {
  * Use `create(ResponseFormatSchema)` to create a new message.
  */
 export const ResponseFormatSchema: GenMessage<ResponseFormat> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 17);
+  messageDesc(file_llmleaf_v1_llmleaf, 19);
 
 /**
  * @generated from message llmleaf.v1.ChatRequest
@@ -635,7 +758,7 @@ export type ChatRequest = Message<"llmleaf.v1.ChatRequest"> & {
  * Use `create(ChatRequestSchema)` to create a new message.
  */
 export const ChatRequestSchema: GenMessage<ChatRequest> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 18);
+  messageDesc(file_llmleaf_v1_llmleaf, 20);
 
 /**
  * @generated from message llmleaf.v1.Choice
@@ -662,7 +785,7 @@ export type Choice = Message<"llmleaf.v1.Choice"> & {
  * Use `create(ChoiceSchema)` to create a new message.
  */
 export const ChoiceSchema: GenMessage<Choice> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 19);
+  messageDesc(file_llmleaf_v1_llmleaf, 21);
 
 /**
  * @generated from message llmleaf.v1.ChatResponse
@@ -708,7 +831,7 @@ export type ChatResponse = Message<"llmleaf.v1.ChatResponse"> & {
  * Use `create(ChatResponseSchema)` to create a new message.
  */
 export const ChatResponseSchema: GenMessage<ChatResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 20);
+  messageDesc(file_llmleaf_v1_llmleaf, 22);
 
 /**
  * Streaming SSE frame: `data: <ChatCompletionChunk JSON>\n\n`, terminated by
@@ -735,6 +858,19 @@ export type Delta = Message<"llmleaf.v1.Delta"> & {
    * @generated from field: repeated llmleaf.v1.ToolCallDelta tool_calls = 3;
    */
   toolCalls: ToolCallDelta[];
+
+  /**
+   * Incremental reasoning. `reasoning` is open text streamed token-by-token; `reasoning_details`
+   * carries structured open/hidden blocks (and their signatures) as they arrive (see ReasoningDetail).
+   *
+   * @generated from field: optional string reasoning = 4;
+   */
+  reasoning?: string | undefined;
+
+  /**
+   * @generated from field: repeated llmleaf.v1.ReasoningDetail reasoning_details = 5;
+   */
+  reasoningDetails: ReasoningDetail[];
 };
 
 /**
@@ -742,7 +878,7 @@ export type Delta = Message<"llmleaf.v1.Delta"> & {
  * Use `create(DeltaSchema)` to create a new message.
  */
 export const DeltaSchema: GenMessage<Delta> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 21);
+  messageDesc(file_llmleaf_v1_llmleaf, 23);
 
 /**
  * @generated from message llmleaf.v1.ChunkChoice
@@ -769,7 +905,7 @@ export type ChunkChoice = Message<"llmleaf.v1.ChunkChoice"> & {
  * Use `create(ChunkChoiceSchema)` to create a new message.
  */
 export const ChunkChoiceSchema: GenMessage<ChunkChoice> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 22);
+  messageDesc(file_llmleaf_v1_llmleaf, 24);
 
 /**
  * @generated from message llmleaf.v1.ChatCompletionChunk
@@ -815,7 +951,7 @@ export type ChatCompletionChunk = Message<"llmleaf.v1.ChatCompletionChunk"> & {
  * Use `create(ChatCompletionChunkSchema)` to create a new message.
  */
 export const ChatCompletionChunkSchema: GenMessage<ChatCompletionChunk> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 23);
+  messageDesc(file_llmleaf_v1_llmleaf, 25);
 
 /**
  * @generated from message llmleaf.v1.EmbeddingRequest
@@ -858,7 +994,7 @@ export type EmbeddingRequest = Message<"llmleaf.v1.EmbeddingRequest"> & {
  * Use `create(EmbeddingRequestSchema)` to create a new message.
  */
 export const EmbeddingRequestSchema: GenMessage<EmbeddingRequest> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 24);
+  messageDesc(file_llmleaf_v1_llmleaf, 26);
 
 /**
  * @generated from message llmleaf.v1.Embedding
@@ -889,7 +1025,7 @@ export type Embedding = Message<"llmleaf.v1.Embedding"> & {
  * Use `create(EmbeddingSchema)` to create a new message.
  */
 export const EmbeddingSchema: GenMessage<Embedding> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 25);
+  messageDesc(file_llmleaf_v1_llmleaf, 27);
 
 /**
  * @generated from message llmleaf.v1.EmbeddingResponse
@@ -923,7 +1059,7 @@ export type EmbeddingResponse = Message<"llmleaf.v1.EmbeddingResponse"> & {
  * Use `create(EmbeddingResponseSchema)` to create a new message.
  */
 export const EmbeddingResponseSchema: GenMessage<EmbeddingResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 26);
+  messageDesc(file_llmleaf_v1_llmleaf, 28);
 
 /**
  * @generated from message llmleaf.v1.SpeechRequest
@@ -969,7 +1105,7 @@ export type SpeechRequest = Message<"llmleaf.v1.SpeechRequest"> & {
  * Use `create(SpeechRequestSchema)` to create a new message.
  */
 export const SpeechRequestSchema: GenMessage<SpeechRequest> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 27);
+  messageDesc(file_llmleaf_v1_llmleaf, 29);
 
 /**
  * @generated from message llmleaf.v1.Voice
@@ -1000,7 +1136,7 @@ export type Voice = Message<"llmleaf.v1.Voice"> & {
  * Use `create(VoiceSchema)` to create a new message.
  */
 export const VoiceSchema: GenMessage<Voice> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 28);
+  messageDesc(file_llmleaf_v1_llmleaf, 30);
 
 /**
  * @generated from message llmleaf.v1.VoicesResponse
@@ -1022,7 +1158,7 @@ export type VoicesResponse = Message<"llmleaf.v1.VoicesResponse"> & {
  * Use `create(VoicesResponseSchema)` to create a new message.
  */
 export const VoicesResponseSchema: GenMessage<VoicesResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 29);
+  messageDesc(file_llmleaf_v1_llmleaf, 31);
 
 /**
  * The audio file itself is sent as the multipart `file` part, NOT in this message;
@@ -1068,7 +1204,7 @@ export type TranscriptionRequest = Message<"llmleaf.v1.TranscriptionRequest"> & 
  * Use `create(TranscriptionRequestSchema)` to create a new message.
  */
 export const TranscriptionRequestSchema: GenMessage<TranscriptionRequest> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 30);
+  messageDesc(file_llmleaf_v1_llmleaf, 32);
 
 /**
  * For response_format json/verbose_json. text/srt/vtt return a plain-text body.
@@ -1109,7 +1245,7 @@ export type TranscriptionResponse = Message<"llmleaf.v1.TranscriptionResponse"> 
  * Use `create(TranscriptionResponseSchema)` to create a new message.
  */
 export const TranscriptionResponseSchema: GenMessage<TranscriptionResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 31);
+  messageDesc(file_llmleaf_v1_llmleaf, 33);
 
 /**
  * @generated from message llmleaf.v1.Architecture
@@ -1148,7 +1284,7 @@ export type Architecture = Message<"llmleaf.v1.Architecture"> & {
  * Use `create(ArchitectureSchema)` to create a new message.
  */
 export const ArchitectureSchema: GenMessage<Architecture> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 32);
+  messageDesc(file_llmleaf_v1_llmleaf, 34);
 
 /**
  * @generated from message llmleaf.v1.Pricing
@@ -1172,7 +1308,7 @@ export type Pricing = Message<"llmleaf.v1.Pricing"> & {
  * Use `create(PricingSchema)` to create a new message.
  */
 export const PricingSchema: GenMessage<Pricing> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 33);
+  messageDesc(file_llmleaf_v1_llmleaf, 35);
 
 /**
  * @generated from message llmleaf.v1.TopProvider
@@ -1206,7 +1342,7 @@ export type TopProvider = Message<"llmleaf.v1.TopProvider"> & {
  * Use `create(TopProviderSchema)` to create a new message.
  */
 export const TopProviderSchema: GenMessage<TopProvider> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 34);
+  messageDesc(file_llmleaf_v1_llmleaf, 36);
 
 /**
  * Admin-only fallback-chain entry (present only with a valid x-admin-token).
@@ -1242,7 +1378,7 @@ export type ModelEndpoint = Message<"llmleaf.v1.ModelEndpoint"> & {
  * Use `create(ModelEndpointSchema)` to create a new message.
  */
 export const ModelEndpointSchema: GenMessage<ModelEndpoint> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 35);
+  messageDesc(file_llmleaf_v1_llmleaf, 37);
 
 /**
  * @generated from message llmleaf.v1.ModelEntry
@@ -1323,7 +1459,7 @@ export type ModelEntry = Message<"llmleaf.v1.ModelEntry"> & {
  * Use `create(ModelEntrySchema)` to create a new message.
  */
 export const ModelEntrySchema: GenMessage<ModelEntry> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 36);
+  messageDesc(file_llmleaf_v1_llmleaf, 38);
 
 /**
  * @generated from message llmleaf.v1.ListModelsResponse
@@ -1340,7 +1476,7 @@ export type ListModelsResponse = Message<"llmleaf.v1.ListModelsResponse"> & {
  * Use `create(ListModelsResponseSchema)` to create a new message.
  */
 export const ListModelsResponseSchema: GenMessage<ListModelsResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 37);
+  messageDesc(file_llmleaf_v1_llmleaf, 39);
 
 /**
  * @generated from message llmleaf.v1.BatchRequestItem
@@ -1362,7 +1498,7 @@ export type BatchRequestItem = Message<"llmleaf.v1.BatchRequestItem"> & {
  * Use `create(BatchRequestItemSchema)` to create a new message.
  */
 export const BatchRequestItemSchema: GenMessage<BatchRequestItem> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 38);
+  messageDesc(file_llmleaf_v1_llmleaf, 40);
 
 /**
  * @generated from message llmleaf.v1.BatchCreateRequest
@@ -1379,7 +1515,7 @@ export type BatchCreateRequest = Message<"llmleaf.v1.BatchCreateRequest"> & {
  * Use `create(BatchCreateRequestSchema)` to create a new message.
  */
 export const BatchCreateRequestSchema: GenMessage<BatchCreateRequest> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 39);
+  messageDesc(file_llmleaf_v1_llmleaf, 41);
 
 /**
  * @generated from message llmleaf.v1.BatchCounts
@@ -1421,7 +1557,7 @@ export type BatchCounts = Message<"llmleaf.v1.BatchCounts"> & {
  * Use `create(BatchCountsSchema)` to create a new message.
  */
 export const BatchCountsSchema: GenMessage<BatchCounts> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 40);
+  messageDesc(file_llmleaf_v1_llmleaf, 42);
 
 /**
  * @generated from message llmleaf.v1.BatchHandle
@@ -1470,7 +1606,7 @@ export type BatchHandle = Message<"llmleaf.v1.BatchHandle"> & {
  * Use `create(BatchHandleSchema)` to create a new message.
  */
 export const BatchHandleSchema: GenMessage<BatchHandle> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 41);
+  messageDesc(file_llmleaf_v1_llmleaf, 43);
 
 /**
  * One line of the JSONL results stream (GET /v1/batches/{id}/results).
@@ -1499,7 +1635,7 @@ export type BatchResultLine = Message<"llmleaf.v1.BatchResultLine"> & {
  * Use `create(BatchResultLineSchema)` to create a new message.
  */
 export const BatchResultLineSchema: GenMessage<BatchResultLine> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 42);
+  messageDesc(file_llmleaf_v1_llmleaf, 44);
 
 /**
  * @generated from message llmleaf.v1.BatchResponse
@@ -1521,7 +1657,7 @@ export type BatchResponse = Message<"llmleaf.v1.BatchResponse"> & {
  * Use `create(BatchResponseSchema)` to create a new message.
  */
 export const BatchResponseSchema: GenMessage<BatchResponse> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 43);
+  messageDesc(file_llmleaf_v1_llmleaf, 45);
 
 /**
  * @generated from message llmleaf.v1.BatchError
@@ -1543,7 +1679,7 @@ export type BatchError = Message<"llmleaf.v1.BatchError"> & {
  * Use `create(BatchErrorSchema)` to create a new message.
  */
 export const BatchErrorSchema: GenMessage<BatchError> = /*@__PURE__*/
-  messageDesc(file_llmleaf_v1_llmleaf, 44);
+  messageDesc(file_llmleaf_v1_llmleaf, 46);
 
 /**
  * @generated from enum llmleaf.v1.Role

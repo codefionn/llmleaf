@@ -176,6 +176,8 @@ fn pb_module_is_usable() {
         completion_tokens: 2,
         total_tokens: 3,
         cost_usd: None,
+        prompt_tokens_details: None,
+        cache_creation_tokens: None,
     };
     assert_eq!(u.total_tokens, 3);
     // Enum casing on the proto side is i32; wire casing lives in the serde types.

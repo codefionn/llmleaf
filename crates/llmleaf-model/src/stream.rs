@@ -3,7 +3,9 @@ use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
 
-use crate::{ChatResponse, Choice, FinishReason, ModelError, StreamChunk, ToolCall, Usage};
+use crate::{
+    ChatResponse, Choice, ContentPart, FinishReason, ModelError, StreamChunk, ToolCall, Usage,
+};
 
 /// The canonical streaming response: a pinned, boxed, `Send` stream of [`StreamChunk`]s.
 ///
@@ -37,6 +39,10 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
     let mut finishes: BTreeMap<u32, FinishReason> = BTreeMap::new();
     // index -> (call index -> partial tool call)
     let mut tools: BTreeMap<u32, BTreeMap<u32, PartialToolCall>> = BTreeMap::new();
+    // index -> (thinking text, signature) for the choice's reasoning block.
+    let mut thinkings: BTreeMap<u32, (String, Option<String>)> = BTreeMap::new();
+    // index -> redacted thinking blocks, in arrival order.
+    let mut redacteds: BTreeMap<u32, Vec<String>> = BTreeMap::new();
 
     for item in chunks {
         match item {
@@ -46,6 +52,15 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
             }
             StreamChunk::Content { index, delta } => {
                 texts.entry(index).or_default().push_str(&delta);
+            }
+            StreamChunk::Thinking { index, delta } => {
+                thinkings.entry(index).or_default().0.push_str(&delta);
+            }
+            StreamChunk::ThinkingSignature { index, signature } => {
+                thinkings.entry(index).or_default().1 = Some(signature);
+            }
+            StreamChunk::RedactedThinking { index, data } => {
+                redacteds.entry(index).or_default().push(data);
             }
             StreamChunk::ToolCall { index, call } => {
                 let entry = tools
@@ -75,6 +90,8 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
         .keys()
         .chain(finishes.keys())
         .chain(tools.keys())
+        .chain(thinkings.keys())
+        .chain(redacteds.keys())
         .copied()
         .collect();
     indices.sort_unstable();
@@ -85,6 +102,9 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
         .map(|index| Choice {
             index,
             text: texts.remove(&index).unwrap_or_default(),
+            // Reasoning leads the turn: the thinking block (if any) first, then redacted blocks,
+            // mirroring the order the upstream emits and the order replay must restore.
+            thinking: thinking_parts(thinkings.remove(&index), redacteds.remove(&index)),
             tool_calls: tools
                 .remove(&index)
                 .map(|m| m.into_values().map(PartialToolCall::into_call).collect())
@@ -114,6 +134,86 @@ impl PartialToolCall {
             id: self.id,
             name: self.name,
             arguments: self.arguments,
+        }
+    }
+}
+
+/// Build a choice's ordered reasoning content from the collected thinking text/signature and any
+/// redacted blocks. A thinking block is emitted only when it carries text or a signature (an empty
+/// accumulator means the choice had no reasoning); redacted blocks follow it in arrival order.
+fn thinking_parts(
+    thinking: Option<(String, Option<String>)>,
+    redacted: Option<Vec<String>>,
+) -> Vec<ContentPart> {
+    let mut parts = Vec::new();
+    if let Some((text, signature)) = thinking {
+        if !text.is_empty() || signature.is_some() {
+            parts.push(ContentPart::Thinking {
+                thinking: text,
+                signature,
+            });
+        }
+    }
+    for data in redacted.into_iter().flatten() {
+        parts.push(ContentPart::RedactedThinking { data });
+    }
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_chunks_folds_thinking_into_choice() {
+        let resp = collect_chunks([
+            StreamChunk::Start {
+                id: "r".into(),
+                model: "m".into(),
+            },
+            StreamChunk::Thinking {
+                index: 0,
+                delta: "rea".into(),
+            },
+            StreamChunk::Thinking {
+                index: 0,
+                delta: "son".into(),
+            },
+            StreamChunk::ThinkingSignature {
+                index: 0,
+                signature: "sig".into(),
+            },
+            StreamChunk::RedactedThinking {
+                index: 0,
+                data: "ENC".into(),
+            },
+            StreamChunk::Content {
+                index: 0,
+                delta: "hi".into(),
+            },
+            StreamChunk::Finish {
+                index: 0,
+                reason: FinishReason::Stop,
+            },
+        ]);
+        let choice = &resp.choices[0];
+        assert_eq!(choice.text, "hi");
+        // Reasoning collected in order: a thinking block (deltas concatenated, signature attached),
+        // then the redacted block — the same lead-with-reasoning order the streamed path produces.
+        assert_eq!(choice.thinking.len(), 2);
+        match &choice.thinking[0] {
+            ContentPart::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "reason");
+                assert_eq!(signature.as_deref(), Some("sig"));
+            }
+            other => panic!("expected a thinking block first, got {other:?}"),
+        }
+        match &choice.thinking[1] {
+            ContentPart::RedactedThinking { data } => assert_eq!(data, "ENC"),
+            other => panic!("expected a redacted block, got {other:?}"),
         }
     }
 }

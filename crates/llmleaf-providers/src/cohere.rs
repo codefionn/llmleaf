@@ -217,6 +217,8 @@ fn cohere_to_embeddings(value: Value, model: &str) -> EmbeddingResponse {
         completion_tokens: 0,
         total_tokens: prompt_tokens,
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     };
 
     EmbeddingResponse {
@@ -408,6 +410,8 @@ fn cohere_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
             completion_tokens: completion,
             total_tokens: prompt + completion,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }));
     }
 

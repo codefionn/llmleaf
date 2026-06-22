@@ -1958,6 +1958,7 @@ dependencies = [
  "llmleaf-provider",
  "llmleaf-providers",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

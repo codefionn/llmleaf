@@ -111,6 +111,8 @@ impl Provider for SimProvider {
                 completion_tokens: 2,
                 total_tokens: 5,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -307,6 +309,8 @@ fn build_config(topo: &Topology) -> Config {
             credential: None,
             prefix: None,
             settings: Default::default(),
+            limits: None,
+            model_limits: Default::default(),
         })
         .collect();
 
@@ -332,6 +336,7 @@ fn build_config(topo: &Topology) -> Config {
             event_buffer: 8192,
             include_payloads: false,
             fallback_cooldown_secs: topo.cooldown_secs,
+            ..Default::default()
         },
         providers,
         routes,
@@ -603,6 +608,12 @@ fn engine_err_outcome(err: EngineError, _model: &str) -> Outcome {
         // The simulation builds state without an interceptor, so the hot path never blocks.
         EngineError::Blocked(reason) => {
             unreachable!("no interceptor configured, got Blocked: {reason}")
+        }
+        // The dispatch topology configures no provider rate limits, so admission never throttles.
+        EngineError::RateLimited { retry_after_secs } => {
+            unreachable!(
+                "no rate limits configured, got RateLimited: retry after {retry_after_secs}s"
+            )
         }
         // These dispatch scenarios cover chat/embed/speech/voices/transcribe; they never submit a
         // batch, so the batch-only errors cannot arise here.

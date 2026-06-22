@@ -22,3 +22,6 @@ async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
 serde_json.workspace = true
+# Only for `tokio::time::Instant` (the rate limiter's clock type). Outside a runtime — which the bench
+# is, it drives futures with `block_on` — `Instant::now()` falls back to the system clock, no panic.
+tokio.workspace = true

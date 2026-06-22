@@ -311,7 +311,24 @@ struct UsageFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
     prompt_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_tokens_details: Option<PromptTokensDetails>,
     total_tokens: u64,
+    // Cache *creation* (cache writes) is Anthropic-only — OpenAI has no field for it — so it rides as
+    // an llmleaf extension, omitted when zero (a non-caching response stays byte-identical).
+    #[serde(skip_serializing_if = "is_zero")]
+    cache_creation_tokens: u64,
+}
+
+/// OpenAI's `usage.prompt_tokens_details` — the standard home for the cached-read count, which is
+/// what OpenAI and OpenRouter emit and the shape a stock OpenAI client expects.
+#[derive(Serialize)]
+struct PromptTokensDetails {
+    cached_tokens: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl From<&Usage> for UsageFrame {
@@ -320,7 +337,13 @@ impl From<&Usage> for UsageFrame {
             completion_tokens: u.completion_tokens,
             cost_usd: u.cost_usd,
             prompt_tokens: u.prompt_tokens,
+            // Cache reads surface OpenAI-style under `prompt_tokens_details.cached_tokens`; omitted
+            // entirely when there were none, so non-caching responses serialise exactly as before.
+            prompt_tokens_details: (u.cache_read_tokens > 0).then_some(PromptTokensDetails {
+                cached_tokens: u.cache_read_tokens,
+            }),
             total_tokens: u.total_tokens,
+            cache_creation_tokens: u.cache_creation_tokens,
         }
     }
 }
@@ -473,6 +496,11 @@ impl ChunkEncoder {
                 }],
                 None,
             ),
+            // Reasoning has no OpenAI `chat.completion.chunk` representation; it is preserved on the
+            // canonical side for providers that round-trip it and produces no frame on this surface.
+            StreamChunk::Thinking { .. }
+            | StreamChunk::ThinkingSignature { .. }
+            | StreamChunk::RedactedThinking { .. } => return false,
             StreamChunk::Usage(u) => self.write_frame(buf, &[], Some(UsageFrame::from(u))),
             StreamChunk::Finish { index, reason } => self.write_frame(
                 buf,
@@ -626,6 +654,8 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 3,
                 cost_usd: Some(0.5),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }),
             &mut buf,
         ));
@@ -644,6 +674,7 @@ mod tests {
             choices: vec![Choice {
                 index: 0,
                 text: "hi there".into(),
+                thinking: vec![],
                 tool_calls: vec![],
                 finish_reason: Some(FinishReason::Stop),
             }],
@@ -652,6 +683,8 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 5,
                 cost_usd: Some(0.01),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         };
         // `to_value` here is a test-only convenience for the readable `v[..]` assertions — the hot
@@ -680,6 +713,7 @@ mod tests {
                 Choice {
                     index: 0,
                     text: "answer".into(),
+                    thinking: vec![],
                     tool_calls: vec![
                         ToolCall {
                             id: "call_a".into(),
@@ -697,6 +731,7 @@ mod tests {
                 Choice {
                     index: 1,
                     text: "more".into(),
+                    thinking: vec![],
                     tool_calls: vec![],
                     finish_reason: None,
                 },
@@ -706,6 +741,8 @@ mod tests {
                 completion_tokens: 11,
                 total_tokens: 18,
                 cost_usd: Some(0.0042),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         };
 

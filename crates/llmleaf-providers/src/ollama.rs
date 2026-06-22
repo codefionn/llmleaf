@@ -286,6 +286,8 @@ fn message_to_ollama(msg: &Message) -> Value {
                     images.push(b64);
                 }
             }
+            // Reasoning blocks do not port across providers and Ollama has no slot for them; skip.
+            ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {}
         }
     }
     obj.insert("content".into(), json!(text));
@@ -435,6 +437,8 @@ fn ollama_chunk_to_canonical(
             completion_tokens: completion,
             total_tokens: prompt + completion,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }));
     }
 
@@ -540,6 +544,8 @@ fn ollama_to_embeddings(value: Value, fallback_model: &str) -> EmbeddingResponse
             completion_tokens: 0,
             total_tokens: prompt,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         },
     }
 }

@@ -248,6 +248,7 @@ mod tests {
                 choices: vec![Choice {
                     index: 0,
                     text: "hello".into(),
+                    thinking: vec![],
                     tool_calls: vec![],
                     finish_reason: Some(FinishReason::Stop),
                 }],
@@ -332,6 +333,7 @@ mod tests {
                 choices: vec![Choice {
                     index: 0,
                     text: "hello".into(),
+                    thinking: vec![],
                     tool_calls: vec![],
                     finish_reason: Some(FinishReason::Stop),
                 }],

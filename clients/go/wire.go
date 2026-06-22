@@ -177,15 +177,61 @@ func toolCallDeltaFromWire(d wireToolCallDelta) *pb.ToolCallDelta {
 }
 
 // ---------------------------------------------------------------------------
+// reasoning ("thinking") blocks
+// ---------------------------------------------------------------------------
+
+// wireReasoningDetail mirrors one OpenRouter reasoning_details[] entry. `type` discriminates:
+// "reasoning.text" -> Text (+ optional Signature) is OPEN; "reasoning.summary" -> Summary is OPEN;
+// "reasoning.encrypted" -> Data is HIDDEN (redacted). Signature/Data are opaque and replayed verbatim.
+type wireReasoningDetail struct {
+	Type      string  `json:"type"`
+	Text      *string `json:"text,omitempty"`
+	Summary   *string `json:"summary,omitempty"`
+	Data      *string `json:"data,omitempty"`
+	Signature *string `json:"signature,omitempty"`
+	ID        *string `json:"id,omitempty"`
+	Format    *string `json:"format,omitempty"`
+	Index     *uint32 `json:"index,omitempty"`
+}
+
+func reasoningDetailToWire(d *pb.ReasoningDetail) wireReasoningDetail {
+	return wireReasoningDetail{
+		Type:      d.GetType(),
+		Text:      d.Text,
+		Summary:   d.Summary,
+		Data:      d.Data,
+		Signature: d.Signature,
+		ID:        d.Id,
+		Format:    d.Format,
+		Index:     d.Index,
+	}
+}
+
+func reasoningDetailFromWire(d wireReasoningDetail) *pb.ReasoningDetail {
+	return &pb.ReasoningDetail{
+		Type:      d.Type,
+		Text:      d.Text,
+		Summary:   d.Summary,
+		Data:      d.Data,
+		Signature: d.Signature,
+		Id:        d.ID,
+		Format:    d.Format,
+		Index:     d.Index,
+	}
+}
+
+// ---------------------------------------------------------------------------
 // chat message
 // ---------------------------------------------------------------------------
 
 type wireChatMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content,omitempty"`
-	Name       *string         `json:"name,omitempty"`
-	ToolCalls  []wireToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID *string         `json:"tool_call_id,omitempty"`
+	Role             string                `json:"role"`
+	Content          json.RawMessage       `json:"content,omitempty"`
+	Name             *string               `json:"name,omitempty"`
+	ToolCalls        []wireToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       *string               `json:"tool_call_id,omitempty"`
+	Reasoning        *string               `json:"reasoning,omitempty"`
+	ReasoningDetails []wireReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 func chatMessageToWire(m *pb.ChatMessage) (wireChatMessage, error) {
@@ -215,11 +261,15 @@ func chatMessageToWire(m *pb.ChatMessage) (wireChatMessage, error) {
 	for _, tc := range m.GetToolCalls() {
 		out.ToolCalls = append(out.ToolCalls, toolCallToWire(tc))
 	}
+	out.Reasoning = m.Reasoning
+	for _, rd := range m.GetReasoningDetails() {
+		out.ReasoningDetails = append(out.ReasoningDetails, reasoningDetailToWire(rd))
+	}
 	return out, nil
 }
 
 func chatMessageFromWire(m wireChatMessage) (*pb.ChatMessage, error) {
-	out := &pb.ChatMessage{Name: m.Name, ToolCallId: m.ToolCallID}
+	out := &pb.ChatMessage{Name: m.Name, ToolCallId: m.ToolCallID, Reasoning: m.Reasoning}
 	if role, ok := enumFromWire(pb.Role_value, m.Role); ok {
 		out.Role = pb.Role(role)
 	}
@@ -245,6 +295,9 @@ func chatMessageFromWire(m wireChatMessage) (*pb.ChatMessage, error) {
 	}
 	for _, tc := range m.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, toolCallFromWire(tc))
+	}
+	for _, rd := range m.ReasoningDetails {
+		out.ReasoningDetails = append(out.ReasoningDetails, reasoningDetailFromWire(rd))
 	}
 	return out, nil
 }
@@ -474,23 +527,35 @@ type wireChoice struct {
 	FinishReason *string         `json:"finish_reason"`
 }
 
+// wirePromptTokensDetails mirrors usage.prompt_tokens_details — today just the cache-read (hit) share.
+type wirePromptTokensDetails struct {
+	CachedTokens *uint32 `json:"cached_tokens,omitempty"`
+}
+
 type wireUsage struct {
-	PromptTokens     uint32   `json:"prompt_tokens"`
-	CompletionTokens uint32   `json:"completion_tokens"`
-	TotalTokens      uint32   `json:"total_tokens"`
-	CostUSD          *float64 `json:"cost_usd"`
+	PromptTokens        uint32                   `json:"prompt_tokens"`
+	CompletionTokens    uint32                   `json:"completion_tokens"`
+	TotalTokens         uint32                   `json:"total_tokens"`
+	CostUSD             *float64                 `json:"cost_usd"`
+	PromptTokensDetails *wirePromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	CacheCreationTokens *uint32                  `json:"cache_creation_tokens,omitempty"`
 }
 
 func usageFromWire(u *wireUsage) *pb.Usage {
 	if u == nil {
 		return nil
 	}
-	return &pb.Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-		CostUsd:          u.CostUSD,
+	out := &pb.Usage{
+		PromptTokens:        u.PromptTokens,
+		CompletionTokens:    u.CompletionTokens,
+		TotalTokens:         u.TotalTokens,
+		CostUsd:             u.CostUSD,
+		CacheCreationTokens: u.CacheCreationTokens,
 	}
+	if d := u.PromptTokensDetails; d != nil {
+		out.PromptTokensDetails = &pb.PromptTokensDetails{CachedTokens: d.CachedTokens}
+	}
+	return out
 }
 
 type wireChatResponse struct {
@@ -539,9 +604,11 @@ func (w *wireChatResponse) toPB() (*pb.ChatResponse, error) {
 // ---------------------------------------------------------------------------
 
 type wireDelta struct {
-	Role      *string             `json:"role"`
-	Content   *string             `json:"content"`
-	ToolCalls []wireToolCallDelta `json:"tool_calls"`
+	Role             *string               `json:"role"`
+	Content          *string               `json:"content"`
+	ToolCalls        []wireToolCallDelta   `json:"tool_calls"`
+	Reasoning        *string               `json:"reasoning,omitempty"`
+	ReasoningDetails []wireReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 type wireChunkChoice struct {
@@ -568,7 +635,7 @@ func (w *wireChunk) toPB() *pb.ChatCompletionChunk {
 		Usage:   usageFromWire(w.Usage),
 	}
 	for _, c := range w.Choices {
-		delta := &pb.Delta{Content: c.Delta.Content}
+		delta := &pb.Delta{Content: c.Delta.Content, Reasoning: c.Delta.Reasoning}
 		if c.Delta.Role != nil {
 			if v, ok := enumFromWire(pb.Role_value, *c.Delta.Role); ok {
 				delta.Role = ptr(pb.Role(v))
@@ -576,6 +643,9 @@ func (w *wireChunk) toPB() *pb.ChatCompletionChunk {
 		}
 		for _, tc := range c.Delta.ToolCalls {
 			delta.ToolCalls = append(delta.ToolCalls, toolCallDeltaFromWire(tc))
+		}
+		for _, rd := range c.Delta.ReasoningDetails {
+			delta.ReasoningDetails = append(delta.ReasoningDetails, reasoningDetailFromWire(rd))
 		}
 		out.Choices = append(out.Choices, &pb.ChunkChoice{
 			Index:        c.Index,

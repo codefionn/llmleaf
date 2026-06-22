@@ -257,6 +257,8 @@ fn vertex_to_embeddings(value: Value, model: &str) -> EmbeddingResponse {
             completion_tokens: 0,
             total_tokens: tokens,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }
     } else {
         Usage::default()

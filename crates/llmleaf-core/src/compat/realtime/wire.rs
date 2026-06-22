@@ -286,6 +286,16 @@ pub struct ResponseScaffold {
     seq: u64,
     text_opened: bool,
     text: String,
+    /// Accumulated extended-thinking text for the turn, kept so the persisted assistant [`Message`]
+    /// carries it into the next request. The Realtime client protocol has no reasoning item, so this
+    /// is never surfaced as a server frame — it exists purely for verbatim replay (and prompt-cache
+    /// stability) on the stateful bridge.
+    thinking: String,
+    /// The signature over [`Self::thinking`], replayed verbatim — Anthropic rejects a continued turn
+    /// whose thinking block is missing or altered.
+    thinking_signature: Option<String>,
+    /// Redacted (encrypted) thinking blocks, in arrival order, replayed verbatim.
+    redacted: Vec<String>,
     tools: std::collections::BTreeMap<u32, ToolAcc>,
 }
 
@@ -309,6 +319,9 @@ impl ResponseScaffold {
             seq: 0,
             text_opened: false,
             text: String::new(),
+            thinking: String::new(),
+            thinking_signature: None,
+            redacted: Vec::new(),
             tools: std::collections::BTreeMap::new(),
         }
     }
@@ -317,6 +330,18 @@ impl ResponseScaffold {
     /// next turn replays it (Realtime is stateful; chat completions is not). Call after the stream ends.
     pub fn assistant_message(&self) -> Message {
         let mut content = Vec::new();
+        // Reasoning leads the turn: thinking block (with its signature) first, then any redacted
+        // blocks, then the visible text — the order Anthropic emits and requires on replay, and the
+        // order that keeps a thinking block ahead of the tool_use it justifies.
+        if !self.thinking.is_empty() || self.thinking_signature.is_some() {
+            content.push(ContentPart::Thinking {
+                thinking: self.thinking.clone(),
+                signature: self.thinking_signature.clone(),
+            });
+        }
+        for data in &self.redacted {
+            content.push(ContentPart::RedactedThinking { data: data.clone() });
+        }
         if !self.text.is_empty() {
             content.push(ContentPart::Text {
                 text: self.text.clone(),
@@ -355,6 +380,14 @@ impl ResponseScaffold {
             StreamChunk::Start { .. } => {}
             StreamChunk::Content { delta, .. } => self.on_content(delta, out),
             StreamChunk::ToolCall { call, .. } => self.on_tool_call(call, out),
+            // Reasoning is accumulated for verbatim replay only — the Realtime client protocol has no
+            // reasoning output item, so these emit no server frame (the client never sees them, but
+            // the persisted turn carries them to the next request).
+            StreamChunk::Thinking { delta, .. } => self.thinking.push_str(delta),
+            StreamChunk::ThinkingSignature { signature, .. } => {
+                self.thinking_signature = Some(signature.clone());
+            }
+            StreamChunk::RedactedThinking { data, .. } => self.redacted.push(data.clone()),
             // Usage/Finish are folded into the terminal frame by `finish`.
             StreamChunk::Usage(_) | StreamChunk::Finish { .. } => {}
         }
@@ -561,6 +594,8 @@ pub fn usage_from_server_frame(text: &str) -> Option<Usage> {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     })
 }
 
@@ -684,6 +719,8 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 5,
                 cost_usd: Some(0.01),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
             &mut out,
         );
@@ -719,6 +756,55 @@ mod tests {
         assert_eq!(done["response"]["usage"]["output_tokens"], 2);
         assert!(done["response"]["usage"].get("cost_usd").is_none());
         assert_eq!(done["response"]["output"][0]["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn scaffold_persists_thinking_with_signature_for_replay() {
+        let mut s = ResponseScaffold::new("resp_t".into(), "msg_t".into());
+        let mut out = Vec::new();
+        // Reasoning is internal-only: the Realtime client protocol has no reasoning item, so these
+        // chunks must produce no server frame.
+        s.on_chunk(
+            &StreamChunk::Thinking {
+                index: 0,
+                delta: "reason".into(),
+            },
+            &mut out,
+        );
+        s.on_chunk(
+            &StreamChunk::ThinkingSignature {
+                index: 0,
+                signature: "sig".into(),
+            },
+            &mut out,
+        );
+        assert!(out.is_empty(), "reasoning must not emit a client frame");
+        // Visible text still drives the normal item frames.
+        s.on_chunk(
+            &StreamChunk::Content {
+                index: 0,
+                delta: "hi".into(),
+            },
+            &mut out,
+        );
+        assert!(!out.is_empty());
+
+        // The persisted turn leads with the thinking block (carrying its signature), then the text —
+        // exactly what the next request replays so the upstream accepts the continued turn.
+        let msg = s.assistant_message();
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.content.len(), 2);
+        match &msg.content[0] {
+            ContentPart::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "reason");
+                assert_eq!(signature.as_deref(), Some("sig"));
+            }
+            other => panic!("expected a leading thinking block, got {other:?}"),
+        }
+        assert_eq!(msg.text_content(), "hi");
     }
 
     #[test]

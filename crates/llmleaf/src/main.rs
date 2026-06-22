@@ -170,3 +170,34 @@ fn load_config() -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     tracing::warn!("no config file found — starting with the embedded DEV config (echo provider, key 'sk-local'). NOT for production.");
     Ok(Config::from_toml_str(DEV_CONFIG)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The embedded dev fallback must always parse (it runs when no config file is found).
+    #[test]
+    fn dev_config_parses() {
+        Config::from_toml_str(DEV_CONFIG).expect("DEV_CONFIG parses");
+    }
+
+    /// The shipped, documented example must parse with `deny_unknown_fields` — so a typo or a stale key
+    /// in the example we point operators at fails CI, not their first run. Covers the rate-limit blocks.
+    #[test]
+    fn shipped_example_config_parses() {
+        let toml = include_str!("../../../llmleaf.example.toml");
+        let cfg = Config::from_toml_str(toml).expect("llmleaf.example.toml parses");
+        let openai = cfg
+            .providers
+            .iter()
+            .find(|p| p.name == "openai-main")
+            .expect("example declares openai-main");
+        let limits = openai
+            .limits
+            .as_ref()
+            .expect("example documents [providers.limits]");
+        assert_eq!(limits.requests_per_min, Some(10000));
+        assert!(openai.model_limits.contains_key("gpt-4o"));
+        assert_eq!(cfg.server.rate_limit_max_wait_ms, 5000);
+    }
+}

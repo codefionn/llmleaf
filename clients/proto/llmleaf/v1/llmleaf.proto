@@ -43,6 +43,18 @@ message Usage {
   uint32 completion_tokens = 2;
   uint32 total_tokens = 3;
   optional double cost_usd = 4;
+  // Prompt-cache hit accounting, OpenAI-shaped (`usage.prompt_tokens_details`). Absent when the
+  // upstream reported no caching. `cached_tokens` is how many of `prompt_tokens` were a cache *read*.
+  optional PromptTokensDetails prompt_tokens_details = 5;
+  // Input tokens written to the provider's prompt cache this request — a cache *write* (creation).
+  // An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do not), absent/0 when there was none.
+  optional uint32 cache_creation_tokens = 6;
+}
+
+// Breakdown of `Usage.prompt_tokens`. Today only the cached (cache-read / hit) share is surfaced —
+// the count of prompt tokens served from the provider's cache rather than processed fresh.
+message PromptTokensDetails {
+  optional uint32 cached_tokens = 1;
 }
 
 // The canonical error envelope returned by every endpoint:  {"error":{"message":...}}.
@@ -125,6 +137,27 @@ message ToolCallDelta {
   optional FunctionCallDelta function = 4;
 }
 
+// One structured reasoning ("thinking") block, OpenRouter-shaped
+// (`message.reasoning_details[]` / `delta.reasoning_details[]`). It expresses both *open* reasoning
+// (visible text, optionally signed) and *hidden* reasoning (an encrypted/redacted blob the provider
+// returns in place of the text). `type` is the wire discriminator and selects which field is set:
+//   "reasoning.text"      -> text (+ optional signature)   — OPEN  (visible reasoning)
+//   "reasoning.summary"   -> summary                        — OPEN  (a summarised view)
+//   "reasoning.encrypted" -> data                           — HIDDEN (redacted / opaque)
+// `signature` and `data` are opaque to the client and MUST be echoed back verbatim in the next
+// request's reasoning_details to continue a signed/encrypted reasoning turn (the upstream rejects an
+// altered or dropped block — e.g. before a tool call). `format` tags the provider encoding when known.
+message ReasoningDetail {
+  string type = 1;
+  optional string text = 2;      // "reasoning.text"
+  optional string summary = 3;   // "reasoning.summary"
+  optional string data = 4;      // "reasoning.encrypted" (hidden)
+  optional string signature = 5; // opaque, replayed verbatim
+  optional string id = 6;
+  optional string format = 7;    // e.g. "anthropic-claude-v1"
+  optional uint32 index = 8;
+}
+
 message ChatMessage {
   Role role = 1;
   // Wire `content` is either a plain string or an array of content parts.
@@ -135,6 +168,11 @@ message ChatMessage {
   optional string name = 4;
   repeated ToolCall tool_calls = 5;
   optional string tool_call_id = 6; // set when role == TOOL
+  // Reasoning the assistant emitted (OpenRouter surface). `reasoning` is the flat open text; the
+  // structured `reasoning_details` additionally carries signatures and hidden/encrypted blocks. Send
+  // `reasoning_details` back verbatim on the next turn to preserve signed reasoning (see ReasoningDetail).
+  optional string reasoning = 7;
+  repeated ReasoningDetail reasoning_details = 8;
 }
 
 // A function the model MAY call.  `parameters` is a raw JSON Schema string.
@@ -215,6 +253,10 @@ message Delta {
   optional Role role = 1;       // first chunk only
   optional string content = 2;  // incremental text
   repeated ToolCallDelta tool_calls = 3;
+  // Incremental reasoning. `reasoning` is open text streamed token-by-token; `reasoning_details`
+  // carries structured open/hidden blocks (and their signatures) as they arrive (see ReasoningDetail).
+  optional string reasoning = 4;
+  repeated ReasoningDetail reasoning_details = 5;
 }
 
 message ChunkChoice {

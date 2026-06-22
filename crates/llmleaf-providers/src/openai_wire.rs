@@ -149,16 +149,19 @@ fn content_parts(msg: &Message) -> Value {
     let parts: Vec<Value> = msg
         .content
         .iter()
-        .map(|p| match p {
-            ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+        .filter_map(|p| match p {
+            ContentPart::Text { text } => Some(json!({ "type": "text", "text": text })),
             ContentPart::ImageUrl { url, detail } => {
                 let mut image_url = Map::new();
                 image_url.insert("url".into(), json!(url));
                 if let Some(detail) = detail {
                     image_url.insert("detail".into(), json!(detail));
                 }
-                json!({ "type": "image_url", "image_url": Value::Object(image_url) })
+                Some(json!({ "type": "image_url", "image_url": Value::Object(image_url) }))
             }
+            // OpenAI chat completions has no field for replayed reasoning (it is server-side on o-series
+            // models); reasoning does not port across providers, so drop these blocks at this edge.
+            ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
         })
         .collect();
     Value::Array(parts)
@@ -244,10 +247,28 @@ pub fn openai_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> 
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cost_usd: None,
+            // OpenAI/OpenRouter report cache hits under `prompt_tokens_details.cached_tokens`
+            // (automatic prompt caching); DeepSeek uses `prompt_cache_hit_tokens`. Either maps to the
+            // canonical cache-read counter; there is no client-driven cache write, so creation is 0.
+            cache_read_tokens: openai_cache_read_tokens(usage),
+            cache_creation_tokens: 0,
         }));
     }
 
     chunks
+}
+
+/// Cache-read (hit) input tokens from an OpenAI-style `usage` object. OpenAI and OpenRouter (a
+/// first-class OpenAI-compatible provider) report this as `prompt_tokens_details.cached_tokens` under
+/// automatic prompt caching; DeepSeek reports `prompt_cache_hit_tokens`. Either maps to the canonical
+/// cache-read counter; absent (most compatible vendors) → 0.
+fn openai_cache_read_tokens(usage: &Value) -> u64 {
+    usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
+        .unwrap_or(0)
 }
 
 fn map_finish(reason: &str) -> FinishReason {
@@ -354,6 +375,11 @@ pub fn openai_chunk_to_canonical(
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cost_usd: None,
+            // OpenAI/OpenRouter report cache hits under `prompt_tokens_details.cached_tokens`
+            // (automatic prompt caching); DeepSeek uses `prompt_cache_hit_tokens`. Either maps to the
+            // canonical cache-read counter; there is no client-driven cache write, so creation is 0.
+            cache_read_tokens: openai_cache_read_tokens(usage),
+            cache_creation_tokens: 0,
         }));
     }
 
@@ -498,6 +524,8 @@ pub fn openai_to_embeddings(value: Value, fallback_model: &str) -> EmbeddingResp
             completion_tokens: 0,
             total_tokens: u.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         })
         .unwrap_or_default();
 
@@ -834,6 +862,8 @@ pub fn openai_to_transcription(value: Value) -> TranscriptionResponse {
                     .and_then(Value::as_u64)
                     .unwrap_or(prompt + completion),
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }
         })
         .unwrap_or_default();
@@ -902,6 +932,8 @@ pub fn openrouter_to_transcription(value: Value) -> TranscriptionResponse {
                     .and_then(Value::as_u64)
                     .unwrap_or(prompt + completion),
                 cost_usd: u.get("cost").and_then(Value::as_f64),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }
         })
         .unwrap_or_default();

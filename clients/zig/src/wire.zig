@@ -74,6 +74,43 @@ fn writeContent(s: *Stringify, content: gen.Content) !void {
     }
 }
 
+/// Write one `reasoning_details[]` entry as an object on `s`. Optional fields are omitted
+/// when absent; `signature`/`data` are opaque and round-tripped verbatim.
+fn writeReasoningDetail(s: *Stringify, rd: gen.ReasoningDetail) !void {
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write(rd.type);
+    if (rd.text) |v| {
+        try s.objectField("text");
+        try s.write(v);
+    }
+    if (rd.summary) |v| {
+        try s.objectField("summary");
+        try s.write(v);
+    }
+    if (rd.data) |v| {
+        try s.objectField("data");
+        try s.write(v);
+    }
+    if (rd.signature) |v| {
+        try s.objectField("signature");
+        try s.write(v);
+    }
+    if (rd.id) |v| {
+        try s.objectField("id");
+        try s.write(v);
+    }
+    if (rd.format) |v| {
+        try s.objectField("format");
+        try s.write(v);
+    }
+    if (rd.index) |v| {
+        try s.objectField("index");
+        try s.write(v);
+    }
+    try s.endObject();
+}
+
 fn writeMessage(s: *Stringify, gpa: Allocator, m: gen.ChatMessage) !void {
     try s.beginObject();
     try s.objectField("role");
@@ -109,6 +146,17 @@ fn writeMessage(s: *Stringify, gpa: Allocator, m: gen.ChatMessage) !void {
     if (m.tool_call_id) |id| {
         try s.objectField("tool_call_id");
         try s.write(id);
+    }
+    // Echo a prior assistant turn's reasoning back verbatim (preserves signed reasoning).
+    if (m.reasoning) |r| {
+        try s.objectField("reasoning");
+        try s.write(r);
+    }
+    if (m.reasoning_details.len > 0) {
+        try s.objectField("reasoning_details");
+        try s.beginArray();
+        for (m.reasoning_details) |rd| try writeReasoningDetail(s, rd);
+        try s.endArray();
     }
     _ = gpa;
     try s.endObject();
@@ -404,11 +452,18 @@ fn dupStrArray(arena: Allocator, v: ?Value) ![]const []const u8 {
 fn parseUsage(obj: Value, key: []const u8) ?gen.Usage {
     const u = objGet(obj, key) orelse return null;
     if (u != .object) return null;
+    // Prompt-cache hit accounting; absent when the upstream reported no caching.
+    var details: ?gen.PromptTokensDetails = null;
+    if (objGet(u, "prompt_tokens_details")) |d| {
+        if (d == .object) details = .{ .cached_tokens = getInt(u32, d, "cached_tokens") };
+    }
     return gen.Usage{
         .prompt_tokens = getInt(u32, u, "prompt_tokens") orelse 0,
         .completion_tokens = getInt(u32, u, "completion_tokens") orelse 0,
         .total_tokens = getInt(u32, u, "total_tokens") orelse 0,
         .cost_usd = getFloat(u, "cost_usd"),
+        .prompt_tokens_details = details,
+        .cache_creation_tokens = getInt(u32, u, "cache_creation_tokens"),
     };
 }
 
@@ -463,6 +518,33 @@ fn parseToolCalls(arena: Allocator, v: ?Value) ![]const gen.ToolCall {
     return out[0..n];
 }
 
+/// Parse a `reasoning_details[]` array. Each entry's `type` discriminates open vs hidden;
+/// the opaque `signature`/`data` are captured as-is (slices into the parsed `Value`, which
+/// the caller's arena owns) so they replay verbatim. Non-object entries are skipped.
+fn parseReasoningDetails(arena: Allocator, v: ?Value) ![]const gen.ReasoningDetail {
+    const arr = switch (v orelse return &.{}) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    var out = try arena.alloc(gen.ReasoningDetail, arr.items.len);
+    var n: usize = 0;
+    for (arr.items) |it| {
+        if (it != .object) continue;
+        out[n] = .{
+            .type = getStr(it, "type") orelse "",
+            .text = getStr(it, "text"),
+            .summary = getStr(it, "summary"),
+            .data = getStr(it, "data"),
+            .signature = getStr(it, "signature"),
+            .id = getStr(it, "id"),
+            .format = getStr(it, "format"),
+            .index = getInt(u32, it, "index"),
+        };
+        n += 1;
+    }
+    return out[0..n];
+}
+
 fn parseMessage(arena: Allocator, v: Value) !gen.ChatMessage {
     return gen.ChatMessage{
         .role = if (getStr(v, "role")) |r| (gen.enumFromWire(gen.Role, r) orelse .assistant) else .assistant,
@@ -470,6 +552,8 @@ fn parseMessage(arena: Allocator, v: Value) !gen.ChatMessage {
         .name = getStr(v, "name"),
         .tool_calls = try parseToolCalls(arena, objGet(v, "tool_calls")),
         .tool_call_id = getStr(v, "tool_call_id"),
+        .reasoning = getStr(v, "reasoning"),
+        .reasoning_details = try parseReasoningDetails(arena, objGet(v, "reasoning_details")),
     };
 }
 
@@ -516,6 +600,8 @@ pub fn decodeChunk(arena: Allocator, root: Value) !gen.ChatCompletionChunk {
             delta.role = if (getStr(delta_v, "role")) |r| gen.enumFromWire(gen.Role, r) else null;
             delta.content = getStr(delta_v, "content");
             delta.tool_calls = try parseToolCallDeltas(arena, objGet(delta_v, "tool_calls"));
+            delta.reasoning = getStr(delta_v, "reasoning");
+            delta.reasoning_details = try parseReasoningDetails(arena, objGet(delta_v, "reasoning_details"));
         }
         choices[i] = .{
             .index = getInt(u32, c, "index") orelse 0,
@@ -957,6 +1043,95 @@ test "decode batch result line (success and error)" {
         try testing.expect(line.response == null);
         try testing.expectEqualStrings("boom", line.@"error".?.message);
     }
+}
+
+test "encode message echoes reasoning and reasoning_details" {
+    const details = [_]gen.ReasoningDetail{
+        .{ .type = "reasoning.text", .text = "let me think", .signature = "sig123" },
+        .{ .type = "reasoning.encrypted", .data = "OPAQUE==" },
+    };
+    const req = gen.ChatRequest{
+        .model = "m",
+        .messages = &.{.{
+            .role = .assistant,
+            .content = .{ .text = "answer" },
+            .reasoning = "thinking out loud",
+            .reasoning_details = &details,
+        }},
+    };
+    const body = try encodeChatRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":\"thinking out loud\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"reasoning.text\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"text\":\"let me think\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"signature\":\"sig123\"") != null);
+    // hidden block: opaque data round-tripped verbatim.
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"reasoning.encrypted\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"data\":\"OPAQUE==\"") != null);
+}
+
+test "decode chat response with reasoning and usage cache metadata" {
+    const json =
+        \\{"id":"x","object":"chat.completion","created":1,"model":"m",
+        \\ "choices":[{"index":0,"message":{"role":"assistant","content":"hi",
+        \\   "reasoning":"because",
+        \\   "reasoning_details":[
+        \\     {"type":"reasoning.text","text":"step 1","signature":"sig","index":0},
+        \\     {"type":"reasoning.encrypted","data":"BLOB=="}]},
+        \\   "finish_reason":"stop"}],
+        \\ "usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
+        \\   "prompt_tokens_details":{"cached_tokens":7},"cache_creation_tokens":3}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    const resp = try decodeChatResponse(a, parsed);
+    const msg = resp.choices[0].message;
+    try testing.expectEqualStrings("because", msg.reasoning.?);
+    try testing.expectEqual(@as(usize, 2), msg.reasoning_details.len);
+    try testing.expectEqualStrings("step 1", msg.reasoning_details[0].text.?);
+    try testing.expectEqualStrings("sig", msg.reasoning_details[0].signature.?);
+    try testing.expectEqual(@as(u32, 0), msg.reasoning_details[0].index.?);
+    try testing.expect(!msg.reasoning_details[0].isHidden());
+    try testing.expectEqualStrings("BLOB==", msg.reasoning_details[1].data.?);
+    try testing.expect(msg.reasoning_details[1].isHidden());
+    // usage cache metadata
+    try testing.expectEqual(@as(u32, 7), resp.usage.?.cachedTokens());
+    try testing.expectEqual(@as(u32, 3), resp.usage.?.cacheWrites());
+}
+
+test "decode usage without cache metadata leaves fields absent" {
+    const json =
+        \\{"id":"x","object":"chat.completion","created":1,"model":"m",
+        \\ "choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],
+        \\ "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    const resp = try decodeChatResponse(a, parsed);
+    try testing.expect(resp.usage.?.prompt_tokens_details == null);
+    try testing.expect(resp.usage.?.cache_creation_tokens == null);
+    try testing.expectEqual(@as(u32, 0), resp.usage.?.cachedTokens());
+    try testing.expectEqual(@as(u32, 0), resp.usage.?.cacheWrites());
+}
+
+test "decode streaming chunk with reasoning delta" {
+    const json =
+        \\{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m",
+        \\ "choices":[{"index":0,"delta":{"reasoning":"hmm",
+        \\   "reasoning_details":[{"type":"reasoning.text","text":"a"}]},"finish_reason":null}]}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    const chunk = try decodeChunk(a, parsed);
+    try testing.expectEqualStrings("hmm", chunk.choices[0].delta.reasoning.?);
+    try testing.expectEqual(@as(usize, 1), chunk.choices[0].delta.reasoning_details.len);
+    try testing.expectEqualStrings("a", chunk.choices[0].delta.reasoning_details[0].text.?);
 }
 
 test "encode multimodal content parts" {

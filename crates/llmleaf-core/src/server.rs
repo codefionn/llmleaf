@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -1439,6 +1439,16 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+/// Attach a `Retry-After: <secs>` header to an already-built error response (RFC 9110 §10.2.3). Used for
+/// the `429` the engine returns when every target on a chain is rate-limited and the bounded wait
+/// elapsed — telling the consumer the soonest estimated moment capacity returns.
+fn with_retry_after(mut resp: Response, secs: u64) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+        resp.headers_mut().insert(RETRY_AFTER, value);
+    }
+    resp
+}
+
 fn auth_error(err: AuthError) -> Response {
     match err {
         AuthError::Unknown => error(StatusCode::UNAUTHORIZED, "unknown api key"),
@@ -1462,6 +1472,13 @@ fn engine_error(err: EngineError) -> Response {
             error(StatusCode::NOT_FOUND, format!("model '{m}' has no targets"))
         }
         EngineError::AllTargetsFailed(e) => error(StatusCode::BAD_GATEWAY, e.to_string()),
+        EngineError::RateLimited { retry_after_secs } => with_retry_after(
+            error(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("rate limited; retry after {retry_after_secs}s"),
+            ),
+            retry_after_secs,
+        ),
         EngineError::Blocked(reason) => error(StatusCode::FORBIDDEN, reason),
         EngineError::EmptyBatch => error(StatusCode::BAD_REQUEST, "batch has no requests"),
         EngineError::MixedProviderBatch => error(
@@ -1529,6 +1546,14 @@ fn anthropic_engine_error(err: EngineError) -> Response {
         EngineError::AllTargetsFailed(e) => {
             anthropic_error(StatusCode::BAD_GATEWAY, "api_error", e.to_string())
         }
+        EngineError::RateLimited { retry_after_secs } => with_retry_after(
+            anthropic_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_error",
+                format!("rate limited; retry after {retry_after_secs}s"),
+            ),
+            retry_after_secs,
+        ),
         EngineError::Blocked(reason) => {
             anthropic_error(StatusCode::FORBIDDEN, "permission_error", reason)
         }

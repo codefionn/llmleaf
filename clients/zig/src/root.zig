@@ -29,6 +29,7 @@ pub const gen = @import("gen/llmleaf.zig");
 
 // Common
 pub const Usage = gen.Usage;
+pub const PromptTokensDetails = gen.PromptTokensDetails;
 pub const ErrorBody = gen.ErrorBody;
 // Enums
 pub const Role = gen.Role;
@@ -44,6 +45,7 @@ pub const FunctionCall = gen.FunctionCall;
 pub const ToolCall = gen.ToolCall;
 pub const FunctionCallDelta = gen.FunctionCallDelta;
 pub const ToolCallDelta = gen.ToolCallDelta;
+pub const ReasoningDetail = gen.ReasoningDetail;
 pub const ChatMessage = gen.ChatMessage;
 pub const FunctionDef = gen.FunctionDef;
 pub const ToolDef = gen.ToolDef;

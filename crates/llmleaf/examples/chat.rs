@@ -314,20 +314,35 @@ async fn send(
 }
 
 /// Format the usage object the server appends to the stream into a one-line footer. Each field is
-/// optional (`total` falls back to prompt+completion); cost is an llmleaf extension present only when
-/// the pricing dataset covers the model (the `echo` provider reports no cost).
+/// optional (`total` falls back to prompt+completion). Cost is an llmleaf extension present only when
+/// the pricing dataset covers the model (the `echo` provider reports no cost). Prompt-cache hits ride
+/// OpenAI-style in `prompt_tokens_details.cached_tokens` (a cache *read*, shown as "cached"); cache
+/// *writes* ride in the llmleaf `cache_creation_tokens` extension (shown as "cache-write"). Both are
+/// present only when the upstream reported caching, so a non-caching turn's footer is unchanged.
 fn usage_footer(usage: &Value) -> Option<String> {
     let n = |k: &str| usage.get(k).and_then(Value::as_u64);
     let prompt = n("prompt_tokens");
     let completion = n("completion_tokens");
     let total = n("total_tokens");
     let cost = usage.get("cost_usd").and_then(Value::as_f64);
+    let cached = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_write = n("cache_creation_tokens").unwrap_or(0);
     if prompt.is_none() && completion.is_none() && total.is_none() && cost.is_none() {
         return None;
     }
     let (p, c) = (prompt.unwrap_or(0), completion.unwrap_or(0));
     let t = total.unwrap_or(p + c);
     let mut s = format!("  [{p} prompt + {c} completion = {t} tokens");
+    if cached > 0 {
+        s.push_str(&format!(", {cached} cached"));
+    }
+    if cache_write > 0 {
+        s.push_str(&format!(", {cache_write} cache-write"));
+    }
     if let Some(cost) = cost {
         s.push_str(&format!(", ${cost:.6}"));
     }

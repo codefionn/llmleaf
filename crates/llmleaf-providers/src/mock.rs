@@ -42,6 +42,8 @@ impl Provider for EchoProvider {
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         };
 
         let id = if cx.request_id.is_empty() {
@@ -92,6 +94,8 @@ impl Provider for EchoProvider {
             completion_tokens: 0,
             total_tokens: prompt_tokens,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         };
 
         Ok(EmbeddingResponse {

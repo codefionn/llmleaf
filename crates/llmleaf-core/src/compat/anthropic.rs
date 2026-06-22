@@ -257,10 +257,28 @@ fn parse_assistant_message(content: Option<Value>) -> Result<Message, ModelError
                             arguments,
                         });
                     }
-                    // Reasoning artifacts have no canonical slot. They are model-generated, provider-
-                    // specific, and not representable in the dialect-neutral model, so a replayed
-                    // assistant turn drops them rather than failing the request.
-                    Some("thinking") | Some("redacted_thinking") => {}
+                    // Reasoning blocks are preserved verbatim so a client echoing the prior turn back
+                    // (the stateless multi-turn pattern) reaches the upstream intact — the `signature`
+                    // especially, which Anthropic rejects the turn without. They lead the turn, so
+                    // pushing them in arrival order keeps them ahead of any `tool_use`.
+                    Some("thinking") => parts.push(ContentPart::Thinking {
+                        thinking: obj
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        signature: obj
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }),
+                    Some("redacted_thinking") => parts.push(ContentPart::RedactedThinking {
+                        data: obj
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    }),
                     other => {
                         return Err(mapping(format!(
                             "unsupported assistant content block {other:?}"
@@ -442,6 +460,14 @@ enum ContentBlockOut<'a> {
     Text {
         text: &'a str,
     },
+    Thinking {
+        thinking: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<&'a str>,
+    },
+    RedactedThinking {
+        data: &'a str,
+    },
     ToolUse {
         id: &'a str,
         name: &'a str,
@@ -472,6 +498,23 @@ pub fn response_to_anthropic<'a>(resp: &'a ChatResponse, id: &'a str) -> Message
     let choice = resp.choices.first();
     let mut content: Vec<ContentBlockOut> = Vec::new();
     if let Some(c) = choice {
+        // Reasoning leads the turn (ahead of text and tool_use), carrying its signature verbatim.
+        for part in &c.thinking {
+            match part {
+                ContentPart::Thinking {
+                    thinking,
+                    signature,
+                } => content.push(ContentBlockOut::Thinking {
+                    thinking,
+                    signature: signature.as_deref(),
+                }),
+                ContentPart::RedactedThinking { data } => {
+                    content.push(ContentBlockOut::RedactedThinking { data })
+                }
+                // `thinking` only ever holds reasoning parts; ignore anything else defensively.
+                _ => {}
+            }
+        }
         if !c.text.is_empty() {
             content.push(ContentBlockOut::Text { text: &c.text });
         }
@@ -520,13 +563,16 @@ fn push<T: Serialize>(out: &mut Vec<Frame>, event: &'static str, payload: &T) {
 
 enum OpenBlock {
     Text { index: u32 },
+    Thinking { index: u32 },
     Tool { index: u32, canon: u32 },
 }
 
 impl OpenBlock {
     fn index(&self) -> u32 {
         match self {
-            OpenBlock::Text { index } | OpenBlock::Tool { index, .. } => *index,
+            OpenBlock::Text { index }
+            | OpenBlock::Thinking { index }
+            | OpenBlock::Tool { index, .. } => *index,
         }
     }
 }
@@ -603,6 +649,32 @@ impl EventEncoder {
         }
     }
 
+    /// Ensure a `thinking` block is open and return its index. Reuses the current block when it is
+    /// already a thinking block, so a run of thinking deltas and the trailing signature share one
+    /// block; otherwise it closes whatever is open and starts a fresh thinking block.
+    fn open_thinking(&mut self, out: &mut Vec<Frame>) -> u32 {
+        if let Some(OpenBlock::Thinking { index }) = &self.open {
+            return *index;
+        }
+        self.close_open(out);
+        let index = self.next_index;
+        self.next_index += 1;
+        push(
+            out,
+            "content_block_start",
+            &ThinkingBlockStart {
+                kind: "content_block_start",
+                index,
+                content_block: ThinkingBlock {
+                    kind: "thinking",
+                    thinking: "",
+                },
+            },
+        );
+        self.open = Some(OpenBlock::Thinking { index });
+        index
+    }
+
     /// Translate one canonical chunk into zero or more Anthropic events, appended to `out` (cleared by
     /// the caller per chunk). `Usage` and `Finish` are buffered — they surface together in the trailing
     /// `message_delta` produced by [`finish`](Self::finish).
@@ -647,6 +719,70 @@ impl EventEncoder {
                         },
                     );
                 }
+            }
+            StreamChunk::Thinking { delta, .. } => {
+                self.ensure_started(out);
+                let index = self.open_thinking(out);
+                if !delta.is_empty() {
+                    push(
+                        out,
+                        "content_block_delta",
+                        &ThinkingDeltaEvent {
+                            kind: "content_block_delta",
+                            index,
+                            delta: ThinkingDelta {
+                                kind: "thinking_delta",
+                                thinking: delta,
+                            },
+                        },
+                    );
+                }
+            }
+            StreamChunk::ThinkingSignature { signature, .. } => {
+                self.ensure_started(out);
+                // The signature attaches to the thinking block the deltas opened (consecutive on the
+                // wire); reuse it, or open one defensively if the provider sent a bare signature.
+                let index = self.open_thinking(out);
+                push(
+                    out,
+                    "content_block_delta",
+                    &SignatureDeltaEvent {
+                        kind: "content_block_delta",
+                        index,
+                        delta: SignatureDelta {
+                            kind: "signature_delta",
+                            signature,
+                        },
+                    },
+                );
+            }
+            StreamChunk::RedactedThinking { data, .. } => {
+                self.ensure_started(out);
+                self.close_open(out);
+                // Redacted blocks arrive whole — a start carrying the data, then an immediate stop;
+                // they have no deltas, so nothing stays open.
+                let index = self.next_index;
+                self.next_index += 1;
+                push(
+                    out,
+                    "content_block_start",
+                    &RedactedBlockStart {
+                        kind: "content_block_start",
+                        index,
+                        content_block: RedactedBlock {
+                            kind: "redacted_thinking",
+                            data,
+                        },
+                    },
+                );
+                push(
+                    out,
+                    "content_block_stop",
+                    &BlockStop {
+                        kind: "content_block_stop",
+                        index,
+                    },
+                );
             }
             StreamChunk::ToolCall { call, .. } => {
                 self.ensure_started(out);
@@ -839,6 +975,66 @@ struct JsonDelta<'a> {
 }
 
 #[derive(Serialize)]
+struct ThinkingBlockStart {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    index: u32,
+    content_block: ThinkingBlock,
+}
+
+#[derive(Serialize)]
+struct ThinkingBlock {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    thinking: &'static str,
+}
+
+#[derive(Serialize)]
+struct ThinkingDeltaEvent<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    index: u32,
+    delta: ThinkingDelta<'a>,
+}
+
+#[derive(Serialize)]
+struct ThinkingDelta<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    thinking: &'a str,
+}
+
+#[derive(Serialize)]
+struct SignatureDeltaEvent<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    index: u32,
+    delta: SignatureDelta<'a>,
+}
+
+#[derive(Serialize)]
+struct SignatureDelta<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    signature: &'a str,
+}
+
+#[derive(Serialize)]
+struct RedactedBlockStart<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    index: u32,
+    content_block: RedactedBlock<'a>,
+}
+
+#[derive(Serialize)]
+struct RedactedBlock<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    data: &'a str,
+}
+
+#[derive(Serialize)]
 struct BlockStop {
     #[serde(rename = "type")]
     kind: &'static str,
@@ -1007,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_tool_use_and_thinking_skip() {
+    fn assistant_tool_use_and_thinking_preserved() {
         let v = json!({
             "model": "m", "max_tokens": 10,
             "messages": [{
@@ -1022,8 +1218,19 @@ mod tests {
         let req = parse_messages_request(v).unwrap();
         let m = &req.messages[0];
         assert_eq!(m.role, Role::Assistant);
-        // thinking dropped; one text part remains.
-        assert_eq!(m.content.len(), 1);
+        // Reasoning is preserved verbatim (not dropped): the thinking block — with its signature —
+        // leads, ahead of the visible text, so a client echoing the turn back round-trips it.
+        assert_eq!(m.content.len(), 2);
+        match &m.content[0] {
+            ContentPart::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "hmm");
+                assert_eq!(signature.as_deref(), Some("sig"));
+            }
+            other => panic!("expected a leading thinking block, got {other:?}"),
+        }
         assert_eq!(m.text_content(), "let me check");
         assert_eq!(m.tool_calls.len(), 1);
         assert_eq!(m.tool_calls[0].id, "tu_9");
@@ -1059,6 +1266,7 @@ mod tests {
             choices: vec![Choice {
                 index: 0,
                 text: "hi there".into(),
+                thinking: vec![],
                 tool_calls: vec![ToolCall {
                     id: "tu_1".into(),
                     name: "get_weather".into(),
@@ -1071,6 +1279,8 @@ mod tests {
                 completion_tokens: 3,
                 total_tokens: 7,
                 cost_usd: Some(0.01),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         };
         let view = response_to_anthropic(&resp, "msg_42");
@@ -1132,6 +1342,8 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 7,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }),
         ]);
         let names: Vec<&str> = frames.iter().map(|(e, _)| *e).collect();

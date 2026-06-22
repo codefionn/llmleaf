@@ -55,6 +55,9 @@ WORKDIR /app
 FROM builder-base AS source
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# Embedded by crates/llmleaf/src/main.rs's test suite via include_str!; without
+# it the lint (clippy --all-targets) and test stages fail to compile.
+COPY llmleaf.example.toml ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo fetch --locked

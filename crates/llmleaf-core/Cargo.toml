@@ -45,3 +45,6 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # A real WebSocket client to drive the /v1/realtime surface end-to-end in tests.
 tokio-tungstenite.workspace = true
+# `test-util` (paused virtual time: `start_paused`, `advance`) is NOT in tokio's `full`, so enable it
+# here for the rate-limit tests that drive token-bucket refill and the engine wait path deterministically.
+tokio = { workspace = true, features = ["test-util"] }

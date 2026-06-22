@@ -150,6 +150,8 @@ fn build_config(
             credential: None,
             prefix: prefixes.get(name).cloned(),
             settings: Default::default(),
+            limits: None,
+            model_limits: Default::default(),
         })
         .collect();
 
@@ -175,6 +177,7 @@ fn build_config(
             event_buffer: 8192,
             include_payloads: false,
             fallback_cooldown_secs: topo.cooldown_secs,
+            ..Default::default()
         },
         providers,
         routes,

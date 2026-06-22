@@ -122,6 +122,7 @@ impl Provider for MockBatchProvider {
                     choices: vec![Choice {
                         index: 0,
                         text: "hi a".into(),
+                        thinking: vec![],
                         tool_calls: vec![],
                         finish_reason: Some(FinishReason::Stop),
                     }],
@@ -130,6 +131,8 @@ impl Provider for MockBatchProvider {
                         completion_tokens: 2,
                         total_tokens: 3,
                         cost_usd: None,
+                        cache_read_tokens: 0,
+                        cache_creation_tokens: 0,
                     },
                 }),
             }),

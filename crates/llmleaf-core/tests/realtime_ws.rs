@@ -75,6 +75,8 @@ impl Provider for TestEcho {
                 completion_tokens: 2,
                 total_tokens: 3,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))

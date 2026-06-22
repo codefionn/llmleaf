@@ -19,6 +19,7 @@ pub mod events;
 pub mod keys;
 #[cfg(feature = "oauth")]
 pub mod oauth;
+pub mod ratelimit;
 pub mod route;
 pub mod server;
 
@@ -27,13 +28,14 @@ pub use admin::{
 };
 pub use config::{
     AuthConfig, AuthScheme, Config, ConfigError, ControlConfig, IdentitySource, InterceptHook,
-    InterceptPhase, IntrospectionConfig, LimitsSource, OAuthConfig, OnError, ResolvedAuth, Secret,
-    UsageSink,
+    InterceptPhase, IntrospectionConfig, LimitsSource, OAuthConfig, OnError, RateLimitConfig,
+    ResolvedAuth, Secret, UsageSink,
 };
 pub use engine::{Engine, EngineError, InterceptOutcome, Interceptor};
 pub use events::{Envelope, Event, EventBus};
 pub use keys::{AuthError, IdentityInput, KeyStore, KeyView, Verdict};
 #[cfg(feature = "oauth")]
 pub use oauth::{OAuthVerifier, TokenIntrospector};
+pub use ratelimit::{RateGuard, RateLimiter};
 pub use route::{HealthTable, Router};
 pub use server::{build_router, build_state, build_state_with, serve, serve_with_state, AppState};

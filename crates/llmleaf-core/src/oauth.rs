@@ -681,6 +681,8 @@ ojjQDhJdmvFlgMzpZBqBxg==
                     completion_tokens: 1,
                     total_tokens: 2,
                     cost_usd: None,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                 })),
             ];
             Ok(Box::pin(futures::stream::iter(chunks)))

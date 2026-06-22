@@ -16,6 +16,7 @@ import type {
   ChatMessage,
   ContentPart,
   MessageContent,
+  ReasoningDetail,
   ToolCall,
   ToolDef,
   ToolChoice,
@@ -27,6 +28,7 @@ import type {
   Delta,
   ToolCallDelta,
   Usage,
+  PromptTokensDetails,
   EmbeddingRequest,
   EmbeddingResponse,
   Embedding,
@@ -124,6 +126,22 @@ function encodeToolCall(tc: ToolCall): Json {
   };
 }
 
+/**
+ * Encode one reasoning_details[] entry. `signature` and `data` are opaque and must
+ * round-trip verbatim, so they are emitted exactly as given when present.
+ */
+function encodeReasoningDetail(d: ReasoningDetail): Json {
+  const out: Json = { type: d.type };
+  put(out, "text", d.text);
+  put(out, "summary", d.summary);
+  put(out, "data", d.data);
+  put(out, "signature", d.signature);
+  put(out, "id", d.id);
+  put(out, "format", d.format);
+  put(out, "index", d.index);
+  return out;
+}
+
 function encodeMessage(m: ChatMessage): Json {
   const out: Json = { role: roleToWire(m.role) ?? "user" };
   const content = encodeContent(m.content);
@@ -135,6 +153,12 @@ function encodeMessage(m: ChatMessage): Json {
     out["tool_calls"] = m.toolCalls.map(encodeToolCall);
   }
   put(out, "tool_call_id", m.toolCallId);
+  // Reasoning (OpenRouter): echo a prior assistant turn back verbatim to preserve
+  // signed/encrypted reasoning across a turn (SPEC.md / ReasoningDetail).
+  put(out, "reasoning", m.reasoning);
+  if (m.reasoningDetails && m.reasoningDetails.length > 0) {
+    out["reasoning_details"] = m.reasoningDetails.map(encodeReasoningDetail);
+  }
   return out;
 }
 
@@ -201,6 +225,15 @@ export function encodeChatRequest(req: ChatRequest, forceStream?: boolean): Json
 // Chat — decode
 // ===========================================================================
 
+function decodePromptTokensDetails(v: unknown): PromptTokensDetails | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const details: PromptTokensDetails = {};
+  const cached = optNum(o["cached_tokens"]);
+  if (cached !== undefined) details.cachedTokens = cached;
+  return details;
+}
+
 export function decodeUsage(v: unknown): Usage | undefined {
   const o = obj(v);
   if (!o) return undefined;
@@ -211,6 +244,10 @@ export function decodeUsage(v: unknown): Usage | undefined {
   };
   const cost = optNum(o["cost_usd"]);
   if (cost !== undefined) usage.costUsd = cost;
+  const ptd = decodePromptTokensDetails(o["prompt_tokens_details"]);
+  if (ptd !== undefined) usage.promptTokensDetails = ptd;
+  const cacheCreation = optNum(o["cache_creation_tokens"]);
+  if (cacheCreation !== undefined) usage.cacheCreationTokens = cacheCreation;
   return usage;
 }
 
@@ -249,6 +286,34 @@ function decodeToolCall(v: unknown): ToolCall | undefined {
   };
 }
 
+function decodeReasoningDetail(v: unknown): ReasoningDetail | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const d: ReasoningDetail = { type: str(o["type"]) };
+  // `signature` and `data` are opaque blobs replayed verbatim — preserve them as-is.
+  const text = optStr(o["text"]);
+  if (text !== undefined) d.text = text;
+  const summary = optStr(o["summary"]);
+  if (summary !== undefined) d.summary = summary;
+  const data = optStr(o["data"]);
+  if (data !== undefined) d.data = data;
+  const signature = optStr(o["signature"]);
+  if (signature !== undefined) d.signature = signature;
+  const id = optStr(o["id"]);
+  if (id !== undefined) d.id = id;
+  const format = optStr(o["format"]);
+  if (format !== undefined) d.format = format;
+  const index = optNum(o["index"]);
+  if (index !== undefined) d.index = index;
+  return d;
+}
+
+function decodeReasoningDetails(v: unknown): ReasoningDetail[] {
+  return arr(v)
+    .map(decodeReasoningDetail)
+    .filter((x): x is ReasoningDetail => x !== undefined);
+}
+
 export function decodeMessage(v: unknown): ChatMessage {
   const o = obj(v) ?? {};
   const msg: ChatMessage = { role: roleFromWire(optStr(o["role"])) };
@@ -262,6 +327,10 @@ export function decodeMessage(v: unknown): ChatMessage {
   if (tcs.length > 0) msg.toolCalls = tcs;
   const tcid = optStr(o["tool_call_id"]);
   if (tcid !== undefined) msg.toolCallId = tcid;
+  const reasoning = optStr(o["reasoning"]);
+  if (reasoning !== undefined) msg.reasoning = reasoning;
+  const rds = decodeReasoningDetails(o["reasoning_details"]);
+  if (rds.length > 0) msg.reasoningDetails = rds;
   return msg;
 }
 
@@ -320,6 +389,10 @@ function decodeDelta(v: unknown): Delta {
     .map(decodeToolCallDelta)
     .filter((x): x is ToolCallDelta => x !== undefined);
   if (tcs.length > 0) delta.toolCalls = tcs;
+  const reasoning = optStr(o["reasoning"]);
+  if (reasoning !== undefined) delta.reasoning = reasoning;
+  const rds = decodeReasoningDetails(o["reasoning_details"]);
+  if (rds.length > 0) delta.reasoningDetails = rds;
   return delta;
 }
 

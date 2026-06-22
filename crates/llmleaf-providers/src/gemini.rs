@@ -382,9 +382,12 @@ fn message_to_gemini(msg: &Message) -> Value {
     let mut parts: Vec<Value> = msg
         .content
         .iter()
-        .map(|p| match p {
-            ContentPart::Text { text } => json!({ "text": text }),
-            ContentPart::ImageUrl { url, .. } => json!({ "fileData": { "fileUri": url } }),
+        .filter_map(|p| match p {
+            ContentPart::Text { text } => Some(json!({ "text": text })),
+            ContentPart::ImageUrl { url, .. } => Some(json!({ "fileData": { "fileUri": url } })),
+            // Anthropic-style signed thinking blocks have no Gemini representation; reasoning does not
+            // port across providers, so drop them at this edge rather than emit an invalid part.
+            ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
         })
         .collect();
 
@@ -496,11 +499,19 @@ pub(crate) fn gemini_to_chunks(value: Value, fallback_model: &str) -> Vec<Stream
             .get("totalTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(prompt + completion);
+        // Gemini reports context-cache hits as `cachedContentTokenCount` — a cache read. There is no
+        // implicit creation count (cached content is created out-of-band), so creation stays 0.
+        let cache_read = usage
+            .get("cachedContentTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         chunks.push(StreamChunk::Usage(Usage {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: total,
             cost_usd: None,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: 0,
         }));
     }
 

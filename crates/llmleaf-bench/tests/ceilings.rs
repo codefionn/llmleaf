@@ -35,6 +35,7 @@ const ZERO_ALLOC: &[&str] = &[
     "router/resolve_miss",
     "health/is_down_clear",
     "health/clear_noop",
+    "ratelimit/admit", // semaphore permit = an Arc clone; mutex + bucket arithmetic — never a heap alloc
     "pricing/price_known",
     "pricing/price_unknown",
     "speech/content_type", // `response_format` → a `&'static str`, never an allocation

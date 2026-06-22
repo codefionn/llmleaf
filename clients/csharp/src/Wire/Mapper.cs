@@ -87,6 +87,7 @@ internal static class Mapper
             Role = EnumWire.ToWire(m.Role),
             Name = m.Name,
             ToolCallId = m.ToolCallId,
+            Reasoning = m.Reasoning,
         };
 
         if (m.Content is { } content)
@@ -111,8 +112,37 @@ internal static class Mapper
             wm.ToolCalls = m.ToolCalls.Select(ToolCallToWire).ToList();
         }
 
+        if (m.ReasoningDetails is { Count: > 0 })
+        {
+            wm.ReasoningDetails = m.ReasoningDetails.Select(ReasoningDetailToWire).ToList();
+        }
+
         return wm;
     }
+
+    private static WireReasoningDetail ReasoningDetailToWire(ReasoningDetail d) => new()
+    {
+        Type = d.Type,
+        Text = d.Text,
+        Summary = d.Summary,
+        Data = d.Data,
+        Signature = d.Signature,
+        Id = d.Id,
+        Format = d.Format,
+        Index = d.Index,
+    };
+
+    private static ReasoningDetail ReasoningDetailFromWire(WireReasoningDetail d) => new()
+    {
+        Type = d.Type,
+        Text = d.Text,
+        Summary = d.Summary,
+        Data = d.Data,
+        Signature = d.Signature,
+        Id = d.Id,
+        Format = d.Format,
+        Index = d.Index,
+    };
 
     private static WireContentPart ContentPartToWire(ContentPart p) => p switch
     {
@@ -179,6 +209,8 @@ internal static class Mapper
         Name = m.Name,
         ToolCalls = m.ToolCalls?.Select(ToolCallFromWire).ToList(),
         ToolCallId = m.ToolCallId,
+        Reasoning = m.Reasoning,
+        ReasoningDetails = m.ReasoningDetails?.Select(ReasoningDetailFromWire).ToList(),
     };
 
     private static MessageContent? ContentFromWire(JsonNode? content)
@@ -218,7 +250,15 @@ internal static class Mapper
         => new(tc.Id, tc.Type, new FunctionCall(tc.Function.Name, tc.Function.Arguments));
 
     private static Usage? UsageFromWire(WireUsage? u)
-        => u is null ? null : new Usage(u.PromptTokens, u.CompletionTokens, u.TotalTokens, u.CostUsd);
+        => u is null
+            ? null
+            : new Usage(
+                u.PromptTokens,
+                u.CompletionTokens,
+                u.TotalTokens,
+                u.CostUsd,
+                u.PromptTokensDetails is null ? null : new PromptTokensDetails(u.PromptTokensDetails.CachedTokens),
+                u.CacheCreationTokens);
 
     // ---- streaming chunk (decode) ---------------------------------------
 
@@ -232,7 +272,9 @@ internal static class Mapper
             new Delta(
                 EnumWire.FromWireOptional<Role>(c.Delta.Role),
                 c.Delta.Content,
-                c.Delta.ToolCalls?.Select(ToolCallDeltaFromWire).ToList()),
+                c.Delta.ToolCalls?.Select(ToolCallDeltaFromWire).ToList(),
+                c.Delta.Reasoning,
+                c.Delta.ReasoningDetails?.Select(ReasoningDetailFromWire).ToList()),
             EnumWire.FromWireOptional<FinishReason>(c.FinishReason))).ToList(),
         UsageFromWire(w.Usage));
 

@@ -19,16 +19,28 @@ namespace Llmleaf.Client;
 // Common
 // ---------------------------------------------------------------------------
 
+/// <summary>Breakdown of <see cref="Usage.PromptTokens"/>. Today only the cache-read (hit) share is
+/// surfaced — the count of prompt tokens served from the provider's cache rather than processed fresh.</summary>
+/// <param name="CachedTokens">Prompt tokens served from the provider's cache (a cache <em>read</em>/hit).</param>
+public sealed record PromptTokensDetails(uint? CachedTokens = null);
+
 /// <summary>Token accounting echoed on every response.</summary>
 /// <param name="PromptTokens">Tokens in the prompt.</param>
 /// <param name="CompletionTokens">Tokens generated.</param>
 /// <param name="TotalTokens">Prompt + completion.</param>
 /// <param name="CostUsd">llmleaf addition; null when the model has no known price.</param>
+/// <param name="PromptTokensDetails">Prompt-cache hit accounting (OpenAI <c>usage.prompt_tokens_details</c>);
+/// null when the upstream reported no caching.</param>
+/// <param name="CacheCreationTokens">Input tokens written to the provider's prompt cache this request —
+/// a cache <em>write</em> (creation). An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do
+/// not); null when there were none.</param>
 public sealed record Usage(
     uint PromptTokens,
     uint CompletionTokens,
     uint TotalTokens,
-    double? CostUsd = null);
+    double? CostUsd = null,
+    PromptTokensDetails? PromptTokensDetails = null,
+    uint? CacheCreationTokens = null);
 
 // ---------------------------------------------------------------------------
 // Chat
@@ -73,6 +85,52 @@ public sealed record FunctionCall(string Name, string Arguments);
 /// <summary>A tool call emitted by the model.</summary>
 public sealed record ToolCall(string Id, string Type, FunctionCall Function);
 
+/// <summary>
+/// One structured reasoning ("thinking") block (OpenRouter <c>reasoning_details[]</c>). It expresses
+/// both <em>open</em> reasoning — visible text, optionally signed — and <em>hidden</em> reasoning — an
+/// encrypted/redacted blob the provider returns in place of the text. <see cref="Type"/> (wire
+/// <c>type</c>) is the discriminator:
+/// <list type="bullet">
+/// <item><c>"reasoning.text"</c> → <see cref="Text"/> (+ optional <see cref="Signature"/>) — <em>open</em>.</item>
+/// <item><c>"reasoning.summary"</c> → <see cref="Summary"/> — <em>open</em> (a summarised view).</item>
+/// <item><c>"reasoning.encrypted"</c> → <see cref="Data"/> — <em>hidden</em> (redacted / opaque).</item>
+/// </list>
+/// <see cref="Signature"/> and <see cref="Data"/> are opaque and MUST be sent back verbatim in the next
+/// request's <c>reasoning_details</c> to continue a signed/encrypted reasoning turn (the upstream rejects
+/// an altered or dropped block — e.g. before a tool call).
+/// </summary>
+public sealed record ReasoningDetail
+{
+    /// <summary>Wire discriminator: <c>"reasoning.text"</c>, <c>"reasoning.summary"</c>, <c>"reasoning.encrypted"</c>, …</summary>
+    public required string Type { get; init; }
+
+    /// <summary>Open reasoning text (<c>"reasoning.text"</c>).</summary>
+    public string? Text { get; init; }
+
+    /// <summary>Open summarised reasoning (<c>"reasoning.summary"</c>).</summary>
+    public string? Summary { get; init; }
+
+    /// <summary>Hidden encrypted/redacted blob (<c>"reasoning.encrypted"</c>); opaque, replayed verbatim.</summary>
+    public string? Data { get; init; }
+
+    /// <summary>Opaque signature for a signed open block; replayed verbatim.</summary>
+    public string? Signature { get; init; }
+
+    public string? Id { get; init; }
+
+    /// <summary>Provider encoding tag when known, e.g. <c>"anthropic-claude-v1"</c>.</summary>
+    public string? Format { get; init; }
+
+    public uint? Index { get; init; }
+
+    /// <summary>Whether this block is hidden (redacted / encrypted) rather than open visible reasoning.</summary>
+    public bool IsHidden => Type == "reasoning.encrypted" || (Data is not null && Text is null);
+
+    /// <summary>The visible reasoning text of an open block — its <see cref="Text"/>, falling back to its
+    /// <see cref="Summary"/>; null for a hidden block.</summary>
+    public string? OpenText => Text ?? Summary;
+}
+
 /// <summary>A single chat message.</summary>
 public sealed record ChatMessage
 {
@@ -90,6 +148,14 @@ public sealed record ChatMessage
 
     /// <summary>The tool call this message answers (set when <see cref="Role"/> is <see cref="Role.Tool"/>).</summary>
     public string? ToolCallId { get; init; }
+
+    /// <summary>Open reasoning text the assistant emitted (OpenRouter <c>reasoning</c>), if any. The flat,
+    /// human-readable form; the structured <see cref="ReasoningDetails"/> is the replay-safe one.</summary>
+    public string? Reasoning { get; init; }
+
+    /// <summary>Structured reasoning blocks (open and hidden, with signatures — see <see cref="ReasoningDetail"/>).
+    /// Echo these back verbatim on the next request to preserve signed reasoning across a turn.</summary>
+    public IReadOnlyList<ReasoningDetail>? ReasoningDetails { get; init; }
 
     /// <summary>Convenience constructor for a plain-text message.</summary>
     public static ChatMessage Text(Role role, string content) => new() { Role = role, Content = content };
@@ -182,8 +248,14 @@ public sealed record FunctionCallDelta(string? Name = null, string? Arguments = 
 /// <summary>Incremental tool call on a streaming delta; fields arrive piecemeal.</summary>
 public sealed record ToolCallDelta(uint Index, string? Id = null, string? Type = null, FunctionCallDelta? Function = null);
 
-/// <summary>A streaming delta.</summary>
-public sealed record Delta(Role? Role = null, string? Content = null, IReadOnlyList<ToolCallDelta>? ToolCalls = null);
+/// <summary>A streaming delta. <c>Reasoning</c> is incremental open reasoning text; <c>ReasoningDetails</c>
+/// carries incremental structured reasoning blocks (open / hidden — see <see cref="ReasoningDetail"/>).</summary>
+public sealed record Delta(
+    Role? Role = null,
+    string? Content = null,
+    IReadOnlyList<ToolCallDelta>? ToolCalls = null,
+    string? Reasoning = null,
+    IReadOnlyList<ReasoningDetail>? ReasoningDetails = null);
 
 /// <summary>One streaming choice.</summary>
 public sealed record ChunkChoice(uint Index, Delta Delta, FinishReason? FinishReason = null);

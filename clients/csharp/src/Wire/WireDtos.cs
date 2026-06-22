@@ -55,6 +55,23 @@ internal sealed class WireToolCallDelta
     [JsonPropertyName("function")] public WireFunctionCallDelta? Function { get; set; }
 }
 
+// ---- reasoning ("thinking") blocks --------------------------------------
+
+// One OpenRouter reasoning_details[] entry. `type` discriminates: "reasoning.text" -> Text (+ optional
+// Signature) is OPEN; "reasoning.summary" -> Summary is OPEN; "reasoning.encrypted" -> Data is HIDDEN
+// (redacted). Signature/Data are opaque and replayed verbatim on the next request.
+internal sealed class WireReasoningDetail
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("text")] public string? Text { get; set; }
+    [JsonPropertyName("summary")] public string? Summary { get; set; }
+    [JsonPropertyName("data")] public string? Data { get; set; }
+    [JsonPropertyName("signature")] public string? Signature { get; set; }
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("format")] public string? Format { get; set; }
+    [JsonPropertyName("index")] public uint? Index { get; set; }
+}
+
 // ---- chat message --------------------------------------------------------
 
 internal sealed class WireChatMessage
@@ -69,6 +86,10 @@ internal sealed class WireChatMessage
     [JsonPropertyName("tool_calls")] public List<WireToolCall>? ToolCalls { get; set; }
 
     [JsonPropertyName("tool_call_id")] public string? ToolCallId { get; set; }
+
+    [JsonPropertyName("reasoning")] public string? Reasoning { get; set; }
+
+    [JsonPropertyName("reasoning_details")] public List<WireReasoningDetail>? ReasoningDetails { get; set; }
 }
 
 // ---- tools / tool_choice / response_format ------------------------------
@@ -125,12 +146,20 @@ internal sealed class WireChatRequest
 
 // ---- chat response (decode) ---------------------------------------------
 
+// usage.prompt_tokens_details — today just the cache-read (hit) share.
+internal sealed class WirePromptTokensDetails
+{
+    [JsonPropertyName("cached_tokens")] public uint? CachedTokens { get; set; }
+}
+
 internal sealed class WireUsage
 {
     [JsonPropertyName("prompt_tokens")] public uint PromptTokens { get; set; }
     [JsonPropertyName("completion_tokens")] public uint CompletionTokens { get; set; }
     [JsonPropertyName("total_tokens")] public uint TotalTokens { get; set; }
     [JsonPropertyName("cost_usd")] public double? CostUsd { get; set; }
+    [JsonPropertyName("prompt_tokens_details")] public WirePromptTokensDetails? PromptTokensDetails { get; set; }
+    [JsonPropertyName("cache_creation_tokens")] public uint? CacheCreationTokens { get; set; }
 }
 
 internal sealed class WireChoice
@@ -157,6 +186,8 @@ internal sealed class WireDelta
     [JsonPropertyName("role")] public string? Role { get; set; }
     [JsonPropertyName("content")] public string? Content { get; set; }
     [JsonPropertyName("tool_calls")] public List<WireToolCallDelta>? ToolCalls { get; set; }
+    [JsonPropertyName("reasoning")] public string? Reasoning { get; set; }
+    [JsonPropertyName("reasoning_details")] public List<WireReasoningDetail>? ReasoningDetails { get; set; }
 }
 
 internal sealed class WireChunkChoice

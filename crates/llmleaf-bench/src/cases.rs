@@ -34,7 +34,9 @@ use futures::executor::block_on;
 use futures::StreamExt;
 use llmleaf_core::compat::openai::{self, ChunkEncoder};
 use llmleaf_core::compat::{batch, embeddings, speech, transcription};
-use llmleaf_core::{build_state, Config, Event, EventBus, HealthTable};
+use llmleaf_core::{
+    build_state, Config, Event, EventBus, HealthTable, RateLimitConfig, RateLimiter,
+};
 use llmleaf_model::{
     collect, collect_audio, collect_chunks, AudioChunk, AudioStream, BatchCounts, BatchHandle,
     BatchOutcome, BatchResult, BatchStatus, ChatRequest, ChatResponse, Choice, Embedding,
@@ -93,6 +95,8 @@ impl Provider for BenchProvider {
                 completion_tokens: 3,
                 total_tokens: 13,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })),
         ];
         Ok(Box::pin(futures::stream::iter(chunks)))
@@ -121,6 +125,8 @@ impl Provider for BenchProvider {
                 completion_tokens: 0,
                 total_tokens: 8,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         })
     }
@@ -147,6 +153,8 @@ impl Provider for BenchProvider {
                 completion_tokens: 0,
                 total_tokens: 0,
                 cost_usd: None,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             },
         })
     }
@@ -740,6 +748,38 @@ fn register_lookups(suite: &mut Suite, state: &llmleaf_core::AppState) {
             },
         );
     }
+
+    // ratelimit/admit — node-local admission (the rate-limit sibling of the health check): a borrowed-key
+    // map lookup, a per-entry mutex critical section for the request token + a tokens/min floor read, and
+    // a semaphore permit (an `Arc` clone, not a heap allocation). The guard is dropped each iteration so
+    // the permit is released, and the buckets are sized so they never drain — measuring the steady
+    // happy-path admission cost (principle 1: it must stay cheap).
+    {
+        use llmleaf_core::config::ProviderConfig;
+        let provider = ProviderConfig {
+            name: "bench".into(),
+            kind: "bench".into(),
+            endpoint: None,
+            credential: None,
+            prefix: None,
+            settings: Default::default(),
+            limits: Some(RateLimitConfig {
+                requests_per_min: Some(1_000_000_000),
+                tokens_per_min: Some(1_000_000_000),
+                max_concurrent: Some(1_000_000),
+            }),
+            model_limits: Default::default(),
+        };
+        let rl = RateLimiter::new(std::slice::from_ref(&provider));
+        suite.bench(
+            "ratelimit/admit",
+            || (),
+            move |()| {
+                let guard = rl.try_admit("bench", "model", tokio::time::Instant::now());
+                std::hint::black_box(&guard);
+            },
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -753,6 +793,8 @@ fn register_pricing(suite: &mut Suite) {
         completion_tokens: 567,
         total_tokens: 1_801,
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     };
     {
         let pricing = pricing.clone();
@@ -1056,6 +1098,8 @@ fn stream_chunks(n_content: usize) -> Vec<Result<StreamChunk, ModelError>> {
         completion_tokens: n_content as u64,
         total_tokens: 10 + n_content as u64,
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     })));
     chunks
 }
@@ -1116,6 +1160,8 @@ fn tool_call_chunks() -> Vec<Result<StreamChunk, ModelError>> {
             completion_tokens: 8,
             total_tokens: 20,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         })),
     ]
 }
@@ -1173,6 +1219,8 @@ fn representative_chunks() -> Vec<StreamChunk> {
             completion_tokens: 5,
             total_tokens: 15,
             cost_usd: Some(0.001),
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         }),
         StreamChunk::Finish {
             index: 0,
@@ -1189,6 +1237,7 @@ fn sample_response() -> ChatResponse {
         choices: vec![Choice {
             index: 0,
             text: "Hello, world! This is a representative assistant reply.".into(),
+            thinking: vec![],
             tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "get_weather".into(),
@@ -1201,6 +1250,8 @@ fn sample_response() -> ChatResponse {
             completion_tokens: 8,
             total_tokens: 18,
             cost_usd: Some(0.0012),
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         },
     }
 }
@@ -1270,6 +1321,8 @@ fn sample_embedding_response() -> EmbeddingResponse {
             completion_tokens: 0,
             total_tokens: 8,
             cost_usd: Some(0.0001),
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         },
     }
 }
@@ -1299,6 +1352,8 @@ fn audio_chunks(n_data: usize) -> Vec<Result<AudioChunk, ModelError>> {
         completion_tokens: 0,
         total_tokens: 4,
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     })));
     chunks.push(Ok(AudioChunk::Finish));
     chunks

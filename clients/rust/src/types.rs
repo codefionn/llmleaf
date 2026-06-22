@@ -42,6 +42,39 @@ pub struct Usage {
     pub total_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Prompt-cache hit accounting (OpenAI `usage.prompt_tokens_details`). Absent when the upstream
+    /// reported no caching; [`Usage::cached_tokens`] flattens it to a plain count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// Input tokens written to the provider's prompt cache this request — a cache *write* (creation).
+    /// An llmleaf extension (Anthropic reports it; OpenAI/OpenRouter do not); absent when there were none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
+}
+
+impl Usage {
+    /// Prompt tokens served from the provider's cache this request — a cache *read* (hit). `0` when
+    /// the upstream reported no caching.
+    pub fn cached_tokens(&self) -> u32 {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0)
+    }
+
+    /// Input tokens written to the provider's cache this request — a cache *write* (creation). `0`
+    /// when there were none (or the provider does not report writes).
+    pub fn cache_writes(&self) -> u32 {
+        self.cache_creation_tokens.unwrap_or(0)
+    }
+}
+
+/// Breakdown of [`Usage::prompt_tokens`]. Today only the cache-read (hit) share is surfaced — the
+/// count of prompt tokens served from the provider's cache rather than processed fresh.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +225,55 @@ pub struct ToolCallDelta {
 }
 
 // ---------------------------------------------------------------------------
+// Chat — reasoning ("thinking") blocks
+// ---------------------------------------------------------------------------
+
+/// One structured reasoning ("thinking") block (OpenRouter `reasoning_details[]`). It expresses both
+/// *open* reasoning — visible text, optionally signed — and *hidden* reasoning — an encrypted/redacted
+/// blob the provider returns in place of the text. `kind` (wire `type`) is the discriminator:
+///
+/// - `"reasoning.text"` → [`text`](Self::text) (+ optional [`signature`](Self::signature)) — **open**
+/// - `"reasoning.summary"` → [`summary`](Self::summary) — **open** (a summarised view)
+/// - `"reasoning.encrypted"` → [`data`](Self::data) — **hidden** (redacted / opaque)
+///
+/// `signature` and `data` are opaque and MUST be sent back verbatim in the next request's
+/// `reasoning_details` to continue a signed/encrypted reasoning turn (the upstream rejects an altered
+/// or dropped block — e.g. before a tool call). Use [`is_hidden`](Self::is_hidden) /
+/// [`open_text`](Self::open_text) to branch without matching on the raw `kind` string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningDetail {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+}
+
+impl ReasoningDetail {
+    /// Whether this block is hidden (redacted / encrypted) rather than open visible reasoning.
+    pub fn is_hidden(&self) -> bool {
+        self.kind == "reasoning.encrypted" || (self.data.is_some() && self.text.is_none())
+    }
+
+    /// The visible reasoning text of an open block — its `text`, falling back to its `summary`.
+    /// `None` for a hidden block.
+    pub fn open_text(&self) -> Option<&str> {
+        self.text.as_deref().or(self.summary.as_deref())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Chat — messages
 // ---------------------------------------------------------------------------
 
@@ -210,6 +292,15 @@ pub struct ChatMessage {
     /// Set when `role == Tool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Open reasoning text the assistant emitted (OpenRouter `reasoning`), if any. The flat,
+    /// human-readable form; the structured [`reasoning_details`](Self::reasoning_details) is the
+    /// replay-safe one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Structured reasoning blocks (open and hidden, with signatures — see [`ReasoningDetail`]). Echo
+    /// these back verbatim on the next request to preserve signed reasoning across a turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_details: Vec<ReasoningDetail>,
 }
 
 impl ChatMessage {
@@ -235,6 +326,8 @@ impl ChatMessage {
             name: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning: None,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -244,6 +337,21 @@ impl ChatMessage {
             Some(Content::Text(s)) => Some(s.as_str()),
             _ => None,
         }
+    }
+
+    /// The visible (open) reasoning for this message: the flat `reasoning` text if present, else the
+    /// concatenation of the open `reasoning_details` blocks. `None` when the turn carried no visible
+    /// reasoning (it may still carry hidden blocks — see [`reasoning_details`](Self::reasoning_details)).
+    pub fn reasoning_text(&self) -> Option<String> {
+        if let Some(r) = &self.reasoning {
+            return Some(r.clone());
+        }
+        let joined: String = self
+            .reasoning_details
+            .iter()
+            .filter_map(ReasoningDetail::open_text)
+            .collect();
+        (!joined.is_empty()).then_some(joined)
     }
 }
 
@@ -455,6 +563,12 @@ pub struct Delta {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallDelta>,
+    /// Incremental open reasoning text, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Incremental structured reasoning blocks (open / hidden — see [`ReasoningDetail`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_details: Vec<ReasoningDetail>,
 }
 
 /// One streaming choice.
@@ -486,6 +600,13 @@ impl ChatCompletionChunk {
         self.choices
             .first()
             .and_then(|c| c.delta.content.as_deref())
+    }
+
+    /// The incremental open reasoning text of the first choice's delta, if any.
+    pub fn first_delta_reasoning(&self) -> Option<&str> {
+        self.choices
+            .first()
+            .and_then(|c| c.delta.reasoning.as_deref())
     }
 }
 

@@ -85,6 +85,13 @@ pub struct ServerConfig {
     pub include_payloads: bool,
     /// How long (seconds) a node skips a provider after it fails a request. Node-local, principle 9.
     pub fallback_cooldown_secs: u64,
+    /// Upper bound (milliseconds) on how long the hot path may *wait* for rate-limit capacity when
+    /// every target on a chain is saturated (see [`RateLimitConfig`]). The engine first falls through
+    /// the fallback chain; only if all targets are over their limit does it sleep until the soonest one
+    /// frees up, capped here. `0` ⇒ never wait (fall through, then reject with `429` immediately). This
+    /// is latency the operator opts into knowingly (principle 1: the hot path is sacred — waiting is
+    /// bounded and off by default-ish, never unbounded queueing).
+    pub rate_limit_max_wait_ms: u64,
 }
 
 impl Default for ServerConfig {
@@ -95,6 +102,7 @@ impl Default for ServerConfig {
             event_buffer: 1024,
             include_payloads: false,
             fallback_cooldown_secs: 15,
+            rate_limit_max_wait_ms: 5000,
         }
     }
 }
@@ -120,6 +128,43 @@ pub struct ProviderConfig {
     /// Free-form provider-specific settings passed through to the extension.
     #[serde(default)]
     pub settings: Map<String, Value>,
+    /// Provider-global rate limits (node-local flow control — principle 9). Applies to *every* request
+    /// routed to this instance, across all its models. Omitted ⇒ no global limit. See [`RateLimitConfig`].
+    #[serde(default)]
+    pub limits: Option<RateLimitConfig>,
+    /// Per-model rate limits, keyed by the **upstream** model id (the id this provider sees, i.e. a
+    /// route target's `model`, not the consumer's logical model). A request must pass *both* the
+    /// provider-global [`Self::limits`] *and* the matching per-model entry (if any) — they compose, the
+    /// stricter binds. A model absent from this map is governed by the global limit alone. Empty ⇒ no
+    /// per-model limits.
+    #[serde(default)]
+    pub model_limits: HashMap<String, RateLimitConfig>,
+}
+
+/// Node-local rate limits for one scope (a provider instance, or one of its models). Each dimension is
+/// independently optional; an omitted dimension is unlimited. This is *flow control toward the upstream*
+/// — the same node-local HA family as `fallback_cooldown_secs` (principles 8 and 9), NOT per-key usage
+/// accounting (principle 5, which the pulled `[control.limits]` verdicts own). Enforcement is a fast,
+/// allocation-free local check on the hot path (principle 1); it never counts usage for billing.
+///
+/// **Multi-node (principle 9):** every node enforces its *own* slice with no cross-node coordination, so
+/// a cluster-wide cap should be divided by the node count (or treated as approximate) — exactly like the
+/// node-local cooldown.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Max requests per minute (a token bucket whose burst capacity is this value). Omitted ⇒ unlimited.
+    #[serde(default)]
+    pub requests_per_min: Option<u64>,
+    /// Max provider-reported tokens per minute (a token bucket). Debited when usage is observed — token
+    /// cost is not known at admission — so a burst may overshoot and then throttle until the bucket
+    /// refills. Omitted ⇒ unlimited.
+    #[serde(default)]
+    pub tokens_per_min: Option<u64>,
+    /// Max simultaneous in-flight requests (a semaphore). A permit is held for the life of the request's
+    /// stream and released when it ends. Omitted ⇒ unlimited.
+    #[serde(default)]
+    pub max_concurrent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -703,6 +748,70 @@ mod tests {
             cfg.keys[0].pw_hash.resolve().as_deref(),
             Some("$2y$04$IcVq6nhz5Tf85lBpWclgKeDjWxWMHlIXLE696.T7m9Eg12HekWFJO")
         );
+    }
+
+    #[test]
+    fn provider_rate_limits_parse_with_defaults_and_per_model() {
+        let toml = r#"
+            [server]
+            rate_limit_max_wait_ms = 2000
+
+            [[providers]]
+            name = "openai-main"
+            kind = "openai"
+
+            [providers.limits]
+            requests_per_min = 10000
+            tokens_per_min = 2000000
+            max_concurrent = 200
+
+            [providers.model_limits."gpt-4o"]
+            requests_per_min = 5000
+            max_concurrent = 100
+        "#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.server.rate_limit_max_wait_ms, 2000);
+        let p = &cfg.providers[0];
+        let g = p.limits.as_ref().unwrap();
+        assert_eq!(g.requests_per_min, Some(10000));
+        assert_eq!(g.tokens_per_min, Some(2000000));
+        assert_eq!(g.max_concurrent, Some(200));
+        let m = &p.model_limits["gpt-4o"];
+        assert_eq!(m.requests_per_min, Some(5000));
+        assert_eq!(m.tokens_per_min, None); // omitted dimension ⇒ unlimited
+        assert_eq!(m.max_concurrent, Some(100));
+    }
+
+    #[test]
+    fn provider_without_limits_defaults_to_none() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [[providers]]
+            name = "echo"
+            kind = "echo"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.providers[0].limits.is_none());
+        assert!(cfg.providers[0].model_limits.is_empty());
+        // The wait cap has a sane non-zero default (waiting is the chosen over-limit behavior).
+        assert_eq!(cfg.server.rate_limit_max_wait_ms, 5000);
+    }
+
+    #[test]
+    fn unknown_field_in_rate_limit_is_rejected() {
+        let err = Config::from_toml_str(
+            r#"
+            [[providers]]
+            name = "p"
+            kind = "echo"
+            [providers.limits]
+            requests_per_min = 1
+            bogus = 2
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)), "got {err:?}");
     }
 
     #[test]

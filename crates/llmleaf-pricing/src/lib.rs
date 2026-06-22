@@ -1114,6 +1114,8 @@ mod tests {
             completion_tokens: 1_000_000,
             total_tokens: 2_000_000,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         };
         // gpt-4o: 2.5 in + 10.0 out per Mtok.
         let cost = p.cost_usd("gpt-4o", &usage).unwrap();
@@ -1391,6 +1393,8 @@ mod tests {
             completion_tokens: 1_000_000,
             total_tokens: 2_000_000,
             cost_usd: None,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         };
         assert!(p.cost_usd("tts-1", &usage).is_none());
         assert!(p.cost_usd("whisper-1", &usage).is_none());

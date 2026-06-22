@@ -156,6 +156,8 @@ mod tests {
             credential: None,
             prefix: prefix.map(Into::into),
             settings: Default::default(),
+            limits: None,
+            model_limits: Default::default(),
         }
     }
 

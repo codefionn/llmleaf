@@ -99,6 +99,8 @@ fn random_usage(rng: &mut Rng) -> Usage {
         completion_tokens: completion,
         total_tokens: prompt + completion,
         cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     }
 }
 
@@ -211,6 +213,9 @@ fn reference_fold(chunks: &[StreamChunk]) -> ChatResponse {
             Choice {
                 index,
                 text,
+                // The simulation collector exercises transport/usage accounting, not reasoning
+                // fidelity; thinking blocks are not reconstructed here.
+                thinking: Vec::new(),
                 tool_calls,
                 finish_reason,
             }
