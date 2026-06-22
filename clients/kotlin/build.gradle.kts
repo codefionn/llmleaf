@@ -39,7 +39,12 @@ plugins {
 }
 
 group = "eu.codefionn.llmleaf"
-version = "0.1.0"
+// The release version is injected from the git tag via `-Pversion=<x.y.z>` (see release.yml).
+// Read that project property and fall back to a local dev default only when it is absent.
+// An unconditional `version = "0.1.0"` here would overwrite the `-Pversion` override during
+// configuration — which is exactly why every release kept re-publishing 0.1.0.
+version = (findProperty("version") as? String)?.takeUnless { it.isBlank() || it == "unspecified" }
+    ?: "0.1.0"
 
 // Repositories are centralised in settings.gradle.kts (dependencyResolutionManagement +
 // FAIL_ON_PROJECT_REPOS); declaring them here too would fail configuration, so we don't.
