@@ -782,7 +782,7 @@ fn wire_f64(v: &Value) -> Option<f64> {
 }
 
 /// Infer modality from explicit catalog signals only — NEVER from an id substring (SOUL: no guessing).
-/// `type` (Together and similar), then OpenRouter `architecture.output_modalities`, then Azure
+/// `type` (Together and similar), then OpenRouter `architecture.{input,output}_modalities`, then Azure
 /// `capabilities`. `None` when no signal is decisive.
 fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
     if let Some(t) = obj.get("type").and_then(Value::as_str) {
@@ -792,18 +792,30 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
             _ => {} // image / moderation / rerank / … → no canonical modality
         }
     }
-    if let Some(outs) = obj
-        .get("architecture")
-        .and_then(Value::as_object)
-        .and_then(|a| a.get("output_modalities"))
-        .and_then(Value::as_array)
-    {
-        let outs: Vec<&str> = outs.iter().filter_map(Value::as_str).collect();
-        if outs.iter().any(|o| *o == "audio" || *o == "speech") {
+    // OpenRouter (and look-alikes) describe a model by the modalities it accepts and emits. Decide from
+    // BOTH sides: audio OUT is text→speech (TTS); audio IN with text OUT is speech→text (STT). Without
+    // the input side an STT model (audio in, text out — e.g. Voxtral/Whisper) collapses to `llm` and is
+    // unreachable via `?type=stt`. Only decide when the output side is reported (we never guess output).
+    if let Some(arch) = obj.get("architecture").and_then(Value::as_object) {
+        let list = |key: &str| -> Vec<&str> {
+            arch.get(key)
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default()
+        };
+        let has_audio = |m: &[&str]| m.iter().any(|x| *x == "audio" || *x == "speech");
+        let outs = list("output_modalities");
+        let ins = list("input_modalities");
+        if has_audio(&outs) {
             return Some(Modality::Tts);
         }
         if outs.contains(&"text") {
-            return Some(Modality::Llm);
+            // Text out: STT if it also takes audio in, otherwise a plain language model.
+            return Some(if has_audio(&ins) {
+                Modality::Stt
+            } else {
+                Modality::Llm
+            });
         }
     }
     if let Some(caps) = obj.get("capabilities").and_then(Value::as_object) {
@@ -994,6 +1006,21 @@ mod tests {
             openai_wire_models_to_canonical(v)[0].modality,
             Some(Modality::Tts)
         );
+    }
+
+    #[test]
+    fn models_openrouter_audio_input_text_output_is_stt() {
+        // Voxtral/Whisper-shaped: audio in, text out. Must classify as STT (not LLM) so it is reachable
+        // via `?type=stt`; a text-only model with no audio input stays LLM.
+        let v = json!({ "data": [
+            { "id": "x/voxtral", "architecture": {
+                "input_modalities": ["text", "audio"], "output_modalities": ["text"] } },
+            { "id": "x/plain", "architecture": {
+                "input_modalities": ["text"], "output_modalities": ["text"] } },
+        ]});
+        let out = openai_wire_models_to_canonical(v);
+        assert_eq!(out[0].modality, Some(Modality::Stt));
+        assert_eq!(out[1].modality, Some(Modality::Llm));
     }
 
     #[test]

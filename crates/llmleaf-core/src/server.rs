@@ -11,7 +11,7 @@
 //! The core never depends on the control plane: with no admin token configured the read-only admin
 //! surface simply closes, and the proxy keeps proxying from config + last-good cache alone (principle 6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -863,13 +863,30 @@ async fn list_models(
         entries.retain(|_, e| e.callable);
     }
 
+    // Which prefix providers classify their catalog by type at all. A provider whose list-models API
+    // reports a modality for at least one of its models "supports model types"; one that reports none
+    // does not (e.g. a bare OpenAI-compatible endpoint, or a speech-only upstream that never tags its
+    // models). For a provider that does not support model types, applying a `?type=` filter would hide
+    // its whole catalog, so the filter below is IGNORED for it — its models pass through unfiltered.
+    // Built only when a filter is active; route entries (no provider) keep the strict rule below.
+    let typed_providers: HashSet<String> = match modality_filter {
+        None => HashSet::new(),
+        Some(_) => entries
+            .values()
+            .filter(|e| e.meta.as_ref().and_then(|m| m.modality).is_some())
+            .filter_map(|e| e.provider.clone())
+            .collect(),
+    };
+
     // Filter (modality, then search) and render. Filters run after enrichment so they see merged meta.
     let data: Vec<Value> = entries
         .into_iter()
         .filter(|(_, e)| match modality_filter {
             None => true,
-            // A specific filter keeps only entries whose modality is known AND matches; an unknown
-            // modality is excluded — you can only filter by what you know.
+            // A provider that does not classify its catalog by type ignores the filter (pass through).
+            Some(_) if matches!(&e.provider, Some(p) if !typed_providers.contains(p)) => true,
+            // Otherwise a specific filter keeps only entries whose modality is known AND matches; an
+            // unknown modality is excluded — you can only filter by what you know.
             Some(m) => e.meta.as_ref().and_then(|m| m.modality) == Some(m),
         })
         .filter(|(id, _)| match &search {

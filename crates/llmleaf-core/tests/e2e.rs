@@ -191,6 +191,37 @@ impl Provider for ChatOnlyProvider {
     // embed/speech/transcribe intentionally left as the default `Unsupported`.
 }
 
+/// A provider that enumerates a catalog but never tags a modality — i.e. it does NOT support model
+/// types. Used to prove the listing surface IGNORES a `?type=` filter for such a provider (its models
+/// pass through unfiltered) instead of hiding its whole catalog. Ids are synthetic so the bundled
+/// dataset cannot enrich a modality back in.
+struct TypelessProvider;
+
+#[async_trait]
+impl Provider for TypelessProvider {
+    fn name(&self) -> &str {
+        "typeless"
+    }
+    async fn chat(&self, req: ChatRequest, _cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        let chunks: Vec<Result<StreamChunk, ModelError>> = vec![
+            Ok(StreamChunk::Start {
+                id: "tl-1".into(),
+                model: req.model.clone(),
+            }),
+            Ok(StreamChunk::Finish {
+                index: 0,
+                reason: FinishReason::Stop,
+            }),
+        ];
+        Ok(Box::pin(futures::stream::iter(chunks)))
+    }
+    async fn models(&self, _cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
+        // No `modality` set on either entry, and the ids are not in the bundled dataset, so they stay
+        // `None` — the provider reports no types at all.
+        Ok(vec![ModelInfo::new("synth-a"), ModelInfo::new("synth-b")])
+    }
+}
+
 const CONFIG: &str = r#"
 [server]
 listen = "127.0.0.1:0"
@@ -206,6 +237,11 @@ prefix = "m"
 name = "chatonly"
 kind = "chatonly"
 prefix = "co"
+
+[[providers]]
+name = "typeless"
+kind = "typeless"
+prefix = "tl"
 
 [[routes]]
 model = "demo"
@@ -232,6 +268,7 @@ fn app_bus_keys() -> (axum::Router, EventBus, Arc<KeyStore>) {
     let mut registry = ProviderRegistry::new();
     registry.register("mock", Arc::new(MockProvider));
     registry.register("chatonly", Arc::new(ChatOnlyProvider));
+    registry.register("typeless", Arc::new(TypelessProvider));
     let state = build_state(&config, Arc::new(registry)).unwrap();
     let bus = state.events.clone();
     let keys = state.keys.clone();
@@ -1028,14 +1065,13 @@ async fn models_type_filter() {
             .unwrap(),
     )
     .await;
-    assert!(!v["data"].as_array().unwrap().is_empty());
-    for m in v["data"].as_array().unwrap() {
-        assert_eq!(m["architecture"]["modality"], "text->embeddings");
-    }
+    // `mock` classifies by type, so the filter keeps only its embedding model and drops the rest.
+    assert!(find_model(&v, "m/beta-embed").is_some());
     assert!(
         find_model(&v, "m/alpha").is_none(),
         "llm excluded by embedding filter"
     );
+    assert!(find_model(&v, "m/gamma-tts").is_none());
     let v = body_json(
         app.oneshot(models_request("?type=llm", None))
             .await
@@ -1044,6 +1080,30 @@ async fn models_type_filter() {
     .await;
     assert!(find_model(&v, "m/alpha").is_some());
     assert!(find_model(&v, "m/beta-embed").is_none());
+}
+
+/// A provider that reports no modality for any model does not support model types, so a `?type=` filter
+/// is ignored for it: its whole catalog passes through under every filter rather than being hidden.
+#[tokio::test]
+async fn models_type_filter_ignored_for_untyped_provider() {
+    let (app, _bus) = app_and_bus();
+    for kind in ["embedding", "llm", "tts", "stt"] {
+        let v = body_json(
+            app.clone()
+                .oneshot(models_request(&format!("?type={kind}"), None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            find_model(&v, "tl/synth-a").is_some(),
+            "untyped provider's model dropped by ?type={kind}"
+        );
+        assert!(
+            find_model(&v, "tl/synth-b").is_some(),
+            "untyped provider's model dropped by ?type={kind}"
+        );
+    }
 }
 
 #[tokio::test]
