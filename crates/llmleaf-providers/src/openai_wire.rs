@@ -809,6 +809,13 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
         if has_audio(&outs) {
             return Some(Modality::Tts);
         }
+        // OpenRouter labels a speech-to-text model's output `transcription` (not `text`) — e.g. Voxtral
+        // Mini Transcribe / gpt-4o-transcribe report `modality: "audio->transcription"`. That is an
+        // explicit catalog signal (audio in → transcribed text out), so it is STT, not a guess. Without
+        // this they fall through to `None` and are unreachable via `?type=stt`.
+        if outs.contains(&"transcription") {
+            return Some(Modality::Stt);
+        }
         if outs.contains(&"text") {
             // Text out: STT if it also takes audio in, otherwise a plain language model.
             return Some(if has_audio(&ins) {
@@ -1021,6 +1028,20 @@ mod tests {
         let out = openai_wire_models_to_canonical(v);
         assert_eq!(out[0].modality, Some(Modality::Stt));
         assert_eq!(out[1].modality, Some(Modality::Llm));
+    }
+
+    #[test]
+    fn models_openrouter_transcription_output_is_stt() {
+        // Dedicated transcribe models (Voxtral Mini Transcribe, gpt-4o-transcribe) report
+        // `modality: "audio->transcription"` with `output_modalities: ["transcription"]` — not "text".
+        // That explicit signal must classify STT so they appear under `?type=stt`.
+        let v = json!({ "data": [{ "id": "mistralai/voxtral-mini-transcribe", "architecture": {
+            "modality": "audio->transcription",
+            "input_modalities": ["audio"], "output_modalities": ["transcription"] } }]});
+        assert_eq!(
+            openai_wire_models_to_canonical(v)[0].modality,
+            Some(Modality::Stt)
+        );
     }
 
     #[test]
