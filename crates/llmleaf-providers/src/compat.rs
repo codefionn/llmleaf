@@ -120,6 +120,13 @@ pub struct Brand {
     /// default) builds the standard per-endpoint URL ([`OpenAiCompatProvider::models_url`]). Only
     /// consulted when `models_api` is `true`.
     pub models_url_override: Option<&'static str>,
+    /// Extra query string appended to the default `<endpoint>/models` URL (no leading `?`/`&` — the
+    /// builder picks the right separator). Needed for brands whose `GET /models` hides part of the
+    /// catalog behind a filter that defaults to a subset: OpenRouter defaults `output_modalities=text`,
+    /// so TTS models (audio output) are omitted unless `output_modalities=all` is sent — without this
+    /// the catalog can never enumerate a text-to-speech model. Empty (the default) appends nothing.
+    /// Ignored when [`Brand::models_url_override`] is set (that URL is used verbatim).
+    pub models_query: &'static str,
     /// Whether this brand's `/models` listing flags decommissioned models with `active: false` and they
     /// should be omitted from the catalog. Groq is the one brand that does this — its listing keeps a
     /// model for a grace period after it is retired, marked `active: false`; advertising it as a live
@@ -150,6 +157,7 @@ impl Brand {
             voices_api: false,
             models_api: false,
             models_url_override: None,
+            models_query: "",
             filter_inactive_models: false,
             batch_flavor: BatchFlavor::Unsupported,
         };
@@ -166,6 +174,7 @@ impl Brand {
             voices_api: false,
             models_api: false,
             models_url_override: None,
+            models_query: "",
             filter_inactive_models: false,
             batch_flavor: BatchFlavor::Unsupported,
         };
@@ -182,6 +191,9 @@ impl Brand {
             "openrouter" => Brand {
                 transcription_json_base64: true,
                 models_api: true,
+                // OpenRouter's `/models` defaults to `output_modalities=text`; without `=all` the
+                // catalog omits TTS models (audio output), so a speech model could never be listed.
+                models_query: "output_modalities=all",
                 ..b(
                     "openrouter",
                     "https://openrouter.ai/api/v1",
@@ -268,6 +280,7 @@ impl Brand {
                 // deployment — `models_url` builds that, NOT `url_for`.
                 models_api: true,
                 models_url_override: None,
+                models_query: "",
                 // Azure's listing carries no `active` flag — nothing to filter.
                 filter_inactive_models: false,
                 // Azure batch is resource-scoped (`/openai/batches?api-version=`), not under the
@@ -397,7 +410,7 @@ impl OpenAiCompatProvider {
             return url.to_string();
         }
         let e = self.batch_endpoint(cx);
-        match self.brand.url_style {
+        let mut url = match self.brand.url_style {
             UrlStyle::Standard => format!("{e}/models"),
             UrlStyle::Azure => {
                 let api_version = cx
@@ -405,7 +418,14 @@ impl OpenAiCompatProvider {
                     .unwrap_or(self.brand.default_api_version);
                 format!("{e}/openai/models?api-version={api_version}")
             }
+        };
+        // A brand-specific catalog filter (e.g. OpenRouter's `output_modalities=all`); pick `&` when the
+        // base already carries a query (Azure's `api-version`), `?` otherwise.
+        if !self.brand.models_query.is_empty() {
+            url.push(if url.contains('?') { '&' } else { '?' });
+            url.push_str(self.brand.models_query);
         }
+        url
     }
 
     /// Fetch and parse the brand's upstream `GET /models` catalog. Reuses the shared auth + failure
@@ -1154,6 +1174,22 @@ fn audio_format_token(filename: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openrouter_models_url_requests_all_output_modalities() {
+        // OpenRouter's `/models` defaults to `output_modalities=text`, hiding TTS (audio-output)
+        // models; the brand must ask for `=all` so a speech model can be enumerated at all.
+        let p = OpenAiCompatProvider::for_kind("openrouter", &crate::transport::Transports::fake())
+            .unwrap();
+        assert_eq!(
+            p.models_url(&ProviderCx::default()),
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+        );
+        // A brand without the quirk keeps the bare `<endpoint>/models` URL — no stray filter.
+        let p = OpenAiCompatProvider::for_kind("openai", &crate::transport::Transports::fake())
+            .unwrap();
+        assert!(!p.models_url(&ProviderCx::default()).contains("output_modalities"));
+    }
 
     #[tokio::test]
     async fn voices_fall_back_to_config_declared_for_unknown_upstream() {
