@@ -1188,7 +1188,9 @@ mod tests {
         // A brand without the quirk keeps the bare `<endpoint>/models` URL — no stray filter.
         let p = OpenAiCompatProvider::for_kind("openai", &crate::transport::Transports::fake())
             .unwrap();
-        assert!(!p.models_url(&ProviderCx::default()).contains("output_modalities"));
+        assert!(!p
+            .models_url(&ProviderCx::default())
+            .contains("output_modalities"));
     }
 
     #[tokio::test]
