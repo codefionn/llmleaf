@@ -202,8 +202,10 @@ pub struct KeyConfig {
     /// Optional human-friendly label. Defaults to [`KeyConfig::id`] when omitted.
     #[serde(default)]
     pub name: Option<String>,
-    /// Static model allow-list. `None` ⇒ all models this node routes. A gatekeeper verdict can
-    /// further restrict at runtime, but never widen past this base.
+    /// Static model allow-list. `None` ⇒ all models this node routes; a list containing a bare
+    /// `"*"` means the same (the OAuth role-mapping convention). Entries may use `*` as a wildcard
+    /// matching any run of characters — `"gpt-*"`, `"openrouter/openai/*"` — alongside exact ids.
+    /// A gatekeeper verdict can further restrict at runtime, but never widen past this base.
     #[serde(default)]
     pub allowed_models: Option<Vec<String>>,
 }
@@ -244,7 +246,8 @@ pub struct OAuthConfig {
     #[serde(default = "default_roles_claim")]
     pub roles_claim: String,
     /// Role/group → allowed models. A token's allowed set is the union over its roles. A role mapped to
-    /// `["*"]` grants every model the node routes; a token bearing no mapped role can use no model.
+    /// `["*"]` grants every model the node routes; entries may use `*` as a wildcard (`"gpt-*"`,
+    /// `"openrouter/openai/*"`); a token bearing no mapped role can use no model.
     #[serde(default)]
     pub role_models: HashMap<String, Vec<String>>,
     /// JWKS refresh interval (seconds) for the control-plane pull. The first pull primes before the

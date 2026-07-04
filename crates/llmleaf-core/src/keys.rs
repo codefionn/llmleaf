@@ -54,7 +54,9 @@ pub struct Verdict {
     /// Suspended while `now < suspended_until` (unix seconds). A comparison, not a countdown.
     #[serde(default)]
     pub suspended_until: Option<u64>,
-    /// Runtime model restriction layered on top of the config allow-list. `None` ⇒ no extra restriction.
+    /// Runtime model restriction layered on top of the config allow-list. `None` ⇒ no extra
+    /// restriction. Entries may be `*` wildcard patterns (`"gpt-*"`, `"openrouter/openai/*"`),
+    /// matched like the config allow-list (see [`allow_set_permits`]).
     #[serde(default)]
     pub allowed_models: Option<HashSet<String>>,
 }
@@ -147,10 +149,7 @@ impl KeyStore {
                 KeyState {
                     name: k.name.clone(),
                     pw_hash,
-                    config_allowed: k
-                        .allowed_models
-                        .as_ref()
-                        .map(|v| v.iter().cloned().collect()),
+                    config_allowed: allow_list(k.allowed_models.as_deref()),
                     verdict: Verdict::default(),
                 },
             );
@@ -210,6 +209,10 @@ impl KeyStore {
         // hash. Decoding lands in a stack buffer so an unknown/garbled token never touches the heap.
         let mut buf = [0u8; MAX_TOKEN_DECODED];
         let len = b64_decode_into(token, &mut buf).ok_or(AuthError::Unknown)?;
+        // `password` is the bytes verbatim after the first ':' — NOT trimmed. A trailing newline
+        // from a credential base64'd with `echo … | base64` (echo appends '\n') stays in it and
+        // fails `verify` below, surfacing as a spurious `unknown api key` even when the configured
+        // hash is correct. Clients must encode with `printf`/`base64 -w0`. (See README / example.toml.)
         let (id, password) = split_credential(&buf[..len]).ok_or(AuthError::Unknown)?;
 
         let (outcome, pw_hash) = {
@@ -256,7 +259,7 @@ impl KeyStore {
                 KeyState {
                     name: k.name,
                     pw_hash: k.pw_hash,
-                    config_allowed: k.allowed_models.map(|v| v.into_iter().collect()),
+                    config_allowed: allow_list(k.allowed_models.as_deref()),
                     verdict,
                 },
             );
@@ -285,19 +288,19 @@ impl KeyStore {
         *guard = Arc::new(KeySnapshot { keys, identity_gen });
     }
 
-    /// The effective set of models a key may use, or `None` when the key is unrestricted (or unknown).
+    /// The effective model scope of a key, or `None` when the key is unrestricted (or unknown).
     ///
-    /// This is the *intersection* of the config allow-list and the verdict overlay: [`enforce`]
-    /// rejects a model that fails *either*, so a model is usable only when it is in every restriction
-    /// that is present. `None`/`None` ⇒ unrestricted; one present ⇒ that set; both present ⇒ their
-    /// intersection. The model-listing surface uses this to scope what a key can see (OpenAI/OpenRouter
-    /// return only the models a key can access).
+    /// The scope keeps the config allow-list and the verdict overlay as *separate layers* — wildcard
+    /// entries (`"gpt-*"`) make their intersection impossible to materialize as a set — and
+    /// [`ModelScope::permits`] answers for a model exactly as [`enforce`] would: it must pass every
+    /// layer that is present. The model-listing surface uses this to scope what a key can see
+    /// (OpenAI/OpenRouter return only the models a key can access).
     ///
     /// `key_id` is the *display* id returned by [`Self::authorize_token_identity`] (the friendly name
     /// if set), while the snapshot is keyed by the raw key-id — so we match on [`KeyState::display_id`].
     /// Display ids are assumed unique (the same assumption the event and admin surfaces already rely
     /// on); two keys sharing a `name` would be indistinguishable here.
-    pub fn allowed_models(&self, key_id: &KeyId) -> Option<HashSet<String>> {
+    pub fn model_scope(&self, key_id: &KeyId) -> Option<ModelScope> {
         let snap = self.snapshot.read().unwrap();
         let state = snap
             .keys
@@ -306,9 +309,10 @@ impl KeyStore {
             .map(|(_, state)| state)?;
         match (&state.config_allowed, &state.verdict.allowed_models) {
             (None, None) => None,
-            (Some(a), None) => Some(a.clone()),
-            (None, Some(v)) => Some(v.clone()),
-            (Some(a), Some(v)) => Some(a.intersection(v).cloned().collect()),
+            (config, verdict) => Some(ModelScope {
+                config: config.clone(),
+                verdict: verdict.clone(),
+            }),
         }
     }
 
@@ -332,8 +336,85 @@ impl KeyStore {
     }
 }
 
+/// Materialize a configured model allow-list into the restriction the store enforces. A list
+/// containing a bare `"*"` means "every routed model" — the same convention the OAuth role→models
+/// mapping uses ([`crate::oauth`]) — so it collapses to `None` (unrestricted). Other entries are
+/// kept verbatim; ones containing `*` act as wildcard patterns at match time ([`allow_set_permits`]).
+fn allow_list(models: Option<&[String]>) -> Option<HashSet<String>> {
+    let models = models?;
+    if models.iter().any(|m| m == "*") {
+        return None;
+    }
+    Some(models.iter().cloned().collect())
+}
+
+/// A key's effective model restriction, as its two layers (config base, verdict overlay — principle
+/// 6) kept apart: wildcard entries make the intersection impossible to materialize as a set, so the
+/// scope is *tested*, never enumerated. Built by [`KeyStore::model_scope`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelScope {
+    config: Option<HashSet<String>>,
+    verdict: Option<HashSet<String>>,
+}
+
+impl ModelScope {
+    /// `true` when every layer that is present permits `model` — the same answer [`enforce`] gives
+    /// on the request path.
+    pub fn permits(&self, model: &str) -> bool {
+        self.config
+            .as_ref()
+            .is_none_or(|s| allow_set_permits(s, model))
+            && self
+                .verdict
+                .as_ref()
+                .is_none_or(|s| allow_set_permits(s, model))
+    }
+}
+
+/// `true` when `model` is permitted by an allow-list: an exact entry (one hash lookup — the common
+/// case, so a plain list stays O(1)), or any entry containing `*` that it wildcard-matches.
+pub(crate) fn allow_set_permits(set: &HashSet<String>, model: &str) -> bool {
+    set.contains(model)
+        || set
+            .iter()
+            .any(|p| p.contains('*') && wildcard_match(p, model))
+}
+
+/// Match `model` against `pattern`, where each `*` matches any (possibly empty) run of characters
+/// and everything else matches literally — `"gpt-*"`, `"openrouter/openai/*"`, `"*-mini"`.
+/// Iterative two-pointer glob with single-star backtracking: allocation-free (principle 1), and
+/// byte-wise, which is exact for UTF-8 since `*` is ASCII.
+fn wildcard_match(pattern: &str, model: &str) -> bool {
+    let (p, t) = (pattern.as_bytes(), model.as_bytes());
+    let (mut pi, mut ti) = (0, 0);
+    // The position after the most recent `*` and the text index it has consumed up to; on a
+    // mismatch, back up here and let the star swallow one more byte.
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            pi += 1;
+            star = Some((pi, ti));
+        } else if pi < p.len() && p[pi] == t[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    // Only trailing stars may remain unconsumed.
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
 /// Apply the documented precedence once a key is in hand: blocked ▸ suspended ▸ config allow-list ▸
-/// verdict allow-list ▸ allowed. A lookup and comparisons only — no arithmetic (principle 5).
+/// verdict allow-list ▸ allowed. Allow-list entries may be `*` wildcard patterns
+/// ([`allow_set_permits`]). A lookup and comparisons only — no arithmetic (principle 5).
 fn enforce(state: &KeyState, id: &str, model: Option<&str>, now: u64) -> Result<KeyId, AuthError> {
     if state.verdict.blocked {
         return Err(AuthError::Blocked);
@@ -349,13 +430,13 @@ fn enforce(state: &KeyState, id: &str, model: Option<&str>, now: u64) -> Result<
     if let Some(model) = model {
         // Config base restriction.
         if let Some(allowed) = &state.config_allowed {
-            if !allowed.contains(model) {
+            if !allow_set_permits(allowed, model) {
                 return Err(AuthError::ModelNotAllowed);
             }
         }
         // Verdict overlay restriction.
         if let Some(allowed) = &state.verdict.allowed_models {
-            if !allowed.contains(model) {
+            if !allow_set_permits(allowed, model) {
                 return Err(AuthError::ModelNotAllowed);
             }
         }
@@ -490,15 +571,14 @@ mod tests {
     }
 
     #[test]
-    fn allowed_models_intersects_config_and_verdict() {
+    fn model_scope_intersects_config_and_verdict() {
         let s = store();
         // Unrestricted key (no config allow-list, no verdict): None ⇒ sees everything.
-        assert_eq!(s.allowed_models(&"open-team".to_string()), None);
+        assert_eq!(s.model_scope(&"open-team".to_string()), None);
         // Config-only restriction.
-        assert_eq!(
-            s.allowed_models(&"narrow-team".to_string()),
-            Some(HashSet::from(["gpt-4o".to_string()]))
-        );
+        let scope = s.model_scope(&"narrow-team".to_string()).unwrap();
+        assert!(scope.permits("gpt-4o"));
+        assert!(!scope.permits("o3-mini"));
         // Verdict-only restriction (on the otherwise-open key).
         let mut verdicts = HashMap::new();
         verdicts.insert(
@@ -520,15 +600,122 @@ mod tests {
             },
         );
         s.install_verdicts(verdicts);
+        let scope = s.model_scope(&"open-team".to_string()).unwrap();
+        assert!(scope.permits("o3-mini"));
+        assert!(!scope.permits("gpt-4o"));
+        // config {gpt-4o} ∩ verdict {gpt-4o, claude-opus-4}: only gpt-4o passes both layers.
+        let scope = s.model_scope(&"narrow-team".to_string()).unwrap();
+        assert!(scope.permits("gpt-4o"));
+        assert!(!scope.permits("claude-opus-4"));
+    }
+
+    #[test]
+    fn wildcard_allow_list_matches_patterns() {
+        // Prefix (`openrouter/openai/*`), suffix (`*-mini`), and exact entries mix in one list;
+        // matching is exact-first, wildcard-second.
+        let s = KeyStore::from_config(&[key(
+            "wild",
+            BCRYPT_S3CRET,
+            Some(vec![
+                "openrouter/openai/*".into(),
+                "*-mini".into(),
+                "claude-opus-4".into(),
+            ]),
+        )]);
+        let tok = b64("wild:s3cret");
+        for allowed in [
+            "openrouter/openai/gpt-4o",
+            "openrouter/openai/o3", // prefix wildcard spans path segments
+            "o3-mini",
+            "claude-opus-4",
+        ] {
+            assert_eq!(
+                s.authorize(&tok, allowed, 0),
+                Ok("wild-team".to_string()),
+                "model={allowed}"
+            );
+        }
+        for denied in ["gpt-4o", "openrouter/mistral/large", "o3-mini-high"] {
+            assert_eq!(
+                s.authorize(&tok, denied, 0),
+                Err(AuthError::ModelNotAllowed),
+                "model={denied}"
+            );
+        }
+        // The listing scope answers identically.
+        let scope = s.model_scope(&"wild-team".to_string()).unwrap();
+        assert!(scope.permits("openrouter/openai/gpt-4o"));
+        assert!(!scope.permits("openrouter/mistral/large"));
+    }
+
+    #[test]
+    fn wildcard_verdict_narrows() {
+        // A verdict overlay may also carry patterns; both layers must pass. Config
+        // `openrouter/*` narrowed by verdict `openrouter/openai/*`.
+        let s = KeyStore::from_config(&[key(
+            "wild",
+            BCRYPT_S3CRET,
+            Some(vec!["openrouter/*".into()]),
+        )]);
+        s.install_verdicts(verdicts(
+            "wild",
+            Verdict {
+                allowed_models: Some(HashSet::from(["openrouter/openai/*".to_string()])),
+                ..Default::default()
+            },
+        ));
+        let tok = b64("wild:s3cret");
         assert_eq!(
-            s.allowed_models(&"open-team".to_string()),
-            Some(HashSet::from(["o3-mini".to_string()]))
+            s.authorize(&tok, "openrouter/openai/gpt-4o", 0),
+            Ok("wild-team".to_string())
         );
-        // config {gpt-4o} ∩ verdict {gpt-4o, claude-opus-4} = {gpt-4o}.
         assert_eq!(
-            s.allowed_models(&"narrow-team".to_string()),
-            Some(HashSet::from(["gpt-4o".to_string()]))
+            s.authorize(&tok, "openrouter/mistral/large", 0),
+            Err(AuthError::ModelNotAllowed)
         );
+        let scope = s.model_scope(&"wild-team".to_string()).unwrap();
+        assert!(scope.permits("openrouter/openai/gpt-4o"));
+        assert!(!scope.permits("openrouter/mistral/large"));
+    }
+
+    #[test]
+    fn wildcard_match_cases() {
+        for (pattern, model, expect) in [
+            ("*", "anything", true),
+            ("*", "", true),
+            ("gpt-*", "gpt-4o", true),
+            ("gpt-*", "gpt-", true),
+            ("gpt-*", "gpt", false),
+            ("openrouter/openai/*", "openrouter/openai/gpt-4o", true),
+            ("openrouter/openai/*", "openrouter/openai/", true),
+            ("openrouter/openai/*", "openrouter/openai", false),
+            ("*-mini", "o3-mini", true),
+            ("*-mini", "o3-mini-high", false),
+            // Multiple stars require backtracking: the first `*` must not swallow the "4".
+            ("gpt-*o*", "gpt-4o", true),
+            ("a*b*c", "aXbYc", true),
+            ("a*b*c", "aXbY", false),
+            ("literal", "literal", true),
+            ("literal", "literally", false),
+        ] {
+            assert_eq!(
+                wildcard_match(pattern, model),
+                expect,
+                "pattern={pattern} model={model}"
+            );
+        }
+    }
+
+    #[test]
+    fn star_allow_list_means_unrestricted() {
+        // `allowed_models = ["*"]` is the "every routed model" convention (as in the OAuth
+        // role mapping) — NOT a literal set entry that matches nothing. It must behave
+        // exactly like omitting the list: any model authorizes, and the listing scope is
+        // unrestricted (`None`).
+        let s = KeyStore::from_config(&[key("star", BCRYPT_S3CRET, Some(vec!["*".to_string()]))]);
+        let tok = b64("star:s3cret");
+        assert_eq!(s.authorize(&tok, "gpt-4o", 0), Ok("star-team".to_string()));
+        assert_eq!(s.model_scope(&"star-team".to_string()), None);
     }
 
     #[test]

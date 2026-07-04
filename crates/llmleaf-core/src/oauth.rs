@@ -39,7 +39,9 @@ use crate::keys::{AuthError, KeyId};
 /// by issuance-rate × token-lifetime, not by total traffic.
 const MAX_VERIFIED: usize = 16_384;
 
-/// The models a token may use: every routed model (a role mapped to `"*"`), or an explicit set.
+/// The models a token may use: every routed model (a role mapped to a bare `"*"`), or an explicit
+/// set whose entries may be `*` wildcard patterns (`"gpt-*"`, `"openrouter/openai/*"`) — the same
+/// matching the key store's allow-lists use ([`crate::keys::allow_set_permits`]).
 #[derive(Clone)]
 enum AllowSet {
     All,
@@ -50,7 +52,7 @@ impl AllowSet {
     fn permits(&self, model: &str) -> bool {
         match self {
             AllowSet::All => true,
-            AllowSet::Only(s) => s.contains(model),
+            AllowSet::Only(s) => crate::keys::allow_set_permits(s, model),
         }
     }
 }
@@ -410,7 +412,7 @@ ojjQDhJdmvFlgMzpZBqBxg==
     }
 
     /// A verifier whose roles map `power → {gpt-4o, claude-opus-4}`, `basic → {gpt-4o-mini}`,
-    /// `admin → {*}`, seeded with the inline test JWKS.
+    /// `admin → {*}`, `router → {openrouter/openai/*}`, seeded with the inline test JWKS.
     fn verifier() -> OAuthVerifier {
         let cfg = OAuthConfig {
             issuer: "https://idp.test/".into(),
@@ -427,6 +429,7 @@ ojjQDhJdmvFlgMzpZBqBxg==
                 ),
                 ("basic".into(), vec!["gpt-4o-mini".into()]),
                 ("admin".into(), vec!["*".into()]),
+                ("router".into(), vec!["openrouter/openai/*".into()]),
             ]),
             jwks_refresh_secs: 3600,
             timeout_ms: 2000,
@@ -487,6 +490,20 @@ ojjQDhJdmvFlgMzpZBqBxg==
         assert_eq!(
             v.authorize(&t, "anything-at-all", now()).await,
             Ok("user-123".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn wildcard_pattern_role_grants_by_prefix() {
+        let v = verifier();
+        let t = good(json!(["router"]));
+        assert_eq!(
+            v.authorize(&t, "openrouter/openai/gpt-4o", now()).await,
+            Ok("user-123".to_string())
+        );
+        assert_eq!(
+            v.authorize(&t, "openrouter/mistral/large", now()).await,
+            Err(AuthError::ModelNotAllowed)
         );
     }
 

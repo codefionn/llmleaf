@@ -216,11 +216,18 @@ targets = [{ provider = "openai-main", model = "gpt-4o-transcribe" }]
 # `$1$` / `$5$` / `$6$` shadow hashes (e.g. `openssl passwd -6`) work too. `env:VAR` indirection is
 # supported, so the hash can live outside the file. For the example below the consumer would send
 #   Authorization: Bearer ZGVtby10ZWFtOnMzY3JldA==   # = base64("demo-team:s3cret")
+#
+# PITFALL: base64 the credential with NO trailing newline. `echo "id:pw" | base64` appends a newline
+# that gets encoded INTO the value, so the decoded password becomes "pw\n" and fails the hash check —
+# surfacing as `401 unknown api key` even when pw_hash is correct. Encode with printf (or `base64 -w0`):
+#   printf 'demo-team:s3cret' | base64
 
 [[keys]]
 id = "demo-team"
 pw_hash = "env:LLMLEAF_DEMO_KEY_HASH"
-# Static allow-list; a verdict may narrow further at runtime but never widen past this.
+# Static allow-list; a verdict may narrow further at runtime but never widen past this. Entries may
+# use `*` as a wildcard alongside exact ids — e.g. "gpt-*", "openrouter/openai/*" — and a list
+# containing a bare "*" means every routed model (same as omitting the line).
 allowed_models = ["gpt-4o", "demo"]
 
 # The key the bundled examples (`cargo run -p llmleaf --example chat`) use out of the box. Its
@@ -256,7 +263,8 @@ pw_hash = "$2y$12$e8yd7Vi6xtWz5gUpEvKBkOtgIoq4nIBkFZ1iMtWj5T8oeAQWL/WSi"
 # on_error = "deny"                              # cold-start JWKS unreachable ⇒ fail closed (authentication)
 #
 # Role/group → allowed models. A token's allow-list is the union over its roles; a role mapped to ["*"]
-# grants every routed model; a token bearing no mapped role can use none.
+# grants every routed model; entries may use `*` as a wildcard (e.g. "gpt-*", "openrouter/openai/*");
+# a token bearing no mapped role can use none.
 # [oauth.role_models]
 # "llmleaf-power" = ["gpt-4o", "smart"]
 # "llmleaf-basic" = ["demo"]

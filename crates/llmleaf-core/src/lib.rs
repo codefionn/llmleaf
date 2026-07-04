@@ -33,7 +33,7 @@ pub use config::{
 };
 pub use engine::{Engine, EngineError, InterceptOutcome, Interceptor};
 pub use events::{Envelope, Event, EventBus};
-pub use keys::{AuthError, IdentityInput, KeyStore, KeyView, Verdict};
+pub use keys::{AuthError, IdentityInput, KeyStore, KeyView, ModelScope, Verdict};
 #[cfg(feature = "oauth")]
 pub use oauth::{OAuthVerifier, TokenIntrospector};
 pub use ratelimit::{RateGuard, RateLimiter};

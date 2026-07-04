@@ -1,7 +1,7 @@
 //! Simulation of key authorization: the token format (`base64(key-id:password)` over a hashed
-//! password), the config allow-list base, and the pulled verdict overlay, enforced over simulated time
-//! (SOUL.md principle 5: a lookup and a comparison, never arithmetic; principle 6: config is the base,
-//! the pulled control plane is a layer).
+//! password), the config allow-list base (including `*` wildcard entries), and the pulled verdict
+//! overlay, enforced over simulated time (SOUL.md principle 5: a lookup and a comparison, never
+//! arithmetic; principle 6: config is the base, the pulled control plane is a layer).
 //!
 //! [`KeyStore::authorize`] takes the caller-supplied `now`, so suspensions can be probed exactly at,
 //! before, and after their boundary. The reference model mirrors the documented precedence — including
@@ -73,21 +73,56 @@ fn predict_auth(
         }
     }
     if let Some(allowed) = &key.config_allowed {
-        if !allowed.contains(model) {
+        if !ref_permits(allowed, model) {
             return Err(AuthError::ModelNotAllowed);
         }
     }
     if let Some(allowed) = &key.verdict.allowed_models {
-        if !allowed.contains(model) {
+        if !ref_permits(allowed, model) {
             return Err(AuthError::ModelNotAllowed);
         }
     }
     Ok(key.display_id(id))
 }
 
+/// Reference allow-list matching: an exact entry, or any entry containing `*` treated as a wildcard.
+fn ref_permits(set: &HashSet<String>, model: &str) -> bool {
+    set.iter()
+        .any(|p| p == model || (p.contains('*') && ref_wildcard(p.as_bytes(), model.as_bytes())))
+}
+
+/// Independent wildcard matcher for the reference model — deliberately recursive, not the core's
+/// iterative backtracking glob, so the two implementations cross-check each other. `*` matches any
+/// (possibly empty) run of bytes.
+fn ref_wildcard(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern.first() {
+        None => text.is_empty(),
+        Some(b'*') => (0..=text.len()).any(|i| ref_wildcard(&pattern[1..], &text[i..])),
+        Some(&c) => text.first() == Some(&c) && ref_wildcard(&pattern[1..], &text[1..]),
+    }
+}
+
 fn random_subset(rng: &mut Rng, universe: &[String]) -> HashSet<String> {
     // May be empty (a key allowed no models — a valid, if useless, restriction).
-    universe.iter().filter(|_| rng.bool()).cloned().collect()
+    let mut set: HashSet<String> = universe.iter().filter(|_| rng.bool()).cloned().collect();
+    // Sometimes mix in `*` wildcard entries: one matching the whole `model-N` universe, one matching
+    // a single model by prefix (or nothing, when the index is past the universe), one matching
+    // nothing, and occasionally a bare `*` (which the core collapses to "unrestricted" in config
+    // allow-lists and matches everything in verdicts — observably identical to the mirror treating
+    // it as a match-all pattern).
+    if rng.chance(1, 4) {
+        set.insert("model-*".to_string());
+    }
+    if rng.chance(1, 4) {
+        set.insert(format!("model-{}*", rng.below(5)));
+    }
+    if rng.chance(1, 4) {
+        set.insert("other-*".to_string());
+    }
+    if rng.chance(1, 8) {
+        set.insert("*".to_string());
+    }
+    set
 }
 
 /// Generate a fresh crypt(3) hash for a password. md5-crypt keeps the sweep fast (bcrypt's KDF would

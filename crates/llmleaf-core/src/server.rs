@@ -786,9 +786,9 @@ async fn list_models(
     };
     let search = query.search.as_deref().map(str::to_ascii_lowercase);
     let admin = admin_view_authorized(&state, &headers);
-    // Scope to the key's allowed models (OpenAI/OpenRouter return only accessible models). `None` ⇒
-    // unrestricted.
-    let allowed = state.keys.allowed_models(&key);
+    // Scope to the key's allowed models (OpenAI/OpenRouter return only accessible models; allow-list
+    // entries may be `*` wildcard patterns). `None` ⇒ unrestricted.
+    let allowed = state.keys.model_scope(&key);
 
     let engine = &state.engine;
 
@@ -857,7 +857,7 @@ async fn list_models(
 
     // Per-key scoping, then prune namespace markers from the public view (admin keeps them).
     if let Some(allowed) = &allowed {
-        entries.retain(|id, _| allowed.contains(id));
+        entries.retain(|id, _| allowed.permits(id));
     }
     if !admin {
         entries.retain(|_, e| e.callable);
