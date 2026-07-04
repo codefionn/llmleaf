@@ -52,6 +52,10 @@ curl localhost:8080/v1/chat/completions \
   -d '{"model":"demo","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+> Base64 the `id:password` credential with **no trailing newline** — use `printf` (or `base64 -w0`),
+> not `echo`. A stray newline is encoded into the value, so the decoded password becomes `pw\n` and
+> fails the hash check → `401 unknown api key`, even when the configured `pw_hash` is correct.
+
 See `llmleaf.example.toml` for the full configuration surface (providers, routes, keys, control plane).
 
 ## API surface
