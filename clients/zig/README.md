@@ -75,11 +75,53 @@ while (try stream.next()) |chunk| {
 that is **reset on the next `next()`** — copy out anything you need to keep. A callback form
 (`chatStreamCallback`) is also provided.
 
+## Responses (`POST /v1/responses`)
+
+The OpenAI Responses dialect on the same canonical core. `input` is a bare string or an array
+of typed items (`.text` / `.items`); tools and the named `tool_choice` are **flat**. llmleaf is
+stateless: `store` is accepted but the response always reports `"store": false`.
+
+```zig
+var api_err: ?llmleaf.ApiError = null;
+const resp = try client.responses(.{
+    .model = "gpt-5",
+    .instructions = "You are concise.",
+    .input = .{ .text = "Say hi" },
+}, &api_err);
+defer resp.deinit();
+for (resp.value.output) |item| switch (item) {
+    .message => |m| if (m.content) |c| switch (c) {
+        .parts => |parts| for (parts) |p| switch (p) {
+            .output_text => |t| std.debug.print("{s}\n", .{t.text}),
+            else => {},
+        },
+        .text => |t| std.debug.print("{s}\n", .{t}),
+    },
+    else => {}, // reasoning / function_call / function_call_output items
+};
+```
+
+Streaming uses typed SSE events with **no `[DONE]` sentinel** — `next()` yields each
+`ResponsesStreamEvent` and returns `null` after the terminal `response.completed` /
+`response.incomplete` / `response.failed` event (unrecognised event types are skipped).
+Accumulate `response.output_text.delta` deltas for the assembled text; a callback form
+(`responsesStreamCallback`) that does this for you is also provided.
+
+```zig
+var stream = try client.responsesStream(req, &api_err);
+defer stream.deinit();
+while (try stream.next()) |event| {
+    if (std.mem.eql(u8, event.type, "response.output_text.delta"))
+        if (event.delta) |d| std.debug.print("{s}", .{d});
+}
+```
+
 ## Surface
 
 | Method | Endpoint |
 |--------|----------|
 | `chat` / `chatStream` / `chatStreamCallback` | `POST /v1/chat/completions` |
+| `responses` / `responsesStream` / `responsesStreamCallback` | `POST /v1/responses` (typed SSE, no `[DONE]`) |
 | `embeddings` | `POST /v1/embeddings` (handles base64 vectors) |
 | `listModels` | `GET /v1/models` |
 | `speech` | `POST /v1/audio/speech` (bytes + content-type) |
@@ -112,8 +154,8 @@ diff aid, never a drop-in.
   timeout. Wrap calls with your own watchdog if you need a hard deadline.
 - SSE/NDJSON lines read through a 1 MiB buffer (`error.StreamTooLong` past that). Decoders are
   tolerant of unknown fields. The wire mapping plus chat / models / the 401 path were exercised
-  against a local mock gateway; TTS / STT / voices / batches are unit-tested but not run against
-  a live backend.
+  against a local mock gateway; responses / TTS / STT / voices / batches are unit-tested but not
+  run against a live backend.
 
 ## License
 

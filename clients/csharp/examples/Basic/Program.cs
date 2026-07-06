@@ -67,7 +67,38 @@ try
     }
     Console.WriteLine();
 
-    // 3) List models: print the first few ids.
+    // 3) Non-streaming responses (the OpenAI Responses dialect): print the assembled output text.
+    Console.WriteLine();
+    Console.WriteLine("== non-streaming responses ==");
+    var response = await client.CreateResponseAsync(new ResponsesRequest
+    {
+        Model = model,
+        Input = "In one sentence, what is an LLM proxy?",
+    }, cts.Token);
+
+    Console.WriteLine(ResponsesText(response) is { Length: > 0 } outText ? outText : "(no content)");
+    if (response.Usage is { } ru)
+    {
+        Console.WriteLine($"[tokens: input={ru.InputTokens} output={ru.OutputTokens} total={ru.TotalTokens}]");
+    }
+
+    // 4) Streaming responses: accumulate the typed response.output_text.delta events (no [DONE] sentinel).
+    Console.WriteLine();
+    Console.WriteLine("== streaming responses ==");
+    await foreach (var evt in client.CreateResponseStreamAsync(new ResponsesRequest
+    {
+        Model = model,
+        Input = "Count from one to five, words only.",
+    }, cts.Token))
+    {
+        if (evt.Type == "response.output_text.delta" && evt.Delta is { } delta)
+        {
+            Console.Write(delta);
+        }
+    }
+    Console.WriteLine();
+
+    // 5) List models: print the first few ids.
     Console.WriteLine();
     Console.WriteLine("== models ==");
     var models = await client.ListModelsAsync(new ListModelsOptions { Type = ModelType.Llm }, cts.Token);
@@ -88,4 +119,24 @@ catch (OperationCanceledException)
 {
     Console.Error.WriteLine("canceled");
     return 130;
+}
+
+// Assemble the visible text from a Responses result: every output_text part of every message item.
+static string ResponsesText(ResponsesResponse response)
+{
+    var sb = new System.Text.StringBuilder();
+    foreach (var item in response.Output)
+    {
+        if (item is ResponseMessageItem { Content.Parts: { } parts })
+        {
+            foreach (var part in parts)
+            {
+                if (part is OutputTextPart text)
+                {
+                    sb.Append(text.Text);
+                }
+            }
+        }
+    }
+    return sb.ToString();
 }

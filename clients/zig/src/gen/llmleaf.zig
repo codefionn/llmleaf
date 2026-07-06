@@ -301,6 +301,250 @@ pub const ChatCompletionChunk = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Responses  (POST /v1/responses) — the OpenAI Responses dialect
+// ---------------------------------------------------------------------------
+//
+// Same canonical core as chat, a different edge dialect. llmleaf serves it
+// STATELESSLY: `store` is accepted but always answered `false`,
+// `previous_response_id`/`background:true` are rejected (400), and there is no
+// retrieval call (`GET /v1/responses/{id}` is an explained 404). Dialect
+// vocabulary that would collide with the chat enums (statuses, the "developer"
+// role) stays a plain wire string here rather than an enum.
+
+/// A plain text part. Reused for both `input_text` and `output_text` (the wire
+/// `type` token comes from the field the part lives in, not from this struct).
+pub const ResponseTextPart = struct {
+    text: []const u8,
+};
+
+/// `{"type":"input_image","image_url":"<url>","detail":...}` — note `image_url`
+/// is a plain STRING here, unlike the chat dialect's nested `{url}` object.
+pub const ResponseInputImagePart = struct {
+    image_url: []const u8,
+    detail: ?[]const u8 = null, // "auto" | "low" | "high"
+};
+
+/// One content part of a Responses message. The active field's name is the wire
+/// `"type"` token: `input_text` / `input_image` / `output_text`. A constructed
+/// `output_text` part emits `"annotations":[]`.
+pub const ResponseContentPart = union(enum) {
+    input_text: ResponseTextPart,
+    input_image: ResponseInputImagePart,
+    output_text: ResponseTextPart,
+};
+
+/// Message `content`: a bare string, or an array of typed content parts.
+pub const ResponseContent = union(enum) {
+    text: []const u8,
+    parts: []const ResponseContentPart,
+};
+
+/// A conversation message item. On input `role` is "user"|"system"|"developer"|
+/// "assistant"; on output it is "assistant" with `output_text` parts and
+/// `status`/`id` set. `role` is a wire string (not the chat `Role` enum) because
+/// "developer" has no chat-enum counterpart.
+pub const ResponseMessageItem = struct {
+    id: ?[]const u8 = null,
+    role: []const u8,
+    content: ?ResponseContent = null,
+    status: ?[]const u8 = null, // output only: "in_progress" | "completed"
+
+    /// Convenience constructor for the common bare-text message.
+    pub fn textMsg(role: []const u8, text: []const u8) ResponseMessageItem {
+        return .{ .role = role, .content = .{ .text = text } };
+    }
+};
+
+/// A function call the model made. `call_id` pairs it with its
+/// `function_call_output`; `arguments` is the raw JSON string exactly as emitted.
+pub const ResponseFunctionCallItem = struct {
+    id: ?[]const u8 = null,
+    call_id: []const u8,
+    name: []const u8,
+    arguments: []const u8, // raw JSON string
+    status: ?[]const u8 = null,
+};
+
+/// The caller's answer to a function call, replayed on the next turn.
+pub const ResponseFunctionCallOutputItem = struct {
+    id: ?[]const u8 = null,
+    call_id: []const u8,
+    output: []const u8,
+};
+
+/// One reasoning text entry. In a reasoning item's `summary[]` it serialises as
+/// `{"type":"summary_text","text"}`; in `content[]` as `{"type":"reasoning_text",
+/// "text"}` — the list it lives in decides the wire token.
+pub const ResponseReasoningText = struct {
+    text: []const u8,
+};
+
+/// A reasoning ("thinking") item. `encrypted_content` is opaque and MUST be
+/// echoed back verbatim in the next request's input to continue an encrypted
+/// reasoning turn (llmleaf is stateless, so replay is how a turn survives).
+pub const ResponseReasoningItem = struct {
+    id: ?[]const u8 = null,
+    summary: []const ResponseReasoningText = &.{},
+    content: []const ResponseReasoningText = &.{},
+    encrypted_content: ?[]const u8 = null,
+};
+
+/// One item of the request `input` array or the response `output` array. The
+/// wire discriminator is `"type"`; a message with no `"type"` is implied by a
+/// bare role-keyed object (and is emitted that way).
+pub const ResponseItem = union(enum) {
+    message: ResponseMessageItem,
+    function_call: ResponseFunctionCallItem,
+    function_call_output: ResponseFunctionCallOutputItem,
+    reasoning: ResponseReasoningItem,
+};
+
+/// Wire `input`: a bare string (one user message) or an array of items.
+pub const ResponsesInput = union(enum) {
+    text: []const u8,
+    items: []const ResponseItem,
+};
+
+/// A tool the model MAY call — FLAT in this dialect (`type`/`name`/`parameters`
+/// at the top level, no nested `function` object). `parameters` is raw JSON.
+pub const ResponsesToolDef = struct {
+    type: []const u8 = "function",
+    name: []const u8,
+    description: ?[]const u8 = null,
+    parameters: ?[]const u8 = null, // raw JSON object
+    strict: ?bool = null,
+};
+
+/// A FLAT named tool choice `{"type":"function","name":"..."}` (no nested
+/// `function`, unlike the chat dialect).
+pub const ResponsesNamedToolChoice = struct {
+    type: []const u8 = "function",
+    name: []const u8,
+};
+
+/// tool_choice: a mode string ("auto"|"none"|"required") or the flat named object.
+pub const ResponsesToolChoice = union(enum) {
+    mode: []const u8,
+    named: ResponsesNamedToolChoice,
+};
+
+/// reasoning controls: `{"effort":...,"summary":...}`.
+pub const ResponsesReasoning = struct {
+    effort: ?[]const u8 = null, // "minimal" | "low" | "medium" | "high" | ...
+    summary: ?[]const u8 = null,
+};
+
+pub const ResponsesRequest = struct {
+    model: []const u8,
+    input: ResponsesInput,
+    instructions: ?[]const u8 = null, // becomes a leading system message
+    stream: ?bool = null,
+    temperature: ?f32 = null,
+    top_p: ?f32 = null,
+    max_output_tokens: ?u32 = null,
+    tools: []const ResponsesToolDef = &.{},
+    tool_choice: ?ResponsesToolChoice = null,
+    reasoning: ?ResponsesReasoning = null,
+    /// Accepted but always answered `false` — llmleaf stores nothing.
+    store: ?bool = null,
+    extra: ?[]const u8 = null, // raw JSON object, merged at the top level
+};
+
+pub const ResponsesInputTokensDetails = struct {
+    cached_tokens: ?u32 = null,
+};
+
+pub const ResponsesOutputTokensDetails = struct {
+    reasoning_tokens: ?u32 = null,
+};
+
+/// Token accounting in the Responses dialect's own names (`input_tokens` /
+/// `output_tokens`, not the chat dialect's `prompt_tokens`/`completion_tokens`).
+pub const ResponsesUsage = struct {
+    input_tokens: u32 = 0,
+    input_tokens_details: ?ResponsesInputTokensDetails = null,
+    output_tokens: u32 = 0,
+    output_tokens_details: ?ResponsesOutputTokensDetails = null,
+    total_tokens: u32 = 0,
+
+    /// Input tokens served from the provider's cache this request — a cache
+    /// *read* (hit). `0` when the upstream reported no caching.
+    pub fn cachedTokens(self: ResponsesUsage) u32 {
+        const d = self.input_tokens_details orelse return 0;
+        return d.cached_tokens orelse 0;
+    }
+
+    /// Output tokens spent on reasoning ("thinking"). `0` when not reported.
+    pub fn reasoningTokens(self: ResponsesUsage) u32 {
+        const d = self.output_tokens_details orelse return 0;
+        return d.reasoning_tokens orelse 0;
+    }
+};
+
+/// `status:"incomplete"` refinement: "max_output_tokens" | "content_filter".
+pub const ResponsesIncompleteDetails = struct {
+    reason: []const u8,
+};
+
+/// The response object (`"object":"response"`), also the snapshot carried by the
+/// `response.created` / `response.in_progress` / `response.completed` /
+/// `response.incomplete` / `response.failed` stream events.
+pub const ResponsesResponse = struct {
+    id: []const u8,
+    object: []const u8 = "response",
+    created_at: i64 = 0,
+    status: []const u8 = "", // "completed" | "in_progress" | "incomplete" | "failed"
+    incomplete_details: ?ResponsesIncompleteDetails = null,
+    @"error": ?ErrorBody = null,
+    model: []const u8 = "",
+    output: []const ResponseItem = &.{},
+    usage: ?ResponsesUsage = null, // null on in-flight snapshots
+    store: ?bool = null, // llmleaf always answers false
+    instructions: ?[]const u8 = null,
+    max_output_tokens: ?u32 = null,
+    temperature: ?f32 = null,
+    top_p: ?f32 = null,
+    reasoning: ?ResponsesReasoning = null,
+};
+
+/// One streaming SSE event. Unlike chat streaming there is NO `data: [DONE]`
+/// sentinel: the stream ends after the terminal `response.completed` /
+/// `response.incomplete` / `response.failed` event. This is a flat superset of
+/// every event's fields — `type` says which are meaningful. Fields not carried
+/// by a given event are `null`.
+pub const ResponsesStreamEvent = struct {
+    type: []const u8, // "response.created", "response.output_text.delta", ...
+    sequence_number: u64 = 0,
+    response: ?ResponsesResponse = null, // response.created/in_progress/completed/incomplete/failed
+    output_index: ?u32 = null,
+    item_id: ?[]const u8 = null,
+    content_index: ?u32 = null,
+    item: ?ResponseItem = null, // response.output_item.added/done
+    part: ?ResponseContentPart = null, // response.content_part.added/done
+    delta: ?[]const u8 = null, // *.delta events (text / reasoning / arguments)
+    text: ?[]const u8 = null, // response.output_text.done / reasoning_text.done
+    arguments: ?[]const u8 = null, // response.function_call_arguments.done
+    message: ?[]const u8 = null, // "error" event
+
+    /// Whether this is a terminal event that ends the stream. Only
+    /// `response.completed`/`incomplete`/`failed` end it (there is no sentinel).
+    pub fn isTerminal(self: ResponsesStreamEvent) bool {
+        return std.mem.eql(u8, self.type, "response.completed") or
+            std.mem.eql(u8, self.type, "response.incomplete") or
+            std.mem.eql(u8, self.type, "response.failed");
+    }
+
+    /// Whether the SDK recognises this event's type (the Responses family:
+    /// `response.*` plus the bare `error`). Unrecognised types are ignored by
+    /// the streaming iterator so the dialect can grow by adding `response.*`
+    /// types without breaking older SDKs.
+    pub fn isKnownType(self: ResponsesStreamEvent) bool {
+        return std.mem.startsWith(u8, self.type, "response.") or
+            std.mem.eql(u8, self.type, "error");
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Embeddings  (POST /v1/embeddings)
 // ---------------------------------------------------------------------------
 

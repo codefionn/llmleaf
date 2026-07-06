@@ -1008,3 +1008,631 @@ func (w *wireBatchResultLine) toPB() (*pb.BatchResultLine, error) {
 	}
 	return out, nil
 }
+
+// ---------------------------------------------------------------------------
+// error body (shared by the Responses `error` field / "error" stream event)
+// ---------------------------------------------------------------------------
+
+type wireErrorBody struct {
+	Message string  `json:"message"`
+	Type    *string `json:"type,omitempty"`
+	Code    *string `json:"code,omitempty"`
+}
+
+func (w *wireErrorBody) toPB() *pb.ErrorBody {
+	if w == nil {
+		return nil
+	}
+	return &pb.ErrorBody{Message: w.Message, Type: w.Type, Code: w.Code}
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — content parts
+//
+// Unlike the chat dialect these carry input_text / input_image / output_text
+// tokens; input_image.image_url is a plain STRING (not the chat `{url}` object)
+// and a constructed output_text part emits "annotations":[].
+// ---------------------------------------------------------------------------
+
+type wireResponseInputText struct {
+	Type string `json:"type"` // "input_text"
+	Text string `json:"text"`
+}
+
+type wireResponseInputImage struct {
+	Type     string  `json:"type"` // "input_image"
+	ImageURL string  `json:"image_url"`
+	Detail   *string `json:"detail,omitempty"`
+}
+
+type wireResponseOutputText struct {
+	Type        string            `json:"type"` // "output_text"
+	Text        string            `json:"text"`
+	Annotations []json.RawMessage `json:"annotations"` // emitted as [] when constructing
+}
+
+// wireResponseContentPart marshals to one of the Responses content-part shapes
+// depending on which oneof arm is set.
+type wireResponseContentPart struct {
+	inputText  *pb.ResponseTextPart
+	inputImage *pb.ResponseInputImagePart
+	outputText *pb.ResponseTextPart
+}
+
+func (p wireResponseContentPart) MarshalJSON() ([]byte, error) {
+	switch {
+	case p.inputImage != nil:
+		return json.Marshal(wireResponseInputImage{
+			Type:     "input_image",
+			ImageURL: p.inputImage.GetImageUrl(),
+			Detail:   p.inputImage.Detail,
+		})
+	case p.outputText != nil:
+		return json.Marshal(wireResponseOutputText{
+			Type:        "output_text",
+			Text:        p.outputText.GetText(),
+			Annotations: []json.RawMessage{},
+		})
+	case p.inputText != nil:
+		return json.Marshal(wireResponseInputText{Type: "input_text", Text: p.inputText.GetText()})
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (p *wireResponseContentPart) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Type     string  `json:"type"`
+		Text     string  `json:"text"`
+		ImageURL string  `json:"image_url"`
+		Detail   *string `json:"detail"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	switch probe.Type {
+	case "input_image":
+		p.inputImage = &pb.ResponseInputImagePart{ImageUrl: probe.ImageURL, Detail: probe.Detail}
+	case "output_text":
+		p.outputText = &pb.ResponseTextPart{Text: probe.Text}
+	default: // "input_text" or unknown -> treat as input text
+		p.inputText = &pb.ResponseTextPart{Text: probe.Text}
+	}
+	return nil
+}
+
+func responseContentPartToPB(p *wireResponseContentPart) *pb.ResponseContentPart {
+	switch {
+	case p.inputImage != nil:
+		return &pb.ResponseContentPart{Part: &pb.ResponseContentPart_InputImage{InputImage: p.inputImage}}
+	case p.outputText != nil:
+		return &pb.ResponseContentPart{Part: &pb.ResponseContentPart_OutputText{OutputText: p.outputText}}
+	default:
+		t := p.inputText
+		if t == nil {
+			t = &pb.ResponseTextPart{}
+		}
+		return &pb.ResponseContentPart{Part: &pb.ResponseContentPart_InputText{InputText: t}}
+	}
+}
+
+func responseContentPartFromPB(p *pb.ResponseContentPart) wireResponseContentPart {
+	return wireResponseContentPart{
+		inputText:  p.GetInputText(),
+		inputImage: p.GetInputImage(),
+		outputText: p.GetOutputText(),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — response items (the input / output oneof)
+// ---------------------------------------------------------------------------
+
+// wireResponseMessageItem is a role-keyed message item. On the wire it carries
+// NO "type" token (plain messages are role-keyed objects); the item dispatcher
+// routes to it for `"type":"message"` or an absent type.
+type wireResponseMessageItem struct {
+	ID      *string         `json:"id,omitempty"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content,omitempty"`
+	Status  *string         `json:"status,omitempty"`
+}
+
+type wireResponseFunctionCallItem struct {
+	Type      string  `json:"type"` // "function_call"
+	ID        *string `json:"id,omitempty"`
+	CallID    string  `json:"call_id"`
+	Name      string  `json:"name"`
+	Arguments string  `json:"arguments"`
+	Status    *string `json:"status,omitempty"`
+}
+
+type wireResponseFunctionCallOutputItem struct {
+	Type   string  `json:"type"` // "function_call_output"
+	ID     *string `json:"id,omitempty"`
+	CallID string  `json:"call_id"`
+	Output string  `json:"output"`
+}
+
+// wireResponseReasoningEntry is one summary[]/content[] entry; its "type" token
+// ("summary_text" vs "reasoning_text") is decided by the list it lives in.
+type wireResponseReasoningEntry struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type wireResponseReasoningItem struct {
+	Type             string                       `json:"type"` // "reasoning"
+	ID               *string                      `json:"id,omitempty"`
+	Summary          []wireResponseReasoningEntry `json:"summary"`
+	Content          []wireResponseReasoningEntry `json:"content,omitempty"`
+	EncryptedContent *string                      `json:"encrypted_content,omitempty"`
+}
+
+func reasoningItemToWire(r *pb.ResponseReasoningItem) wireResponseReasoningItem {
+	out := wireResponseReasoningItem{Type: "reasoning", ID: r.Id, EncryptedContent: r.EncryptedContent}
+	out.Summary = make([]wireResponseReasoningEntry, 0, len(r.GetSummary()))
+	for _, s := range r.GetSummary() {
+		out.Summary = append(out.Summary, wireResponseReasoningEntry{Type: "summary_text", Text: s.GetText()})
+	}
+	for _, c := range r.GetContent() {
+		out.Content = append(out.Content, wireResponseReasoningEntry{Type: "reasoning_text", Text: c.GetText()})
+	}
+	return out
+}
+
+func reasoningItemFromWire(r *wireResponseReasoningItem) *pb.ResponseReasoningItem {
+	out := &pb.ResponseReasoningItem{Id: r.ID, EncryptedContent: r.EncryptedContent}
+	for _, s := range r.Summary {
+		out.Summary = append(out.Summary, &pb.ResponseReasoningText{Text: s.Text})
+	}
+	for _, c := range r.Content {
+		out.Content = append(out.Content, &pb.ResponseReasoningText{Text: c.Text})
+	}
+	return out
+}
+
+// wireResponseItem serialises the ResponseItem oneof: message items are
+// role-keyed (no "type"); the rest carry their "type" discriminator. On decode
+// the "type" field selects the arm ("message" or absent -> message).
+type wireResponseItem struct {
+	message            *pb.ResponseMessageItem
+	functionCall       *pb.ResponseFunctionCallItem
+	functionCallOutput *pb.ResponseFunctionCallOutputItem
+	reasoning          *pb.ResponseReasoningItem
+}
+
+func (i wireResponseItem) MarshalJSON() ([]byte, error) {
+	switch {
+	case i.functionCall != nil:
+		fc := i.functionCall
+		return json.Marshal(wireResponseFunctionCallItem{
+			Type:      "function_call",
+			ID:        fc.Id,
+			CallID:    fc.GetCallId(),
+			Name:      fc.GetName(),
+			Arguments: fc.GetArguments(),
+			Status:    fc.Status,
+		})
+	case i.functionCallOutput != nil:
+		fo := i.functionCallOutput
+		return json.Marshal(wireResponseFunctionCallOutputItem{
+			Type:   "function_call_output",
+			ID:     fo.Id,
+			CallID: fo.GetCallId(),
+			Output: fo.GetOutput(),
+		})
+	case i.reasoning != nil:
+		return json.Marshal(reasoningItemToWire(i.reasoning))
+	case i.message != nil:
+		return marshalResponseMessageItem(i.message)
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (i *wireResponseItem) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	switch probe.Type {
+	case "function_call":
+		var fc wireResponseFunctionCallItem
+		if err := json.Unmarshal(data, &fc); err != nil {
+			return err
+		}
+		i.functionCall = &pb.ResponseFunctionCallItem{
+			Id: fc.ID, CallId: fc.CallID, Name: fc.Name, Arguments: fc.Arguments, Status: fc.Status,
+		}
+	case "function_call_output":
+		var fo wireResponseFunctionCallOutputItem
+		if err := json.Unmarshal(data, &fo); err != nil {
+			return err
+		}
+		i.functionCallOutput = &pb.ResponseFunctionCallOutputItem{Id: fo.ID, CallId: fo.CallID, Output: fo.Output}
+	case "reasoning":
+		var r wireResponseReasoningItem
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		i.reasoning = reasoningItemFromWire(&r)
+	default: // "message" or absent -> role-keyed message
+		m, err := unmarshalResponseMessageItem(data)
+		if err != nil {
+			return err
+		}
+		i.message = m
+	}
+	return nil
+}
+
+func (i *wireResponseItem) toPB() *pb.ResponseItem {
+	switch {
+	case i.functionCall != nil:
+		return &pb.ResponseItem{Item: &pb.ResponseItem_FunctionCall{FunctionCall: i.functionCall}}
+	case i.functionCallOutput != nil:
+		return &pb.ResponseItem{Item: &pb.ResponseItem_FunctionCallOutput{FunctionCallOutput: i.functionCallOutput}}
+	case i.reasoning != nil:
+		return &pb.ResponseItem{Item: &pb.ResponseItem_Reasoning{Reasoning: i.reasoning}}
+	default:
+		msg := i.message
+		if msg == nil {
+			msg = &pb.ResponseMessageItem{}
+		}
+		return &pb.ResponseItem{Item: &pb.ResponseItem_Message{Message: msg}}
+	}
+}
+
+func responseItemFromPB(it *pb.ResponseItem) wireResponseItem {
+	return wireResponseItem{
+		message:            it.GetMessage(),
+		functionCall:       it.GetFunctionCall(),
+		functionCallOutput: it.GetFunctionCallOutput(),
+		reasoning:          it.GetReasoning(),
+	}
+}
+
+func marshalResponseMessageItem(m *pb.ResponseMessageItem) ([]byte, error) {
+	out := wireResponseMessageItem{ID: m.Id, Role: m.GetRole(), Status: m.Status}
+	switch c := m.GetContent().(type) {
+	case *pb.ResponseMessageItem_Text:
+		b, err := json.Marshal(c.Text)
+		if err != nil {
+			return nil, err
+		}
+		out.Content = b
+	case *pb.ResponseMessageItem_Parts:
+		parts := make([]wireResponseContentPart, 0, len(c.Parts.GetItems()))
+		for _, it := range c.Parts.GetItems() {
+			parts = append(parts, responseContentPartFromPB(it))
+		}
+		b, err := json.Marshal(parts)
+		if err != nil {
+			return nil, err
+		}
+		out.Content = b
+	}
+	return json.Marshal(out)
+}
+
+func unmarshalResponseMessageItem(data []byte) (*pb.ResponseMessageItem, error) {
+	var m wireResponseMessageItem
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	out := &pb.ResponseMessageItem{Id: m.ID, Role: m.Role, Status: m.Status}
+	if len(m.Content) > 0 && string(m.Content) != "null" {
+		switch m.Content[0] {
+		case '"':
+			var s string
+			if err := json.Unmarshal(m.Content, &s); err != nil {
+				return nil, err
+			}
+			out.Content = &pb.ResponseMessageItem_Text{Text: s}
+		case '[':
+			var parts []wireResponseContentPart
+			if err := json.Unmarshal(m.Content, &parts); err != nil {
+				return nil, err
+			}
+			items := make([]*pb.ResponseContentPart, 0, len(parts))
+			for i := range parts {
+				items = append(items, responseContentPartToPB(&parts[i]))
+			}
+			out.Content = &pb.ResponseMessageItem_Parts{Parts: &pb.ResponseContentParts{Items: items}}
+		}
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — tools / tool_choice / reasoning (FLAT in this dialect)
+// ---------------------------------------------------------------------------
+
+type wireResponsesToolDef struct {
+	Type        string          `json:"type"` // "function"
+	Name        string          `json:"name"`
+	Description *string         `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+}
+
+func responsesToolDefToWire(t *pb.ResponsesToolDef) (wireResponsesToolDef, error) {
+	params, err := rawValue(t.Parameters)
+	if err != nil {
+		return wireResponsesToolDef{}, err
+	}
+	return wireResponsesToolDef{
+		Type:        t.GetType(),
+		Name:        t.GetName(),
+		Description: t.Description,
+		Parameters:  params,
+		Strict:      t.Strict,
+	}, nil
+}
+
+// wireResponsesToolChoice serialises the oneof: a bare mode string or the FLAT
+// named object {"type":"function","name":"..."} (no nested `function`).
+type wireResponsesToolChoice struct {
+	mode  string
+	named *pb.ResponsesNamedToolChoice
+}
+
+func (t wireResponsesToolChoice) MarshalJSON() ([]byte, error) {
+	if t.named != nil {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{Type: t.named.GetType(), Name: t.named.GetName()})
+	}
+	return json.Marshal(t.mode)
+}
+
+func responsesToolChoiceToWire(tc *pb.ResponsesToolChoice) *wireResponsesToolChoice {
+	if tc == nil {
+		return nil
+	}
+	switch c := tc.GetChoice().(type) {
+	case *pb.ResponsesToolChoice_Mode:
+		return &wireResponsesToolChoice{mode: c.Mode}
+	case *pb.ResponsesToolChoice_Named:
+		return &wireResponsesToolChoice{named: c.Named}
+	default:
+		return nil
+	}
+}
+
+type wireResponsesReasoning struct {
+	Effort  *string `json:"effort,omitempty"`
+	Summary *string `json:"summary,omitempty"`
+}
+
+func responsesReasoningToWire(r *pb.ResponsesReasoning) *wireResponsesReasoning {
+	if r == nil {
+		return nil
+	}
+	return &wireResponsesReasoning{Effort: r.Effort, Summary: r.Summary}
+}
+
+func responsesReasoningFromWire(r *wireResponsesReasoning) *pb.ResponsesReasoning {
+	if r == nil {
+		return nil
+	}
+	return &pb.ResponsesReasoning{Effort: r.Effort, Summary: r.Summary}
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — request (encode)
+// ---------------------------------------------------------------------------
+
+// wireResponsesRequest carries every ResponsesRequest field except `extra`,
+// which is merged at the top level by encodeResponsesRequest.
+type wireResponsesRequest struct {
+	Model           string                   `json:"model"`
+	Input           json.RawMessage          `json:"input"`
+	Instructions    *string                  `json:"instructions,omitempty"`
+	Stream          *bool                    `json:"stream,omitempty"`
+	Temperature     *float32                 `json:"temperature,omitempty"`
+	TopP            *float32                 `json:"top_p,omitempty"`
+	MaxOutputTokens *uint32                  `json:"max_output_tokens,omitempty"`
+	Tools           []wireResponsesToolDef   `json:"tools,omitempty"`
+	ToolChoice      *wireResponsesToolChoice `json:"tool_choice,omitempty"`
+	Reasoning       *wireResponsesReasoning  `json:"reasoning,omitempty"`
+	Store           *bool                    `json:"store,omitempty"`
+}
+
+// encodeResponsesInput serialises the `input` oneof: a bare string for a single
+// user message, or an array of items.
+func encodeResponsesInput(req *pb.ResponsesRequest) (json.RawMessage, error) {
+	switch in := req.GetInput().(type) {
+	case *pb.ResponsesRequest_Text:
+		return json.Marshal(in.Text)
+	case *pb.ResponsesRequest_Items:
+		items := make([]wireResponseItem, 0, len(in.Items.GetItems()))
+		for _, it := range in.Items.GetItems() {
+			items = append(items, responseItemFromPB(it))
+		}
+		return json.Marshal(items)
+	default:
+		return json.Marshal([]wireResponseItem{})
+	}
+}
+
+func responsesRequestToWire(req *pb.ResponsesRequest, streamOverride *bool) (wireResponsesRequest, json.RawMessage, error) {
+	stream := req.Stream
+	if streamOverride != nil {
+		stream = streamOverride
+	}
+	w := wireResponsesRequest{
+		Model:           req.GetModel(),
+		Instructions:    req.Instructions,
+		Stream:          stream,
+		Temperature:     req.Temperature,
+		TopP:            req.TopP,
+		MaxOutputTokens: req.MaxOutputTokens,
+		ToolChoice:      responsesToolChoiceToWire(req.ToolChoice),
+		Reasoning:       responsesReasoningToWire(req.GetReasoning()),
+		Store:           req.Store,
+	}
+	in, err := encodeResponsesInput(req)
+	if err != nil {
+		return w, nil, err
+	}
+	w.Input = in
+	for _, t := range req.GetTools() {
+		wt, err := responsesToolDefToWire(t)
+		if err != nil {
+			return w, nil, err
+		}
+		w.Tools = append(w.Tools, wt)
+	}
+	extra, err := rawValue(req.Extra)
+	if err != nil {
+		return w, nil, err
+	}
+	return w, extra, nil
+}
+
+// encodeResponsesRequest produces the final request body, merging `extra` keys
+// at the top level (per SPEC.md), exactly like encodeChatRequest.
+func encodeResponsesRequest(req *pb.ResponsesRequest, streamOverride *bool) ([]byte, error) {
+	w, extra, err := responsesRequestToWire(req, streamOverride)
+	if err != nil {
+		return nil, err
+	}
+	return mergeExtra(w, extra)
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — response / usage (decode)
+// ---------------------------------------------------------------------------
+
+type wireResponsesInputTokensDetails struct {
+	CachedTokens *uint32 `json:"cached_tokens,omitempty"`
+}
+
+type wireResponsesOutputTokensDetails struct {
+	ReasoningTokens *uint32 `json:"reasoning_tokens,omitempty"`
+}
+
+type wireResponsesUsage struct {
+	InputTokens         uint32                            `json:"input_tokens"`
+	InputTokensDetails  *wireResponsesInputTokensDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokens        uint32                            `json:"output_tokens"`
+	OutputTokensDetails *wireResponsesOutputTokensDetails `json:"output_tokens_details,omitempty"`
+	TotalTokens         uint32                            `json:"total_tokens"`
+}
+
+func responsesUsageFromWire(u *wireResponsesUsage) *pb.ResponsesUsage {
+	if u == nil {
+		return nil
+	}
+	out := &pb.ResponsesUsage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		TotalTokens:  u.TotalTokens,
+	}
+	if d := u.InputTokensDetails; d != nil {
+		out.InputTokensDetails = &pb.ResponsesInputTokensDetails{CachedTokens: d.CachedTokens}
+	}
+	if d := u.OutputTokensDetails; d != nil {
+		out.OutputTokensDetails = &pb.ResponsesOutputTokensDetails{ReasoningTokens: d.ReasoningTokens}
+	}
+	return out
+}
+
+type wireResponsesIncompleteDetails struct {
+	Reason string `json:"reason"`
+}
+
+type wireResponsesResponse struct {
+	ID                string                          `json:"id"`
+	Object            string                          `json:"object"`
+	CreatedAt         int64                           `json:"created_at"`
+	Status            string                          `json:"status"`
+	IncompleteDetails *wireResponsesIncompleteDetails `json:"incomplete_details"`
+	Error             *wireErrorBody                  `json:"error"`
+	Model             string                          `json:"model"`
+	Output            []wireResponseItem              `json:"output"`
+	Usage             *wireResponsesUsage             `json:"usage"`
+	Store             *bool                           `json:"store"`
+	Instructions      *string                         `json:"instructions"`
+	MaxOutputTokens   *uint32                         `json:"max_output_tokens"`
+	Temperature       *float32                        `json:"temperature"`
+	TopP              *float32                        `json:"top_p"`
+	Reasoning         *wireResponsesReasoning         `json:"reasoning"`
+}
+
+func (w *wireResponsesResponse) toPB() (*pb.ResponsesResponse, error) {
+	out := &pb.ResponsesResponse{
+		Id:              w.ID,
+		Object:          w.Object,
+		CreatedAt:       w.CreatedAt,
+		Status:          w.Status,
+		Error:           w.Error.toPB(),
+		Model:           w.Model,
+		Usage:           responsesUsageFromWire(w.Usage),
+		Store:           w.Store,
+		Instructions:    w.Instructions,
+		MaxOutputTokens: w.MaxOutputTokens,
+		Temperature:     w.Temperature,
+		TopP:            w.TopP,
+		Reasoning:       responsesReasoningFromWire(w.Reasoning),
+	}
+	if d := w.IncompleteDetails; d != nil {
+		out.IncompleteDetails = &pb.ResponsesIncompleteDetails{Reason: d.Reason}
+	}
+	for i := range w.Output {
+		out.Output = append(out.Output, w.Output[i].toPB())
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect — streaming event (decode)
+// ---------------------------------------------------------------------------
+
+type wireResponsesStreamEvent struct {
+	Type           string                   `json:"type"`
+	SequenceNumber uint64                   `json:"sequence_number"`
+	Response       *wireResponsesResponse   `json:"response"`
+	OutputIndex    *uint32                  `json:"output_index"`
+	ItemID         *string                  `json:"item_id"`
+	ContentIndex   *uint32                  `json:"content_index"`
+	Item           *wireResponseItem        `json:"item"`
+	Part           *wireResponseContentPart `json:"part"`
+	Delta          *string                  `json:"delta"`
+	Text           *string                  `json:"text"`
+	Arguments      *string                  `json:"arguments"`
+	Message        *string                  `json:"message"`
+}
+
+func (w *wireResponsesStreamEvent) toPB() (*pb.ResponsesStreamEvent, error) {
+	out := &pb.ResponsesStreamEvent{
+		Type:           w.Type,
+		SequenceNumber: w.SequenceNumber,
+		OutputIndex:    w.OutputIndex,
+		ItemId:         w.ItemID,
+		ContentIndex:   w.ContentIndex,
+		Delta:          w.Delta,
+		Text:           w.Text,
+		Arguments:      w.Arguments,
+		Message:        w.Message,
+	}
+	if w.Response != nil {
+		r, err := w.Response.toPB()
+		if err != nil {
+			return nil, err
+		}
+		out.Response = r
+	}
+	if w.Item != nil {
+		out.Item = w.Item.toPB()
+	}
+	if w.Part != nil {
+		out.Part = responseContentPartToPB(w.Part)
+	}
+	return out, nil
+}

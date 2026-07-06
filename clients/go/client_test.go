@@ -188,6 +188,269 @@ func TestChatStreaming(t *testing.T) {
 	}
 }
 
+func TestResponsesWireAndDecode(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		body := readBody(t, r)
+		if body["model"] != "gpt-4o" {
+			t.Errorf("model = %v", body["model"])
+		}
+		// store is accepted and echoed on the wire as false here.
+		if body["store"] != false {
+			t.Errorf("store should be false, got %v", body["store"])
+		}
+
+		// Tools are FLAT: type/name at the top level, no nested "function".
+		tools := body["tools"].([]any)
+		tool0 := tools[0].(map[string]any)
+		if tool0["type"] != "function" || tool0["name"] != "get_weather" {
+			t.Errorf("flat tool wrong: %v", tool0)
+		}
+		if _, nested := tool0["function"]; nested {
+			t.Errorf("tool must be flat, found nested function: %v", tool0)
+		}
+		if _, ok := tool0["parameters"].(map[string]any); !ok {
+			t.Errorf("tool parameters not spliced as JSON object: %T", tool0["parameters"])
+		}
+
+		input := body["input"].([]any)
+		if len(input) != 4 {
+			t.Fatalf("input len = %d, want 4", len(input))
+		}
+		// [0] message item: role-keyed, NO "type" token, bare-string content.
+		msg := input[0].(map[string]any)
+		if _, hasType := msg["type"]; hasType {
+			t.Errorf("message item must be role-keyed without a type token: %v", msg)
+		}
+		if msg["role"] != "user" || msg["content"] != "What's the weather?" {
+			t.Errorf("message item wrong: %v", msg)
+		}
+		// [1] function_call item.
+		fc := input[1].(map[string]any)
+		if fc["type"] != "function_call" || fc["call_id"] != "call_1" || fc["name"] != "get_weather" {
+			t.Errorf("function_call item wrong: %v", fc)
+		}
+		if fc["arguments"] != `{"city":"Paris"}` {
+			t.Errorf("function_call arguments = %v (want raw JSON string)", fc["arguments"])
+		}
+		// [2] function_call_output item.
+		fo := input[2].(map[string]any)
+		if fo["type"] != "function_call_output" || fo["call_id"] != "call_1" || fo["output"] != `{"temp":15}` {
+			t.Errorf("function_call_output item wrong: %v", fo)
+		}
+		// [3] reasoning item: summary_text vs reasoning_text tokens by list.
+		rs := input[3].(map[string]any)
+		if rs["type"] != "reasoning" || rs["encrypted_content"] != "enc-abc" {
+			t.Errorf("reasoning item wrong: %v", rs)
+		}
+		sum := rs["summary"].([]any)[0].(map[string]any)
+		if sum["type"] != "summary_text" || sum["text"] != "thinking about weather" {
+			t.Errorf("reasoning summary entry wrong: %v", sum)
+		}
+		cnt := rs["content"].([]any)[0].(map[string]any)
+		if cnt["type"] != "reasoning_text" || cnt["text"] != "the user wants weather" {
+			t.Errorf("reasoning content entry wrong: %v", cnt)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o",
+		  "output":[{"type":"message","role":"assistant","status":"completed",
+		    "content":[{"type":"output_text","text":"It is 15C in Paris.","annotations":[]}]}],
+		  "usage":{"input_tokens":20,"output_tokens":8,"total_tokens":28,"input_tokens_details":{"cached_tokens":12}},
+		  "store":false}`)
+	})
+	defer srv.Close()
+
+	resp, err := client.CreateResponse(context.Background(), &pb.ResponsesRequest{
+		Model: "gpt-4o",
+		Store: ptr(false),
+		Input: &pb.ResponsesRequest_Items{Items: &pb.ResponseItemList{Items: []*pb.ResponseItem{
+			{Item: &pb.ResponseItem_Message{Message: &pb.ResponseMessageItem{
+				Role:    "user",
+				Content: &pb.ResponseMessageItem_Text{Text: "What's the weather?"},
+			}}},
+			{Item: &pb.ResponseItem_FunctionCall{FunctionCall: &pb.ResponseFunctionCallItem{
+				CallId: "call_1", Name: "get_weather", Arguments: `{"city":"Paris"}`,
+			}}},
+			{Item: &pb.ResponseItem_FunctionCallOutput{FunctionCallOutput: &pb.ResponseFunctionCallOutputItem{
+				CallId: "call_1", Output: `{"temp":15}`,
+			}}},
+			{Item: &pb.ResponseItem_Reasoning{Reasoning: &pb.ResponseReasoningItem{
+				Summary:          []*pb.ResponseReasoningText{{Text: "thinking about weather"}},
+				Content:          []*pb.ResponseReasoningText{{Text: "the user wants weather"}},
+				EncryptedContent: ptr("enc-abc"),
+			}}},
+		}}},
+		Tools: []*pb.ResponsesToolDef{{
+			Type: "function", Name: "get_weather", Parameters: ptr(`{"type":"object"}`),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	if resp.GetStatus() != "completed" {
+		t.Errorf("status = %q", resp.GetStatus())
+	}
+	if resp.Store == nil || resp.GetStore() {
+		t.Errorf("store should decode as present-and-false, got %v", resp.Store)
+	}
+	out := resp.GetOutput()
+	if len(out) != 1 {
+		t.Fatalf("output len = %d", len(out))
+	}
+	parts := out[0].GetMessage().GetParts().GetItems()
+	if len(parts) != 1 || parts[0].GetOutputText().GetText() != "It is 15C in Paris." {
+		t.Fatalf("output message parts wrong: %+v", parts)
+	}
+	u := resp.GetUsage()
+	if u.GetInputTokens() != 20 || u.GetOutputTokens() != 8 || u.GetTotalTokens() != 28 {
+		t.Errorf("usage tokens wrong: %+v", u)
+	}
+	if u.GetInputTokensDetails().GetCachedTokens() != 12 {
+		t.Errorf("cached_tokens = %d, want 12", u.GetInputTokensDetails().GetCachedTokens())
+	}
+}
+
+func TestResponsesStreaming(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		if body["stream"] != true {
+			t.Errorf("stream should be true, got %v", body["stream"])
+		}
+		// A bare-string input serialises as a JSON string, not an array.
+		if body["input"] != "hi" {
+			t.Errorf("input = %v (want bare string)", body["input"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		// Each frame carries the redundant `event:` line plus the self-describing
+		// `data:` JSON. The stream ends on response.completed — there is no [DONE].
+		frames := []string{
+			`event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o"}}`,
+			`event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":""}}`,
+			`event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_1","delta":"{\"city\":\"Paris\"}"}`,
+			`event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"delta":"Hel"}`,
+			`event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":4,"delta":"lo"}`,
+			// An event type this SDK does not recognise: MUST be skipped silently.
+			`event: response.future_unknown_event
+data: {"type":"response.future_unknown_event","sequence_number":5}`,
+			`event: response.completed
+data: {"type":"response.completed","sequence_number":6,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":4}}}}`,
+		}
+		for _, f := range frames {
+			io.WriteString(w, f+"\n\n")
+			fl.Flush()
+		}
+	})
+	defer srv.Close()
+
+	stream, err := client.CreateResponseStream(context.Background(), &pb.ResponsesRequest{
+		Model: "gpt-4o",
+		Input: &pb.ResponsesRequest_Text{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var types []string
+	var assembled strings.Builder
+	var lastSeq uint64
+	var terminal *pb.ResponsesStreamEvent
+	var sawFunctionCall bool
+	for {
+		ev, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if len(types) > 0 && ev.GetSequenceNumber() <= lastSeq {
+			t.Errorf("sequence_number not strictly increasing: %d after %d", ev.GetSequenceNumber(), lastSeq)
+		}
+		lastSeq = ev.GetSequenceNumber()
+		types = append(types, ev.GetType())
+		switch ev.GetType() {
+		case "response.output_text.delta":
+			assembled.WriteString(ev.GetDelta())
+		case "response.output_item.added":
+			if fc := ev.GetItem().GetFunctionCall(); fc != nil && fc.GetName() == "get_weather" {
+				sawFunctionCall = true
+			}
+		case "response.completed":
+			terminal = ev
+		}
+	}
+
+	wantTypes := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.output_text.delta",
+		"response.output_text.delta",
+		"response.completed",
+	}
+	if len(types) != len(wantTypes) {
+		t.Fatalf("event types = %v (want %v — unknown type must be skipped)", types, wantTypes)
+	}
+	for i := range wantTypes {
+		if types[i] != wantTypes[i] {
+			t.Errorf("event[%d] = %q, want %q", i, types[i], wantTypes[i])
+		}
+	}
+	if assembled.String() != "Hello" {
+		t.Errorf("assembled = %q (want Hello)", assembled.String())
+	}
+	if !sawFunctionCall {
+		t.Error("function_call item in output_item.added not decoded")
+	}
+	if terminal == nil {
+		t.Fatal("terminal response.completed event not seen")
+	}
+	tr := terminal.GetResponse()
+	if tr.GetStatus() != "completed" {
+		t.Errorf("terminal snapshot status = %q", tr.GetStatus())
+	}
+	if tr.GetUsage().GetInputTokens() != 10 || tr.GetUsage().GetInputTokensDetails().GetCachedTokens() != 4 {
+		t.Errorf("terminal snapshot usage wrong: %+v", tr.GetUsage())
+	}
+	if got := tr.GetOutput()[0].GetMessage().GetParts().GetItems()[0].GetOutputText().GetText(); got != "Hello" {
+		t.Errorf("terminal snapshot output text = %q", got)
+	}
+}
+
+func TestResponsesApiError(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"previous_response_id is not supported"}}`)
+	})
+	defer srv.Close()
+
+	_, err := client.CreateResponse(context.Background(), &pb.ResponsesRequest{
+		Model: "gpt-4o",
+		Input: &pb.ResponsesRequest_Text{Text: "hi"},
+	})
+	var apiErr *ApiError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *ApiError, got %T: %v", err, err)
+	}
+	if apiErr.Status != http.StatusBadRequest {
+		t.Errorf("status = %d", apiErr.Status)
+	}
+	if apiErr.Message != "previous_response_id is not supported" {
+		t.Errorf("message = %q", apiErr.Message)
+	}
+}
+
 func TestEmbeddingsBase64Decode(t *testing.T) {
 	want := []float32{1.5, -2.25, 0.0}
 	var raw []byte

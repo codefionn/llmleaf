@@ -48,6 +48,26 @@ import type {
   BatchResultLine,
   BatchResponse,
   BatchError,
+  ErrorBody,
+  ResponsesRequest,
+  ResponsesInput,
+  ResponseItem,
+  ResponseMessageItem,
+  ResponseMessageContent,
+  ResponseContentPart,
+  ResponseFunctionCallItem,
+  ResponseFunctionCallOutputItem,
+  ResponseReasoningItem,
+  ResponseReasoningText,
+  ResponsesToolDef,
+  ResponsesToolChoice,
+  ResponsesReasoning,
+  ResponsesResponse,
+  ResponsesUsage,
+  ResponsesInputTokensDetails,
+  ResponsesOutputTokensDetails,
+  ResponsesIncompleteDetails,
+  ResponsesStreamEvent,
 } from "./types.js";
 
 // A plain JSON object on the wire.
@@ -675,4 +695,439 @@ export function decodeBatchResultLine(v: unknown): BatchResultLine {
   const error = decodeBatchError(o["error"]);
   if (error !== undefined) line.error = error;
   return line;
+}
+
+// ===========================================================================
+// Responses (POST /v1/responses) — encode
+// ===========================================================================
+
+function encodeResponseContentPart(p: ResponseContentPart): Json {
+  switch (p.type) {
+    case "input_text":
+      return { type: "input_text", text: p.text };
+    case "input_image": {
+      // image_url is a plain STRING here, not the chat dialect's nested {url} object.
+      const out: Json = { type: "input_image", image_url: p.imageUrl };
+      put(out, "detail", p.detail);
+      return out;
+    }
+    case "output_text":
+      // A constructed output_text part carries an (empty) annotations array (SPEC.md).
+      return { type: "output_text", text: p.text, annotations: [] };
+  }
+}
+
+function encodeResponseMessageContent(content: ResponseMessageContent | undefined): unknown {
+  if (content === undefined) return undefined;
+  if (typeof content === "string") return content;
+  return content.map(encodeResponseContentPart);
+}
+
+/** A plain message item is a bare role-keyed object with NO `"type"` (SPEC.md). */
+function encodeResponseMessageItem(m: ResponseMessageItem): Json {
+  const out: Json = { role: m.role };
+  put(out, "id", m.id);
+  const content = encodeResponseMessageContent(m.content);
+  if (content !== undefined) out["content"] = content;
+  put(out, "status", m.status);
+  return out;
+}
+
+function encodeResponseFunctionCallItem(fc: ResponseFunctionCallItem): Json {
+  const out: Json = {
+    type: "function_call",
+    call_id: fc.callId,
+    name: fc.name,
+    arguments: fc.arguments,
+  };
+  put(out, "id", fc.id);
+  put(out, "status", fc.status);
+  return out;
+}
+
+function encodeResponseFunctionCallOutputItem(fo: ResponseFunctionCallOutputItem): Json {
+  const out: Json = {
+    type: "function_call_output",
+    call_id: fo.callId,
+    output: fo.output,
+  };
+  put(out, "id", fo.id);
+  return out;
+}
+
+function encodeResponseReasoningItem(r: ResponseReasoningItem): Json {
+  const out: Json = { type: "reasoning" };
+  put(out, "id", r.id);
+  // The list an entry lives in decides its wire token: summary -> "summary_text",
+  // content -> "reasoning_text" (SPEC.md).
+  if (r.summary && r.summary.length > 0) {
+    out["summary"] = r.summary.map((s) => ({ type: "summary_text", text: s.text }));
+  }
+  if (r.content && r.content.length > 0) {
+    out["content"] = r.content.map((c) => ({ type: "reasoning_text", text: c.text }));
+  }
+  // Opaque blob replayed verbatim to continue an encrypted reasoning turn.
+  put(out, "encrypted_content", r.encryptedContent);
+  return out;
+}
+
+function encodeResponseItem(item: ResponseItem): Json {
+  switch (item.type) {
+    case "function_call":
+      return encodeResponseFunctionCallItem(item);
+    case "function_call_output":
+      return encodeResponseFunctionCallOutputItem(item);
+    case "reasoning":
+      return encodeResponseReasoningItem(item);
+    case "message":
+      return encodeResponseMessageItem(item);
+  }
+}
+
+function encodeResponsesInput(input: ResponsesInput): unknown {
+  // A bare string is one user message; otherwise an array of items.
+  if (typeof input === "string") return input;
+  return input.map(encodeResponseItem);
+}
+
+function encodeResponsesToolDef(t: ResponsesToolDef): Json {
+  // FLAT: type/name/parameters at the top level, no nested `function` object.
+  const out: Json = { type: t.type, name: t.name };
+  put(out, "description", t.description);
+  put(out, "parameters", parseRawJson("ResponsesToolDef.parameters", t.parameters));
+  put(out, "strict", t.strict);
+  return out;
+}
+
+function encodeResponsesToolChoice(tc: ResponsesToolChoice): unknown {
+  // FLAT named object {type,name}, unlike the chat dialect's nested `function`.
+  if (typeof tc === "string") return tc;
+  return { type: tc.type, name: tc.name };
+}
+
+function encodeResponsesReasoning(r: ResponsesReasoning): Json {
+  const out: Json = {};
+  put(out, "effort", r.effort);
+  put(out, "summary", r.summary);
+  return out;
+}
+
+/** Build the responses request body. `forceStream` overrides `stream` for the streaming call. */
+export function encodeResponsesRequest(req: ResponsesRequest, forceStream?: boolean): Json {
+  const out: Json = {
+    model: req.model,
+    input: encodeResponsesInput(req.input),
+  };
+  put(out, "instructions", req.instructions);
+  const stream = forceStream !== undefined ? forceStream : req.stream;
+  put(out, "stream", stream);
+  put(out, "temperature", req.temperature);
+  put(out, "top_p", req.topP);
+  put(out, "max_output_tokens", req.maxOutputTokens);
+  if (req.tools && req.tools.length > 0) out["tools"] = req.tools.map(encodeResponsesToolDef);
+  put(out, "tool_choice", req.toolChoice && encodeResponsesToolChoice(req.toolChoice));
+  put(out, "reasoning", req.reasoning && encodeResponsesReasoning(req.reasoning));
+  put(out, "store", req.store);
+
+  // `extra`: parsed and merged at the top level of the request object (SPEC.md).
+  const extra = parseRawJson("ResponsesRequest.extra", req.extra);
+  if (extra !== undefined) {
+    if (typeof extra !== "object" || extra === null || Array.isArray(extra)) {
+      throw new TypeError("ResponsesRequest.extra must be a JSON object");
+    }
+    for (const [k, v] of Object.entries(extra as Json)) out[k] = v;
+  }
+  return out;
+}
+
+// ===========================================================================
+// Responses — decode
+// ===========================================================================
+
+function decodeResponseContentPart(v: unknown): ResponseContentPart | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  switch (str(o["type"])) {
+    case "input_text":
+      return { type: "input_text", text: str(o["text"]) };
+    case "input_image": {
+      const part: ResponseInputImagePartLocal = {
+        type: "input_image",
+        imageUrl: str(o["image_url"]),
+      };
+      const detail = optStr(o["detail"]);
+      if (detail !== undefined) part.detail = detail;
+      return part;
+    }
+    case "output_text":
+      return { type: "output_text", text: str(o["text"]) };
+    default:
+      return undefined; // unknown content part — skip
+  }
+}
+
+// A local alias so the decoder can build the image part incrementally.
+type ResponseInputImagePartLocal = Extract<ResponseContentPart, { type: "input_image" }>;
+
+function decodeResponseMessageContent(v: unknown): ResponseMessageContent | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) {
+    const parts: ResponseContentPart[] = [];
+    for (const raw of v) {
+      const p = decodeResponseContentPart(raw);
+      if (p !== undefined) parts.push(p);
+    }
+    return parts;
+  }
+  return undefined;
+}
+
+function decodeResponseMessageItem(o: Json): ResponseMessageItem {
+  const item: ResponseMessageItem = { type: "message", role: str(o["role"]) };
+  const id = optStr(o["id"]);
+  if (id !== undefined) item.id = id;
+  const content = decodeResponseMessageContent(o["content"]);
+  if (content !== undefined) item.content = content;
+  const status = optStr(o["status"]);
+  if (status !== undefined) item.status = status;
+  return item;
+}
+
+function decodeResponseFunctionCallItem(o: Json): ResponseFunctionCallItem {
+  const item: ResponseFunctionCallItem = {
+    type: "function_call",
+    callId: str(o["call_id"]),
+    name: str(o["name"]),
+    arguments: str(o["arguments"]),
+  };
+  const id = optStr(o["id"]);
+  if (id !== undefined) item.id = id;
+  const status = optStr(o["status"]);
+  if (status !== undefined) item.status = status;
+  return item;
+}
+
+function decodeResponseFunctionCallOutputItem(o: Json): ResponseFunctionCallOutputItem {
+  const item: ResponseFunctionCallOutputItem = {
+    type: "function_call_output",
+    callId: str(o["call_id"]),
+    output: str(o["output"]),
+  };
+  const id = optStr(o["id"]);
+  if (id !== undefined) item.id = id;
+  return item;
+}
+
+function decodeReasoningTextList(v: unknown): ResponseReasoningText[] {
+  return arr(v)
+    .map((raw): ResponseReasoningText | undefined => {
+      const o = obj(raw);
+      return o ? { text: str(o["text"]) } : undefined;
+    })
+    .filter((x): x is ResponseReasoningText => x !== undefined);
+}
+
+function decodeResponseReasoningItem(o: Json): ResponseReasoningItem {
+  const item: ResponseReasoningItem = { type: "reasoning" };
+  const id = optStr(o["id"]);
+  if (id !== undefined) item.id = id;
+  const summary = decodeReasoningTextList(o["summary"]);
+  if (summary.length > 0) item.summary = summary;
+  const content = decodeReasoningTextList(o["content"]);
+  if (content.length > 0) item.content = content;
+  const enc = optStr(o["encrypted_content"]);
+  if (enc !== undefined) item.encryptedContent = enc;
+  return item;
+}
+
+function decodeResponseItem(v: unknown): ResponseItem | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const type = optStr(o["type"]);
+  // A role-keyed object with no `type` is a plain message item (SPEC.md).
+  if (type === undefined || type === "message") return decodeResponseMessageItem(o);
+  switch (type) {
+    case "function_call":
+      return decodeResponseFunctionCallItem(o);
+    case "function_call_output":
+      return decodeResponseFunctionCallOutputItem(o);
+    case "reasoning":
+      return decodeResponseReasoningItem(o);
+    default:
+      return undefined; // unknown item type — skip
+  }
+}
+
+function decodeErrorBody(v: unknown): ErrorBody | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const body: ErrorBody = { message: str(o["message"]) };
+  const type = optStr(o["type"]);
+  if (type !== undefined) body.type = type;
+  const code = optStr(o["code"]);
+  if (code !== undefined) body.code = code;
+  return body;
+}
+
+function decodeResponsesReasoning(v: unknown): ResponsesReasoning | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const r: ResponsesReasoning = {};
+  const effort = optStr(o["effort"]);
+  if (effort !== undefined) r.effort = effort;
+  const summary = optStr(o["summary"]);
+  if (summary !== undefined) r.summary = summary;
+  return r;
+}
+
+function decodeResponsesIncompleteDetails(
+  v: unknown,
+): ResponsesIncompleteDetails | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  return { reason: str(o["reason"]) };
+}
+
+function decodeResponsesInputTokensDetails(
+  v: unknown,
+): ResponsesInputTokensDetails | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const d: ResponsesInputTokensDetails = {};
+  const cached = optNum(o["cached_tokens"]);
+  if (cached !== undefined) d.cachedTokens = cached;
+  return d;
+}
+
+function decodeResponsesOutputTokensDetails(
+  v: unknown,
+): ResponsesOutputTokensDetails | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const d: ResponsesOutputTokensDetails = {};
+  const reasoning = optNum(o["reasoning_tokens"]);
+  if (reasoning !== undefined) d.reasoningTokens = reasoning;
+  return d;
+}
+
+export function decodeResponsesUsage(v: unknown): ResponsesUsage | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const usage: ResponsesUsage = {
+    inputTokens: num(o["input_tokens"]),
+    outputTokens: num(o["output_tokens"]),
+    totalTokens: num(o["total_tokens"]),
+  };
+  const itd = decodeResponsesInputTokensDetails(o["input_tokens_details"]);
+  if (itd !== undefined) usage.inputTokensDetails = itd;
+  const otd = decodeResponsesOutputTokensDetails(o["output_tokens_details"]);
+  if (otd !== undefined) usage.outputTokensDetails = otd;
+  return usage;
+}
+
+export function decodeResponsesResponse(v: unknown): ResponsesResponse {
+  const o = obj(v) ?? {};
+  const resp: ResponsesResponse = {
+    id: str(o["id"]),
+    object: str(o["object"], "response"),
+    createdAt: num(o["created_at"]),
+    status: str(o["status"]),
+    model: str(o["model"]),
+    output: arr(o["output"])
+      .map(decodeResponseItem)
+      .filter((x): x is ResponseItem => x !== undefined),
+  };
+  const inc = decodeResponsesIncompleteDetails(o["incomplete_details"]);
+  if (inc !== undefined) resp.incompleteDetails = inc;
+  const err = decodeErrorBody(o["error"]);
+  if (err !== undefined) resp.error = err;
+  const usage = decodeResponsesUsage(o["usage"]);
+  if (usage !== undefined) resp.usage = usage;
+  const store = optBool(o["store"]);
+  if (store !== undefined) resp.store = store;
+  const instructions = optStr(o["instructions"]);
+  if (instructions !== undefined) resp.instructions = instructions;
+  const maxOut = optNum(o["max_output_tokens"]);
+  if (maxOut !== undefined) resp.maxOutputTokens = maxOut;
+  const temp = optNum(o["temperature"]);
+  if (temp !== undefined) resp.temperature = temp;
+  const topP = optNum(o["top_p"]);
+  if (topP !== undefined) resp.topP = topP;
+  const reasoning = decodeResponsesReasoning(o["reasoning"]);
+  if (reasoning !== undefined) resp.reasoning = reasoning;
+  return resp;
+}
+
+// Streaming: typed events, NO `[DONE]` sentinel. The stream ends after the terminal
+// event; SDKs skip event types they don't recognise (the dialect grows by adding types).
+const TERMINAL_RESPONSES_EVENT_TYPES = new Set<string>([
+  "response.completed",
+  "response.incomplete",
+  "response.failed",
+]);
+
+const KNOWN_RESPONSES_EVENT_TYPES = new Set<string>([
+  "response.created",
+  "response.in_progress",
+  "response.completed",
+  "response.incomplete",
+  "response.failed",
+  "response.output_item.added",
+  "response.output_item.done",
+  "response.content_part.added",
+  "response.content_part.done",
+  "response.output_text.delta",
+  "response.output_text.done",
+  "response.refusal.delta",
+  "response.refusal.done",
+  "response.reasoning_text.delta",
+  "response.reasoning_text.done",
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_part.done",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_summary_text.done",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "error",
+]);
+
+/** True for `response.completed` / `response.incomplete` / `response.failed`. */
+export function isTerminalResponsesEvent(type: string): boolean {
+  return TERMINAL_RESPONSES_EVENT_TYPES.has(type);
+}
+
+/**
+ * Decode one streaming SSE frame's JSON into a {@link ResponsesStreamEvent}, or
+ * `undefined` when the `type` is one the SDK doesn't recognise (the caller skips it).
+ */
+export function decodeResponsesStreamEvent(v: unknown): ResponsesStreamEvent | undefined {
+  const o = obj(v);
+  if (!o) return undefined;
+  const type = str(o["type"]);
+  if (!KNOWN_RESPONSES_EVENT_TYPES.has(type)) return undefined; // unknown event — skip (SPEC.md)
+  const event: ResponsesStreamEvent = {
+    type,
+    sequenceNumber: num(o["sequence_number"]),
+  };
+  if (obj(o["response"])) event.response = decodeResponsesResponse(o["response"]);
+  const outputIndex = optNum(o["output_index"]);
+  if (outputIndex !== undefined) event.outputIndex = outputIndex;
+  const itemId = optStr(o["item_id"]);
+  if (itemId !== undefined) event.itemId = itemId;
+  const contentIndex = optNum(o["content_index"]);
+  if (contentIndex !== undefined) event.contentIndex = contentIndex;
+  const item = decodeResponseItem(o["item"]);
+  if (item !== undefined) event.item = item;
+  const part = decodeResponseContentPart(o["part"]);
+  if (part !== undefined) event.part = part;
+  const delta = optStr(o["delta"]);
+  if (delta !== undefined) event.delta = delta;
+  const text = optStr(o["text"]);
+  if (text !== undefined) event.text = text;
+  const args = optStr(o["arguments"]);
+  if (args !== undefined) event.arguments = args;
+  const message = optStr(o["message"]);
+  if (message !== undefined) event.message = message;
+  return event;
 }

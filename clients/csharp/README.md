@@ -40,6 +40,27 @@ await foreach (var chunk in client.CreateChatCompletionStreamAsync(new ChatReque
 {
     Console.Write(chunk.Choices.Count > 0 ? chunk.Choices[0].Delta.Content : null);
 }
+
+// Responses dialect (POST /v1/responses) — `Input` is a bare string or an item array
+var response = await client.CreateResponseAsync(new ResponsesRequest
+{
+    Model = "gpt-4o-mini",
+    Input = "Say hi.",
+});
+// (see the example for assembling the output_text parts)
+
+// Streaming responses — typed events, NO `[DONE]`; stops on the terminal event
+await foreach (var evt in client.CreateResponseStreamAsync(new ResponsesRequest
+{
+    Model = "gpt-4o-mini",
+    Input = "Stream me a haiku.",
+}))
+{
+    if (evt.Type == "response.output_text.delta")
+    {
+        Console.Write(evt.Delta);
+    }
+}
 ```
 
 Every call takes a final `CancellationToken`. `LlmleafClientOptions` also accepts `AdminToken`
@@ -51,6 +72,7 @@ pooling / TLS).
 | Method | Endpoint |
 |--------|----------|
 | `CreateChatCompletionAsync` / `CreateChatCompletionStreamAsync` | `POST /v1/chat/completions` |
+| `CreateResponseAsync` / `CreateResponseStreamAsync` | `POST /v1/responses` (OpenAI Responses dialect; streaming is typed events with no `[DONE]`) |
 | `CreateEmbeddingAsync` | `POST /v1/embeddings` (base64 decoded to floats) |
 | `ListModelsAsync` | `GET /v1/models` |
 | `CreateSpeechAsync` | `POST /v1/audio/speech` (bytes + `Content-Type`) |
@@ -61,6 +83,11 @@ pooling / TLS).
 Non-2xx responses throw a typed `ApiException` (`int Status` + the parsed message). Free-form
 fields (`Extra`, `Parameters`, `JsonSchema`, …) are raw JSON object strings spliced verbatim;
 `Extra` keys merge at the top level (explicit fields win).
+
+The Responses surface is stateless: `Store` is accepted but the response always reports
+`store:false`, and there is no retrieval call (`previous_response_id` / `background:true` are
+rejected upstream). To continue an encrypted reasoning turn, echo a `ResponseReasoningItem`'s
+`EncryptedContent` back verbatim in the next request's `Input`.
 
 ## Run the example
 

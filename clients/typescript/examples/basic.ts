@@ -45,7 +45,41 @@ async function main(): Promise<void> {
   }
   process.stdout.write("\n");
 
-  // 3. List models.
+  // 3. Non-streaming responses (OpenAI Responses dialect) — print the output text.
+  console.log("\n== non-streaming responses ==");
+  const resp = await client.responses({
+    model,
+    input: [
+      { type: "message", role: "user", content: "Say hello in one short sentence." },
+    ],
+  });
+  for (const item of resp.output) {
+    if (item.type === "message" && Array.isArray(item.content)) {
+      for (const part of item.content) {
+        if (part.type === "output_text") process.stdout.write(part.text);
+      }
+    }
+  }
+  process.stdout.write("\n");
+  if (resp.usage) {
+    console.log(
+      `tokens: input=${resp.usage.inputTokens} output=${resp.usage.outputTokens}`,
+    );
+  }
+
+  // 4. Streaming responses — typed events, no `[DONE]`; accumulate output_text deltas.
+  console.log("\n== streaming responses ==");
+  for await (const event of client.responsesStream({
+    model,
+    input: "Count from 1 to 5.",
+  })) {
+    if (event.type === "response.output_text.delta") {
+      process.stdout.write(event.delta ?? "");
+    }
+  }
+  process.stdout.write("\n");
+
+  // 5. List models.
   console.log("\n== models ==");
   const models = await client.listModels({ type: "llm" });
   for (const m of models.data.slice(0, 10)) {

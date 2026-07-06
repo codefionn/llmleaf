@@ -1,7 +1,7 @@
 //! The async [`Client`] and its [`ClientBuilder`], plus every endpoint in SPEC.md.
 
 use crate::error::{Error, ErrorEnvelope, Result};
-use crate::stream::{ndjson_lines, sse_chunks};
+use crate::stream::{ndjson_lines, sse_chunks, sse_responses};
 use crate::types::*;
 use crate::wire::{speech_content_type, RawEmbeddingResponse};
 use bytes::Bytes;
@@ -175,6 +175,40 @@ impl Client {
             )
             .await?;
         Ok(sse_chunks(resp.bytes_stream()))
+    }
+
+    // -- responses -----------------------------------------------------------
+
+    /// `POST /v1/responses` (non-streaming) — the OpenAI Responses dialect.
+    ///
+    /// `stream` is forced to `false` (or absent) so a JSON [`ResponsesResponse`] comes
+    /// back. llmleaf serves this dialect statelessly, so the response always reports
+    /// `"store": false` (SPEC.md).
+    pub async fn responses(&self, mut request: ResponsesRequest) -> Result<ResponsesResponse> {
+        request.stream = None;
+        let resp = self
+            .send(self.request(Method::POST, "/v1/responses").json(&request))
+            .await?;
+        Ok(resp.json::<ResponsesResponse>().await?)
+    }
+
+    /// `POST /v1/responses` (streaming, typed SSE).
+    ///
+    /// Forces `stream:true`, then yields decoded [`ResponsesStreamEvent`]s. Unlike chat
+    /// there is no `[DONE]` sentinel: the stream ends after the terminal
+    /// `response.completed` / `response.incomplete` / `response.failed` event. Unrecognised
+    /// event types are skipped; the `"error"` event surfaces as an [`Error::Api`], the same
+    /// way the chat stream surfaces a mid-stream failure. Accumulate
+    /// [`ResponsesStreamEvent::output_text_delta`] for the assembled text.
+    pub async fn responses_stream(
+        &self,
+        mut request: ResponsesRequest,
+    ) -> Result<impl Stream<Item = Result<ResponsesStreamEvent>>> {
+        request.stream = Some(true);
+        let resp = self
+            .send(self.request(Method::POST, "/v1/responses").json(&request))
+            .await?;
+        Ok(sse_responses(resp.bytes_stream()))
     }
 
     // -- embeddings ----------------------------------------------------------

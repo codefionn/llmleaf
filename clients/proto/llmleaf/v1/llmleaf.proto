@@ -275,6 +275,224 @@ message ChatCompletionChunk {
 }
 
 // ----------------------------------------------------------------------------
+// Responses  (POST /v1/responses) — the OpenAI Responses dialect
+// ----------------------------------------------------------------------------
+//
+// llmleaf serves this dialect statelessly: `store` is accepted but always answered
+// `false`, `previous_response_id` is rejected (400), and `GET /v1/responses/{id}`
+// is an explained 404 by design — so the SDKs expose no retrieval call. Dialect
+// vocabulary that collides with existing enum value names at package scope
+// (status "completed"/"in_progress"/…, roles incl. "developer") stays a plain
+// wire string here rather than an enum.
+
+// One item of the request `input` array or the response `output` array. The wire
+// discriminator is `"type"` and selects which field is set:
+//   "message"              -> message   (also the shape of a role-keyed item with no type)
+//   "function_call"        -> function_call
+//   "function_call_output" -> function_call_output
+//   "reasoning"            -> reasoning
+message ResponseItem {
+  oneof item {
+    ResponseMessageItem message = 1;
+    ResponseFunctionCallItem function_call = 2;
+    ResponseFunctionCallOutputItem function_call_output = 3;
+    ResponseReasoningItem reasoning = 4;
+  }
+}
+
+message ResponseItemList {
+  repeated ResponseItem items = 1;
+}
+
+// A conversation message item. On input, `role` is "user" | "system" | "developer" |
+// "assistant" and `content` is a bare string or input parts; on output, role is
+// "assistant", content is output_text parts, and `status`/`id` are set.
+message ResponseMessageItem {
+  optional string id = 1;
+  string role = 2;
+  oneof content {
+    string text = 3;
+    ResponseContentParts parts = 4;
+  }
+  optional string status = 5; // output only: "in_progress" | "completed"
+}
+
+// One content part; the `"type"` wire token matches the set field's name:
+//   {"type":"input_text","text":...}
+//   {"type":"input_image","image_url":"<url>","detail":...}   (image_url is a STRING here)
+//   {"type":"output_text","text":...,"annotations":[]}
+message ResponseContentPart {
+  oneof part {
+    ResponseTextPart input_text = 1;
+    ResponseInputImagePart input_image = 2;
+    ResponseTextPart output_text = 3;
+  }
+}
+
+message ResponseContentParts {
+  repeated ResponseContentPart items = 1;
+}
+
+message ResponseTextPart {
+  string text = 1;
+}
+
+message ResponseInputImagePart {
+  string image_url = 1;       // plain string, NOT the chat dialect's nested object
+  optional string detail = 2; // "auto" | "low" | "high"
+}
+
+// A function call the model made. `call_id` pairs it with its function_call_output;
+// `arguments` is the raw JSON string exactly as emitted.
+message ResponseFunctionCallItem {
+  optional string id = 1;
+  string call_id = 2;
+  string name = 3;
+  string arguments = 4;
+  optional string status = 5;
+}
+
+// The caller's answer to a function call, replayed on the next turn.
+message ResponseFunctionCallOutputItem {
+  optional string id = 1;
+  string call_id = 2;
+  string output = 3;
+}
+
+// A reasoning ("thinking") item. `summary` entries are {"type":"summary_text","text"},
+// `content` entries are {"type":"reasoning_text","text"} — the entry's list decides its
+// wire `type` token. `encrypted_content` is opaque and MUST be echoed back verbatim in
+// the next request's input to continue an encrypted reasoning turn (llmleaf requests it
+// from Responses-speaking upstreams so multi-turn reasoning survives statelessly).
+message ResponseReasoningItem {
+  optional string id = 1;
+  repeated ResponseReasoningText summary = 2;
+  repeated ResponseReasoningText content = 3;
+  optional string encrypted_content = 4;
+}
+
+message ResponseReasoningText {
+  string text = 1;
+}
+
+// A tool the model MAY call — FLAT in this dialect (`type`/`name`/`parameters` at the
+// top level, no nested `function` object). `parameters` is a raw JSON Schema string.
+message ResponsesToolDef {
+  string type = 1; // "function"
+  string name = 2;
+  optional string description = 3;
+  optional string parameters = 4; // raw JSON object
+  optional bool strict = 5;       // defaults TRUE upstream; llmleaf's own edge pins false
+}
+
+// tool_choice: a mode string ("auto"|"none"|"required") or the FLAT named object
+// {"type":"function","name":"..."} (no nested `function`, unlike the chat dialect).
+message ResponsesToolChoice {
+  oneof choice {
+    string mode = 1;
+    ResponsesNamedToolChoice named = 2;
+  }
+}
+
+message ResponsesNamedToolChoice {
+  string type = 1; // "function"
+  string name = 2;
+}
+
+// reasoning: {"effort":"minimal"|"low"|"medium"|"high"|..., "summary":...}
+message ResponsesReasoning {
+  optional string effort = 1;
+  optional string summary = 2;
+}
+
+message ResponsesRequest {
+  string model = 1;
+  // Wire `input` is either a bare string (one user message) or an array of items.
+  oneof input {
+    string text = 2;
+    ResponseItemList items = 3;
+  }
+  optional string instructions = 4; // becomes a leading system message
+  optional bool stream = 5;
+  optional float temperature = 6;
+  optional float top_p = 7;
+  optional uint32 max_output_tokens = 8;
+  repeated ResponsesToolDef tools = 9;
+  optional ResponsesToolChoice tool_choice = 10;
+  optional ResponsesReasoning reasoning = 11;
+  // Accepted but always answered `false` — llmleaf stores nothing.
+  optional bool store = 12;
+  // Dialect-specific passthrough, spliced verbatim into the request body (P7).
+  optional string extra = 13; // raw JSON object
+}
+
+// Token accounting in the Responses dialect's own names (`input_tokens`/`output_tokens`,
+// not the chat dialect's `prompt_tokens`/`completion_tokens`).
+message ResponsesUsage {
+  uint32 input_tokens = 1;
+  optional ResponsesInputTokensDetails input_tokens_details = 2;
+  uint32 output_tokens = 3;
+  optional ResponsesOutputTokensDetails output_tokens_details = 4;
+  uint32 total_tokens = 5;
+}
+
+message ResponsesInputTokensDetails {
+  optional uint32 cached_tokens = 1;
+}
+
+message ResponsesOutputTokensDetails {
+  optional uint32 reasoning_tokens = 1;
+}
+
+// status "incomplete" refinement: "max_output_tokens" | "content_filter".
+message ResponsesIncompleteDetails {
+  string reason = 1;
+}
+
+// The response object (`"object":"response"`), also the snapshot carried by the
+// `response.created` / `response.in_progress` / `response.completed` stream events.
+// Fields the wire echoes but SDKs don't need typed (tools, tool_choice, truncation,
+// parallel_tool_calls, …) are simply ignored on decode — JSON tolerates unknown keys.
+message ResponsesResponse {
+  string id = 1;
+  string object = 2;  // "response"
+  int64 created_at = 3; // unix seconds
+  string status = 4;  // "completed" | "in_progress" | "incomplete" | "failed"
+  optional ResponsesIncompleteDetails incomplete_details = 5;
+  optional ErrorBody error = 6;
+  string model = 7;
+  repeated ResponseItem output = 8;
+  optional ResponsesUsage usage = 9; // null on in-flight snapshots
+  optional bool store = 10;          // llmleaf always answers false
+  optional string instructions = 11;
+  optional uint32 max_output_tokens = 12;
+  optional float temperature = 13;
+  optional float top_p = 14;
+  optional ResponsesReasoning reasoning = 15;
+}
+
+// One streaming SSE event. Unlike chat streaming there is NO `data: [DONE]` sentinel:
+// each frame is `event: <type>` + `data: <json>` where the JSON is self-describing via
+// `type`, and the stream ends after the terminal `response.completed` /
+// `response.incomplete` / `response.failed` event. This is a flat superset of every
+// event's fields — `type` says which ones are meaningful; SDKs MUST ignore event types
+// they don't recognise (the dialect grows by adding types).
+message ResponsesStreamEvent {
+  string type = 1; // "response.created", "response.output_text.delta", ...
+  uint64 sequence_number = 2;
+  optional ResponsesResponse response = 3; // response.created/in_progress/completed/incomplete/failed
+  optional uint32 output_index = 4;
+  optional string item_id = 5;
+  optional uint32 content_index = 6;
+  optional ResponseItem item = 7;          // response.output_item.added/done
+  optional ResponseContentPart part = 8;   // response.content_part.added/done
+  optional string delta = 9;               // *.delta events (text / reasoning / arguments)
+  optional string text = 10;               // response.output_text.done / reasoning_text.done
+  optional string arguments = 11;          // response.function_call_arguments.done
+  optional string message = 12;            // "error" event
+}
+
+// ----------------------------------------------------------------------------
 // Embeddings  (POST /v1/embeddings)
 // ----------------------------------------------------------------------------
 

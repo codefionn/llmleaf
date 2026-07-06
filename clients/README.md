@@ -43,7 +43,9 @@ into its native build; see the per-client README for the toolchain it needs.
 
 ## Surface
 
-All five cover the same endpoints (see [SPEC.md](SPEC.md)): chat completions (streaming +
-non-streaming), embeddings, model catalog, text-to-speech, speech-to-text (multipart), and
-batches. Auth is `Authorization: Bearer <key>`; errors surface as a typed `ApiError`. The
-realtime WebSocket surface is intentionally out of scope for these SDKs.
+All clients cover the same endpoints (see [SPEC.md](SPEC.md)): chat completions (streaming +
+non-streaming), the OpenAI Responses dialect (streaming + non-streaming; llmleaf serves it
+statelessly, so there is no retrieval call), embeddings, model catalog, text-to-speech,
+speech-to-text (multipart), and batches. Auth is `Authorization: Bearer <key>`; errors surface
+as a typed `ApiError`. The realtime WebSocket surface is intentionally out of scope for these
+SDKs.

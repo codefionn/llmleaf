@@ -51,11 +51,35 @@ client.chatStream(ChatRequest("gpt-4o-mini", listOf(ChatMessage.user("Count to 5
 client.close()
 ```
 
+### Responses (`POST /v1/responses`)
+
+The OpenAI **Responses** dialect on the same core. `input` is a bare string (one user message) or
+an array of items; tools and `tool_choice` are **flat**; llmleaf is stateless, so the response
+always reports `store = false`.
+
+```kotlin
+import eu.codefionn.llmleaf.client.model.ResponsesInput
+import eu.codefionn.llmleaf.client.model.ResponsesRequest
+
+// Non-streaming — `outputText` flattens every output_text part.
+val r = client.responses(
+    ResponsesRequest("gpt-4o-mini", ResponsesInput.text("Say hi"), instructions = "Be concise."),
+)
+println(r.outputText)
+
+// Streaming — typed events, NO `[DONE]` sentinel: the Flow stops on the terminal
+// response.completed / response.incomplete / response.failed event; unknown event types are
+// ignored, and a mid-stream `error` event throws ApiError.
+client.responsesStream(ResponsesRequest("gpt-4o-mini", ResponsesInput.text("Count to 5")))
+    .collect { event -> if (event.type == "response.output_text.delta") print(event.delta) }
+```
+
 ## Endpoints
 
 | SDK call | Endpoint |
 |----------|----------|
 | `chat` / `chatStream` | `POST /v1/chat/completions` (stream → `Flow<ChatCompletionChunk>`) |
+| `responses` / `responsesStream` | `POST /v1/responses` (stream → `Flow<ResponsesStreamEvent>`, no `[DONE]`) |
 | `embeddings` | `POST /v1/embeddings` (decodes base64 little-endian f32) |
 | `listModels` | `GET /v1/models` |
 | `speech` | `POST /v1/audio/speech` → `SpeechResult` |

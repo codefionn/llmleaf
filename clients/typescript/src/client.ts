@@ -10,6 +10,10 @@ import {
   encodeChatRequest,
   decodeChatResponse,
   decodeChatCompletionChunk,
+  encodeResponsesRequest,
+  decodeResponsesResponse,
+  decodeResponsesStreamEvent,
+  isTerminalResponsesEvent,
   encodeEmbeddingRequest,
   decodeEmbeddingResponse,
   encodeSpeechRequest,
@@ -24,6 +28,9 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatCompletionChunk,
+  ResponsesRequest,
+  ResponsesResponse,
+  ResponsesStreamEvent,
   EmbeddingRequest,
   EmbeddingResponse,
   SpeechRequest,
@@ -185,6 +192,48 @@ export class LlmleafClient {
     }
     for await (const payload of parseSseData(res.body)) {
       yield decodeChatCompletionChunk(JSON.parse(payload));
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Responses (OpenAI Responses dialect)
+  // -------------------------------------------------------------------------
+
+  /** POST /v1/responses (non-streaming). */
+  async responses(req: ResponsesRequest): Promise<ResponsesResponse> {
+    const body = encodeResponsesRequest(req, false);
+    const json = await this.sendJson(this.url("/v1/responses"), body);
+    return decodeResponsesResponse(json);
+  }
+
+  /**
+   * POST /v1/responses with `stream:true`. Returns an async iterable of
+   * {@link ResponsesStreamEvent}. Unlike {@link chatStream} there is no `[DONE]`
+   * sentinel: the iterator stops after the terminal `response.completed` /
+   * `response.incomplete` / `response.failed` event (or when the connection closes).
+   * Event types the SDK doesn't recognise are skipped (the dialect grows by adding types).
+   */
+  async *responsesStream(
+    req: ResponsesRequest,
+  ): AsyncGenerator<ResponsesStreamEvent, void, unknown> {
+    const body = encodeResponsesRequest(req, true);
+    const res = await this.send(this.url("/v1/responses"), {
+      method: "POST",
+      headers: this.headers({
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      }),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw await apiErrorFromResponse(res);
+    if (!res.body) {
+      throw new ApiError(res.status, "streaming response had no body");
+    }
+    for await (const payload of parseSseData(res.body)) {
+      const event = decodeResponsesStreamEvent(JSON.parse(payload));
+      if (event === undefined) continue; // unrecognised event type — skip (SPEC.md)
+      yield event;
+      if (isTerminalResponsesEvent(event.type)) return;
     }
   }
 

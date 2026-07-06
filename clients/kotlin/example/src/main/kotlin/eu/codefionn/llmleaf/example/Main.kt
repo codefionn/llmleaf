@@ -5,6 +5,8 @@ import eu.codefionn.llmleaf.client.LlmleafClient
 import eu.codefionn.llmleaf.client.model.ChatMessage
 import eu.codefionn.llmleaf.client.model.ChatRequest
 import eu.codefionn.llmleaf.client.model.MessageContent
+import eu.codefionn.llmleaf.client.model.ResponsesInput
+import eu.codefionn.llmleaf.client.model.ResponsesRequest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 
@@ -62,6 +64,32 @@ fun main(): Unit = runBlocking {
             ),
         ).collect { chunk ->
             chunk.choices.firstOrNull()?.delta?.content?.let { print(it) }
+        }
+        println()
+
+        // 4) Responses dialect (non-streaming): assembled text + Responses-named usage.
+        println("\n== responses (non-streaming) ==")
+        val respResp = client.responses(
+            ResponsesRequest(
+                model = model,
+                input = ResponsesInput.text("Say hello in one short sentence."),
+                instructions = "You are concise.",
+            ),
+        )
+        println("  ${respResp.outputText}")
+        respResp.usage?.let { println("  usage: ${it.totalTokens} tokens (cached=${it.cachedTokens})") }
+
+        // 5) Responses dialect (streaming): typed events, no [DONE] sentinel — accumulate the
+        //    output_text deltas and stop on the terminal event.
+        println("\n== responses (streaming) ==")
+        print("  ")
+        client.responsesStream(
+            ResponsesRequest(
+                model = model,
+                input = ResponsesInput.text("Count from 1 to 5."),
+            ),
+        ).collect { event ->
+            if (event.type == "response.output_text.delta") print(event.delta ?: "")
         }
         println()
     } catch (e: ApiError) {

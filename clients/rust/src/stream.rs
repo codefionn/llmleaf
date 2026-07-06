@@ -1,17 +1,22 @@
 //! Hand-rolled line/frame parsing over `reqwest::Response::bytes_stream()`.
 //!
-//! Two stream shapes share the same byte-accumulation core:
+//! Three stream shapes share the same byte-accumulation core:
 //!
 //! * **SSE** (streaming chat): events are `data: <json>` lines terminated by a blank
 //!   line; the stream ends with the sentinel `data: [DONE]`, which we stop on without
 //!   parsing (SPEC.md). We only consume `data:` lines — comments (`:`) and other SSE
 //!   fields are ignored, which is all this surface needs.
+//! * **Typed SSE** (streaming responses): the same `data: <json>` framing, but the JSON
+//!   is self-describing via its `type` field and there is **no** `[DONE]` sentinel — the
+//!   stream ends after the terminal `response.completed` / `.incomplete` / `.failed`
+//!   event. Unrecognised event types are skipped and the `"error"` event surfaces as an
+//!   `Err`, mirroring how the chat stream surfaces a mid-stream failure.
 //! * **NDJSON** (batch results): one JSON object per line.
 //!
 //! No SSE crate is pulled in; this keeps the dependency surface lean as instructed.
 
 use crate::error::{Error, Result};
-use crate::types::{BatchResultLine, ChatCompletionChunk};
+use crate::types::{BatchResultLine, ChatCompletionChunk, ResponsesStreamEvent};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use serde::de::DeserializeOwned;
@@ -74,6 +79,77 @@ where
                                     .map_err(Error::from);
                                 return Poll::Ready(Some(parsed));
                             }
+                        }
+                    }
+                    done = true;
+                    return Poll::Ready(None);
+                }
+            }
+        }
+    })
+}
+
+/// Turn a byte stream of typed Responses SSE frames into a stream of decoded
+/// [`ResponsesStreamEvent`]s. There is no `[DONE]` sentinel: the stream ends after the
+/// terminal `response.completed` / `.incomplete` / `.failed` event (or when the connection
+/// closes). Unrecognised event types are skipped; the `"error"` event becomes an `Err`.
+pub(crate) fn sse_responses<S>(byte_stream: S) -> impl Stream<Item = Result<ResponsesStreamEvent>>
+where
+    S: Stream<Item = reqwest::Result<Bytes>> + Unpin,
+{
+    let mut buf = BytesMut::new();
+    let mut byte_stream = byte_stream;
+    let mut done = false;
+
+    futures::stream::poll_fn(move |cx| {
+        use std::task::Poll;
+        loop {
+            if done {
+                return Poll::Ready(None);
+            }
+
+            if let Some(line) = take_line(&mut buf) {
+                match parse_responses_frame(&line) {
+                    ResponsesFrame::Skip => continue,
+                    ResponsesFrame::Decode(err) => return Poll::Ready(Some(Err(err))),
+                    ResponsesFrame::Error(err) => {
+                        done = true;
+                        return Poll::Ready(Some(Err(err)));
+                    }
+                    ResponsesFrame::Event(ev) => {
+                        // Terminal events are yielded, then the stream ends (no sentinel).
+                        if ev.is_terminal() {
+                            done = true;
+                        }
+                        return Poll::Ready(Some(Ok(ev)));
+                    }
+                }
+            }
+
+            match byte_stream.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(chunk))) => buf.extend_from_slice(&chunk),
+                Poll::Ready(Some(Err(e))) => {
+                    done = true;
+                    return Poll::Ready(Some(Err(Error::Http(e))));
+                }
+                Poll::Ready(None) => {
+                    // Flush a trailing frame with no terminating newline.
+                    if let Some(line) = take_remaining(&mut buf) {
+                        match parse_responses_frame(&line) {
+                            ResponsesFrame::Event(ev) => {
+                                done = true;
+                                return Poll::Ready(Some(Ok(ev)));
+                            }
+                            ResponsesFrame::Error(err) => {
+                                done = true;
+                                return Poll::Ready(Some(Err(err)));
+                            }
+                            ResponsesFrame::Decode(err) => {
+                                done = true;
+                                return Poll::Ready(Some(Err(err)));
+                            }
+                            ResponsesFrame::Skip => {}
                         }
                     }
                     done = true;
@@ -168,6 +244,53 @@ fn parse_sse_data_line(line: &str) -> SseLine {
     SseLine::Json(body.to_string())
 }
 
+/// The outcome of interpreting one raw line of a Responses SSE stream. The `Event` variant
+/// is intentionally large: it is a transient dispatch result, constructed and immediately
+/// matched per frame, so boxing it would only add a heap allocation on the read path (the
+/// event is already yielded to the caller by value).
+#[allow(clippy::large_enum_variant)]
+enum ResponsesFrame {
+    /// A recognised, non-error event to yield.
+    Event(ResponsesStreamEvent),
+    /// The `"error"` event — surfaced as a typed [`Error::Api`], terminating the stream.
+    Error(Error),
+    /// A `data:` frame that failed to JSON-decode.
+    Decode(Error),
+    /// A non-`data:` line, an empty body, or an unrecognised event type — ignored.
+    Skip,
+}
+
+/// Interpret one raw SSE line for the Responses stream. There is no `[DONE]` sentinel; we
+/// decode `data:` frames via their `type` field, skip unrecognised types, and turn the
+/// `"error"` event into a typed error.
+fn parse_responses_frame(line: &str) -> ResponsesFrame {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let Some(rest) = line.strip_prefix("data:") else {
+        // The redundant `event:` line, comments (`:`), `id:`, blank separators — ignored.
+        return ResponsesFrame::Skip;
+    };
+    let body = rest.trim();
+    if body.is_empty() {
+        return ResponsesFrame::Skip;
+    }
+    let event: ResponsesStreamEvent = match serde_json::from_str(body) {
+        Ok(ev) => ev,
+        Err(e) => return ResponsesFrame::Decode(Error::from(e)),
+    };
+    if !event.is_recognised() {
+        // Forward compatibility: SDKs ignore event types they don't recognise (SPEC.md).
+        return ResponsesFrame::Skip;
+    }
+    if event.is_error() {
+        // A mid-stream failure. 502 = upstream failure per SPEC.md's status table.
+        return ResponsesFrame::Error(Error::Api {
+            status: 502,
+            message: event.error_message(),
+        });
+    }
+    ResponsesFrame::Event(event)
+}
+
 /// Pop one complete `\n`-terminated line (without the trailing newline) from the buffer,
 /// or `None` if no full line is buffered yet.
 fn take_line(buf: &mut BytesMut) -> Option<String> {
@@ -231,6 +354,110 @@ mod tests {
         let out: Vec<_> = s.collect().await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].as_ref().unwrap().first_delta_text(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn sse_responses_parses_typed_events_and_stops_on_completed() {
+        // A full typed-event turn: created -> output_item.added(function_call) ->
+        // function_call_arguments.delta -> output_text.delta x2 -> completed. An
+        // unrecognised event type sits in the middle and a stray frame trails the
+        // terminal event; both must be dropped. `event:` lines are redundant noise.
+        let frames = vec![
+            r#"event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","model":"m"}}
+
+"#,
+            r#"event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":""}}
+
+"#,
+            r#"event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_1","output_index":0,"delta":"arg-chunk"}
+
+"#,
+            r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":1,"content_index":0,"delta":"Hi"}
+
+"#,
+            r#"data: {"type":"response.output_text.delta","sequence_number":4,"delta":"!"}
+
+"#,
+            // Unrecognised event type (outside the `response.*`/`error` namespace) — skipped.
+            r#"event: queue.status
+data: {"type":"queue.status","sequence_number":5}
+
+"#,
+            r#"event: response.completed
+data: {"type":"response.completed","sequence_number":6,"response":{"id":"resp_1","object":"response","status":"completed","model":"m","store":false,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi!","annotations":[]}]}],"usage":{"input_tokens":11,"output_tokens":2,"total_tokens":13}}}
+
+"#,
+            // Anything after the terminal event must be ignored.
+            r#"data: {"type":"response.output_text.delta","sequence_number":7,"delta":"ignored"}
+
+"#,
+        ];
+
+        let events: Vec<ResponsesStreamEvent> = sse_responses(bytes_stream(frames))
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "response.created",
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.output_text.delta",
+                "response.output_text.delta",
+                "response.completed",
+            ]
+        );
+
+        // Accumulated assistant text from the output_text deltas.
+        let text: String = events.iter().filter_map(|e| e.output_text_delta()).collect();
+        assert_eq!(text, "Hi!");
+
+        // Terminal snapshot carries the full output and usage.
+        let terminal = events.last().unwrap();
+        assert!(terminal.is_terminal());
+        let snapshot = terminal.terminal_response().unwrap();
+        assert_eq!(snapshot.output_text(), "Hi!");
+        assert_eq!(snapshot.usage.as_ref().unwrap().input_tokens, 11);
+        assert_eq!(snapshot.store, Some(false));
+    }
+
+    #[tokio::test]
+    async fn sse_responses_surfaces_error_event_as_api_error() {
+        let frames = vec![
+            r#"event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"r","object":"response","status":"in_progress","model":"m"}}
+
+"#,
+            r#"event: error
+data: {"type":"error","sequence_number":1,"code":"server_error","message":"upstream exploded"}
+
+"#,
+            // Never reached: the error event terminates the stream.
+            r#"data: {"type":"response.output_text.delta","sequence_number":2,"delta":"nope"}
+
+"#,
+        ];
+
+        let out: Vec<Result<ResponsesStreamEvent>> =
+            sse_responses(bytes_stream(frames)).collect().await;
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].as_ref().unwrap().kind, "response.created");
+        match out[1].as_ref().unwrap_err() {
+            Error::Api { status, message } => {
+                assert_eq!(*status, 502);
+                assert_eq!(message, "upstream exploded");
+            }
+            other => panic!("expected Error::Api, got {other:?}"),
+        }
     }
 
     #[tokio::test]

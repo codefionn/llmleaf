@@ -11,6 +11,9 @@ import eu.codefionn.llmleaf.client.model.EmbeddingResponse
 import eu.codefionn.llmleaf.client.model.ErrorResponse
 import eu.codefionn.llmleaf.client.model.ListModelsResponse
 import eu.codefionn.llmleaf.client.model.ModelType
+import eu.codefionn.llmleaf.client.model.ResponsesRequest
+import eu.codefionn.llmleaf.client.model.ResponsesResponse
+import eu.codefionn.llmleaf.client.model.ResponsesStreamEvent
 import eu.codefionn.llmleaf.client.model.SpeechRequest
 import eu.codefionn.llmleaf.client.model.TranscriptionRequest
 import eu.codefionn.llmleaf.client.model.TranscriptionResponse
@@ -49,6 +52,9 @@ import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * The official Kotlin Multiplatform client for an llmleaf gateway. Wraps a [Ktor][HttpClient]
@@ -144,6 +150,66 @@ public class LlmleafClient private constructor(
                 val data = line.substring(SSE_DATA_PREFIX.length).trim()
                 if (data == SSE_DONE) break // sentinel — do NOT parse it
                 emit(decode(data, ChatCompletionChunk.serializer()))
+            }
+        }
+    }
+
+    // --- Responses ---------------------------------------------------------
+
+    /**
+     * Non-streaming Responses call (`POST /v1/responses`, the OpenAI Responses dialect). Forces
+     * `stream=false` regardless of [request]. llmleaf is stateless, so the returned
+     * [ResponsesResponse] always reports `store=false`.
+     */
+    public suspend fun responses(request: ResponsesRequest): ResponsesResponse {
+        val body = request.copy(stream = false)
+        return http.prepareRequest {
+            method = HttpMethod.Post
+            url("$base/v1/responses")
+            jsonBody(body, ResponsesRequest.serializer())
+        }.execute { resp ->
+            ensureSuccess(resp)
+            decode(resp.bodyAsText(), ResponsesResponse.serializer())
+        }
+    }
+
+    /**
+     * Streaming Responses call. Forces `stream=true`, parses the `text/event-stream` body of
+     * **typed** events (each frame is `event: <type>` + `data: <json>`) and emits one
+     * [ResponsesStreamEvent] per recognised `data:` frame — there is NO `data: [DONE]` sentinel.
+     * Unrecognised event types are ignored (the dialect grows by adding types); the flow stops
+     * after the terminal `response.completed` / `response.incomplete` / `response.failed` event
+     * (or when the connection closes). A mid-stream `error` event is surfaced as a thrown
+     * [ApiError]. The flow is cold; collecting it runs the request.
+     */
+    public fun responsesStream(request: ResponsesRequest): Flow<ResponsesStreamEvent> = flow {
+        val body = request.copy(stream = true)
+        http.prepareRequest {
+            method = HttpMethod.Post
+            url("$base/v1/responses")
+            // Streaming responses must not be cut by the per-request timeout.
+            timeout { requestTimeoutMillis = Long.MAX_VALUE }
+            header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
+            jsonBody(body, ResponsesRequest.serializer())
+        }.execute { resp ->
+            ensureSuccess(resp)
+            val channel = resp.bodyAsChannel()
+            while (true) {
+                val line = channel.readUTF8Line() ?: break
+                if (line.isEmpty()) continue // blank line between SSE events
+                if (!line.startsWith(SSE_DATA_PREFIX)) continue // ignore `event:` lines / comments
+                val data = line.substring(SSE_DATA_PREFIX.length).trim()
+                if (data.isEmpty()) continue
+                val obj = runCatching { LenientJson.parseToJsonElement(data) }.getOrNull() as? JsonObject
+                    ?: continue
+                val type = (obj["type"] as? JsonPrimitive)?.content ?: continue
+                if (type == RESPONSES_ERROR_EVENT) {
+                    // Surface the mid-stream error the way an HTTP failure surfaces: a thrown ApiError.
+                    throw ApiError(0, (obj["message"] as? JsonPrimitive)?.content ?: "responses stream error")
+                }
+                if (type !in RESPONSES_KNOWN_EVENTS) continue // ignore unrecognised event types
+                emit(decodeElement(obj, ResponsesStreamEvent.serializer()))
+                if (type in RESPONSES_TERMINAL_EVENTS) break // terminal event — no sentinel follows
             }
         }
     }
@@ -334,9 +400,53 @@ public class LlmleafClient private constructor(
             throw ApiError(0, "failed to decode response: ${e.message}")
         }
 
+    private fun <T> decodeElement(element: JsonElement, serializer: kotlinx.serialization.KSerializer<T>): T =
+        try {
+            LenientJson.decodeFromJsonElement(serializer, element)
+        } catch (e: SerializationException) {
+            throw ApiError(0, "failed to decode response: ${e.message}")
+        }
+
     private companion object {
         const val SSE_DATA_PREFIX = "data:"
         const val SSE_DONE = "[DONE]"
+
+        // Responses streaming has typed events and no `[DONE]` sentinel. A mid-stream `error`
+        // event surfaces as a thrown ApiError; the stream stops after a terminal event.
+        const val RESPONSES_ERROR_EVENT = "error"
+
+        val RESPONSES_TERMINAL_EVENTS = setOf(
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        )
+
+        // The event types this SDK version surfaces; any other type is ignored (SPEC.md: "SDKs
+        // MUST ignore event types they don't recognise"). New types are added here as the dialect
+        // grows.
+        val RESPONSES_KNOWN_EVENTS = setOf(
+            "response.created",
+            "response.in_progress",
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.refusal.delta",
+            "response.refusal.done",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_summary_text.done",
+            "response.reasoning_text.delta",
+            "response.reasoning_text.done",
+        )
 
         fun defaultMessage(status: HttpStatusCode): String = when (status.value) {
             400 -> "bad request"

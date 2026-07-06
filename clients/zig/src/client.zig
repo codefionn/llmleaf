@@ -255,6 +255,93 @@ pub const Client = struct {
     }
 
     // =======================================================================
+    // POST /v1/responses  (OpenAI Responses dialect, non-streaming)
+    // =======================================================================
+
+    pub fn responses(self: *Client, req: gen.ResponsesRequest, out_err: ?*?ApiError) !Owned(gen.ResponsesResponse) {
+        var r = req;
+        r.stream = false;
+        const body = try wire.encodeResponsesRequest(self.gpa, r);
+        defer self.gpa.free(body);
+
+        const u = try self.url("/v1/responses", .{});
+        defer self.gpa.free(u);
+
+        var hbuf: [4]transport.Header = undefined;
+        var result = try self.tp.request(.{
+            .method = .POST,
+            .url = u,
+            .body = body,
+            .headers = self.stdHeaders(&hbuf, &.{}),
+        });
+        if (result.status < 200 or result.status >= 300) return self.fail(&result, out_err);
+        defer result.deinit(self.gpa);
+        return self.decodeOwned(gen.ResponsesResponse, result.body, wire.decodeResponsesResponse);
+    }
+
+    // =======================================================================
+    // POST /v1/responses  (streaming, typed SSE — NO [DONE] sentinel)
+    // =======================================================================
+
+    /// Begin a streaming response. Returns a `ResponsesStream` you pull events
+    /// from with `next()`. Unlike chat there is no `[DONE]` sentinel — the stream
+    /// ends after the terminal `response.completed` / `response.incomplete` /
+    /// `response.failed` event (or if the connection closes first). Unrecognised
+    /// event types are ignored. The stream MUST be `deinit`'d. On a non-2xx open,
+    /// returns the typed error (and fills `out_err` if given).
+    pub fn responsesStream(self: *Client, req: gen.ResponsesRequest, out_err: ?*?ApiError) !*ResponsesStream {
+        var r = req;
+        r.stream = true;
+        const body = try wire.encodeResponsesRequest(self.gpa, r);
+        defer self.gpa.free(body);
+
+        const u = try self.url("/v1/responses", .{});
+        defer self.gpa.free(u);
+
+        var hbuf: [4]transport.Header = undefined;
+        const stream = try self.tp.open(.{
+            .method = .POST,
+            .url = u,
+            .body = body,
+            .headers = self.stdHeaders(&hbuf, &.{}),
+        });
+        errdefer stream.deinit();
+
+        if (stream.status < 200 or stream.status >= 300) {
+            const e = self.failBody(stream.status, stream.err_body orelse "", out_err);
+            stream.deinit();
+            return e;
+        }
+
+        const rs = try self.gpa.create(ResponsesStream);
+        rs.* = .{ .gpa = self.gpa, .stream = stream, .arena = std.heap.ArenaAllocator.init(self.gpa) };
+        return rs;
+    }
+
+    /// Convenience callback form: stream a response and invoke `cb` for each
+    /// event. Stops after the terminal event. Returns the assembled text (owned
+    /// by `self.gpa`; free it) gathered from `response.output_text.delta` deltas.
+    pub fn responsesStreamCallback(
+        self: *Client,
+        req: gen.ResponsesRequest,
+        out_err: ?*?ApiError,
+        ctx: anytype,
+        comptime cb: fn (@TypeOf(ctx), gen.ResponsesStreamEvent) anyerror!void,
+    ) ![]u8 {
+        var rs = try self.responsesStream(req, out_err);
+        defer rs.deinit();
+        var acc: std.ArrayList(u8) = .empty;
+        errdefer acc.deinit(self.gpa);
+        while (try rs.next()) |event| {
+            if (std.mem.eql(u8, event.type, "response.output_text.delta")) {
+                if (event.delta) |d| try acc.appendSlice(self.gpa, d);
+            }
+            try cb(ctx, event);
+        }
+        return acc.toOwnedSlice(self.gpa);
+    }
+
+    // =======================================================================
     // POST /v1/embeddings
     // =======================================================================
 
@@ -536,6 +623,58 @@ pub const ChatStream = struct {
     }
 };
 
+/// Pull-based iterator over streaming Responses events. `next()` returns the
+/// next recognised `ResponsesStreamEvent`, or `null` once the terminal
+/// (`response.completed`/`incomplete`/`failed`) event has been yielded or the
+/// connection closes. There is NO `[DONE]` sentinel. Unrecognised event types
+/// are skipped. Same arena-reset semantics as `ChatStream` (each returned event
+/// borrows an arena RESET on the next `next()` — copy out what you keep). Free
+/// via `deinit`.
+pub const ResponsesStream = struct {
+    gpa: Allocator,
+    stream: *transport.Stream,
+    arena: std.heap.ArenaAllocator,
+    done: bool = false,
+
+    pub fn next(self: *ResponsesStream) !?gen.ResponsesStreamEvent {
+        return pullResponsesEvent(transport.Stream, self.stream, &self.arena, &self.done);
+    }
+
+    pub fn deinit(self: *ResponsesStream) void {
+        self.arena.deinit();
+        self.stream.deinit();
+        self.gpa.destroy(self);
+    }
+};
+
+/// The typed-SSE pull loop, generic over any line source with a
+/// `nextLine() !?[]const u8` (the live `transport.Stream`, or a canned buffer in
+/// tests). Parses only `data:` lines (the `event:` line is redundant — the JSON
+/// self-describes via `type`), ignores unrecognised event types, and — since
+/// there is NO `[DONE]` sentinel — surfaces the terminal
+/// `response.completed`/`incomplete`/`failed` event then flips `done` so the
+/// following call yields `null`. Each event borrows `arena`, which is RESET on
+/// the next call.
+fn pullResponsesEvent(
+    comptime LineSrc: type,
+    src: *LineSrc,
+    arena: *std.heap.ArenaAllocator,
+    done: *bool,
+) !?gen.ResponsesStreamEvent {
+    if (done.*) return null; // terminal event already yielded
+    while (true) {
+        const line = (try src.nextLine()) orelse return null;
+        const payload = stripSsePrefix(line) orelse continue;
+        _ = arena.reset(.retain_capacity);
+        const a = arena.allocator();
+        const parsed = std.json.parseFromSliceLeaky(Value, a, payload, .{}) catch continue;
+        const event = try wire.decodeResponsesStreamEvent(a, parsed);
+        if (!event.isKnownType()) continue; // ignore unrecognised event types
+        if (event.isTerminal()) done.* = true; // surface it, then stop
+        return event;
+    }
+}
+
 /// Iterator over NDJSON batch result lines. Same arena-reset semantics as
 /// `ChatStream`. Free via `deinit`.
 pub const BatchResults = struct {
@@ -684,4 +823,113 @@ test "generic chatStreamCallback type-checks" {
     _ = drive_ref;
     // Ensure the transcription union result type also type-checks.
     _ = Client.TranscriptionResult;
+}
+
+test "generic responsesStreamCallback type-checks" {
+    // Like `chatStreamCallback`, `responsesStreamCallback` is generic over the
+    // callback; referencing a wrapper that calls it forces the whole generic
+    // chain to compile (the wrapper is never executed).
+    const Sink = struct {
+        seen: usize = 0,
+        fn onEvent(self: *@This(), _: gen.ResponsesStreamEvent) anyerror!void {
+            self.seen += 1;
+        }
+        fn drive(client: *Client, self: *@This()) ![]u8 {
+            return client.responsesStreamCallback(.{
+                .model = "m",
+                .input = .{ .text = "x" },
+            }, null, self, onEvent);
+        }
+    };
+    const drive_ref = &Sink.drive;
+    _ = drive_ref;
+}
+
+test "responses stream: event order, accumulation, unknown skipped, terminal stop" {
+    // Canned typed-event SSE: created -> output_item.added(function_call) ->
+    // function_call_arguments.delta -> (unknown "ping") -> output_text.delta x2
+    // -> completed. There is NO `data: [DONE]` sentinel.
+    const sse =
+        \\event: response.created
+        \\data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","model":"gpt-5"}}
+        \\
+        \\event: response.output_item.added
+        \\data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":""}}
+        \\
+        \\event: response.function_call_arguments.delta
+        \\data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_1","output_index":0,"delta":"{\"city\":"}
+        \\
+        \\event: ping
+        \\data: {"type":"ping","sequence_number":3}
+        \\
+        \\event: response.output_text.delta
+        \\data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_1","output_index":1,"content_index":0,"delta":"Hello"}
+        \\
+        \\event: response.output_text.delta
+        \\data: {"type":"response.output_text.delta","sequence_number":5,"item_id":"msg_1","output_index":1,"content_index":0,"delta":", world"}
+        \\
+        \\event: response.completed
+        \\data: {"type":"response.completed","sequence_number":6,"response":{"id":"resp_1","object":"response","status":"completed","model":"gpt-5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello, world","annotations":[]}]}],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12}}}
+    ;
+
+    // A minimal line source mirroring transport.Stream.nextLine (split on '\n',
+    // trim trailing '\r', skip blank SSE separator lines).
+    const CannedLines = struct {
+        data: []const u8,
+        pos: usize = 0,
+        fn nextLine(self: *@This()) !?[]const u8 {
+            while (true) {
+                if (self.pos >= self.data.len) return null;
+                const rest = self.data[self.pos..];
+                const nl = std.mem.indexOfScalar(u8, rest, '\n');
+                const raw = if (nl) |i| rest[0..i] else rest;
+                self.pos += raw.len + (if (nl != null) @as(usize, 1) else 0);
+                const trimmed = std.mem.trimEnd(u8, raw, "\r");
+                if (trimmed.len == 0) continue;
+                return trimmed;
+            }
+        }
+    };
+
+    var src = CannedLines{ .data = sse };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var done = false;
+
+    var acc: std.ArrayList(u8) = .empty;
+    defer acc.deinit(testing.allocator);
+
+    const expected = [_][]const u8{
+        "response.created",
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.output_text.delta",
+        "response.output_text.delta",
+        "response.completed",
+    };
+    var i: usize = 0;
+    var terminal_seen = false;
+    while (try pullResponsesEvent(CannedLines, &src, &arena, &done)) |event| {
+        try testing.expect(i < expected.len);
+        try testing.expectEqualStrings(expected[i], event.type); // the "ping" event was skipped
+        if (std.mem.eql(u8, event.type, "response.output_text.delta")) {
+            try acc.appendSlice(testing.allocator, event.delta.?); // copy: arena resets next pull
+        }
+        if (i == 1) switch (event.item.?) {
+            .function_call => |fc| try testing.expectEqualStrings("get_weather", fc.name),
+            else => try testing.expect(false),
+        };
+        if (i == 2) try testing.expectEqualStrings("{\"city\":", event.delta.?);
+        if (event.isTerminal()) {
+            terminal_seen = true;
+            try testing.expectEqualStrings("completed", event.response.?.status);
+            try testing.expectEqual(@as(u32, 12), event.response.?.usage.?.total_tokens);
+        }
+        i += 1;
+    }
+    try testing.expectEqual(expected.len, i); // 6 known events yielded, unknown skipped
+    try testing.expect(terminal_seen);
+    try testing.expectEqualStrings("Hello, world", acc.items); // accumulated output_text deltas
+    // Terminal stop: no sentinel needed — a further pull yields null.
+    try testing.expect((try pullResponsesEvent(CannedLines, &src, &arena, &done)) == null);
 }

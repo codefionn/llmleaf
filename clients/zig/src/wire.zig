@@ -307,6 +307,248 @@ pub fn encodeChatRequest(gpa: Allocator, req: gen.ChatRequest) ![]u8 {
     return aw.toOwnedSlice();
 }
 
+// ---------------------------------------------------------------------------
+// Responses dialect encoding (POST /v1/responses)
+// ---------------------------------------------------------------------------
+
+/// One content part of a Responses message. The active union field's name is the
+/// wire `"type"` token; an `output_text` part additionally emits `annotations:[]`.
+fn writeResponseContentPart(s: *Stringify, part: gen.ResponseContentPart) !void {
+    try s.beginObject();
+    switch (part) {
+        .input_text => |p| {
+            try s.objectField("type");
+            try s.write("input_text");
+            try s.objectField("text");
+            try s.write(p.text);
+        },
+        .input_image => |p| {
+            try s.objectField("type");
+            try s.write("input_image");
+            try s.objectField("image_url");
+            try s.write(p.image_url); // plain string, not a nested {url} object
+            if (p.detail) |d| {
+                try s.objectField("detail");
+                try s.write(d);
+            }
+        },
+        .output_text => |p| {
+            try s.objectField("type");
+            try s.write("output_text");
+            try s.objectField("text");
+            try s.write(p.text);
+            try s.objectField("annotations");
+            try s.beginArray();
+            try s.endArray();
+        },
+    }
+    try s.endObject();
+}
+
+fn writeResponseContent(s: *Stringify, content: gen.ResponseContent) !void {
+    switch (content) {
+        .text => |t| try s.write(t),
+        .parts => |parts| {
+            try s.beginArray();
+            for (parts) |p| try writeResponseContentPart(s, p);
+            try s.endArray();
+        },
+    }
+}
+
+/// Write a reasoning entry list (`summary` or `content`). `wire_type` is the
+/// per-entry `"type"` token the enclosing list dictates ("summary_text" for a
+/// `summary[]` entry, "reasoning_text" for a `content[]` entry).
+fn writeReasoningTexts(s: *Stringify, key: []const u8, wire_type: []const u8, entries: []const gen.ResponseReasoningText) !void {
+    try s.objectField(key);
+    try s.beginArray();
+    for (entries) |e| {
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write(wire_type);
+        try s.objectField("text");
+        try s.write(e.text);
+        try s.endObject();
+    }
+    try s.endArray();
+}
+
+/// One `input`/`output` item. A message is emitted role-keyed WITHOUT a `"type"`
+/// (a bare role-keyed object implies `"message"`); every other variant carries
+/// its `"type"` discriminator.
+fn writeResponseItem(s: *Stringify, item: gen.ResponseItem) !void {
+    try s.beginObject();
+    switch (item) {
+        .message => |m| {
+            if (m.id) |id| {
+                try s.objectField("id");
+                try s.write(id);
+            }
+            try s.objectField("role");
+            try s.write(m.role);
+            if (m.content) |c| {
+                try s.objectField("content");
+                try writeResponseContent(s, c);
+            }
+            if (m.status) |st| {
+                try s.objectField("status");
+                try s.write(st);
+            }
+        },
+        .function_call => |fc| {
+            try s.objectField("type");
+            try s.write("function_call");
+            if (fc.id) |id| {
+                try s.objectField("id");
+                try s.write(id);
+            }
+            try s.objectField("call_id");
+            try s.write(fc.call_id);
+            try s.objectField("name");
+            try s.write(fc.name);
+            try s.objectField("arguments");
+            try s.write(fc.arguments); // raw JSON string, escaped
+            if (fc.status) |st| {
+                try s.objectField("status");
+                try s.write(st);
+            }
+        },
+        .function_call_output => |fo| {
+            try s.objectField("type");
+            try s.write("function_call_output");
+            if (fo.id) |id| {
+                try s.objectField("id");
+                try s.write(id);
+            }
+            try s.objectField("call_id");
+            try s.write(fo.call_id);
+            try s.objectField("output");
+            try s.write(fo.output);
+        },
+        .reasoning => |r| {
+            try s.objectField("type");
+            try s.write("reasoning");
+            if (r.id) |id| {
+                try s.objectField("id");
+                try s.write(id);
+            }
+            try writeReasoningTexts(s, "summary", "summary_text", r.summary);
+            try writeReasoningTexts(s, "content", "reasoning_text", r.content);
+            if (r.encrypted_content) |ec| {
+                try s.objectField("encrypted_content");
+                try s.write(ec);
+            }
+        },
+    }
+    try s.endObject();
+}
+
+/// The Responses dialect's FLAT tool list (`type`/`name`/`parameters` at the top
+/// level, no nested `function` object).
+fn writeResponsesTools(s: *Stringify, gpa: Allocator, tools: []const gen.ResponsesToolDef) !void {
+    try s.objectField("tools");
+    try s.beginArray();
+    for (tools) |t| {
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write(t.type);
+        try s.objectField("name");
+        try s.write(t.name);
+        if (t.description) |d| {
+            try s.objectField("description");
+            try s.write(d);
+        }
+        if (t.parameters) |p| try rawField(s, gpa, "parameters", p);
+        if (t.strict) |st| {
+            try s.objectField("strict");
+            try s.write(st);
+        }
+        try s.endObject();
+    }
+    try s.endArray();
+}
+
+/// Serialise a ResponsesRequest to its OpenAI Responses JSON body. Caller owns
+/// and frees the returned slice (allocated with `gpa`).
+pub fn encodeResponsesRequest(gpa: Allocator, req: gen.ResponsesRequest) ![]u8 {
+    var aw: Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+    var s: Stringify = .{ .writer = &aw.writer, .options = .{} };
+    try s.beginObject();
+
+    try s.objectField("model");
+    try s.write(req.model);
+
+    try s.objectField("input");
+    switch (req.input) {
+        .text => |t| try s.write(t), // bare string: one user message
+        .items => |items| {
+            try s.beginArray();
+            for (items) |it| try writeResponseItem(&s, it);
+            try s.endArray();
+        },
+    }
+
+    if (req.instructions) |v| {
+        try s.objectField("instructions");
+        try s.write(v);
+    }
+    if (req.stream) |v| {
+        try s.objectField("stream");
+        try s.write(v);
+    }
+    if (req.temperature) |v| {
+        try s.objectField("temperature");
+        try s.write(v);
+    }
+    if (req.top_p) |v| {
+        try s.objectField("top_p");
+        try s.write(v);
+    }
+    if (req.max_output_tokens) |v| {
+        try s.objectField("max_output_tokens");
+        try s.write(v);
+    }
+    if (req.tools.len > 0) try writeResponsesTools(&s, gpa, req.tools);
+    if (req.tool_choice) |tc| {
+        try s.objectField("tool_choice");
+        switch (tc) {
+            .mode => |mode| try s.write(mode),
+            .named => |n| {
+                // FLAT named choice: {"type","name"} — no nested `function`.
+                try s.beginObject();
+                try s.objectField("type");
+                try s.write(n.type);
+                try s.objectField("name");
+                try s.write(n.name);
+                try s.endObject();
+            },
+        }
+    }
+    if (req.reasoning) |r| {
+        try s.objectField("reasoning");
+        try s.beginObject();
+        if (r.effort) |e| {
+            try s.objectField("effort");
+            try s.write(e);
+        }
+        if (r.summary) |sm| {
+            try s.objectField("summary");
+            try s.write(sm);
+        }
+        try s.endObject();
+    }
+    if (req.store) |v| {
+        try s.objectField("store");
+        try s.write(v);
+    }
+    // `extra` keys are merged at the top level, exactly like ChatRequest.extra.
+    if (req.extra) |raw| try mergeExtra(&s, gpa, raw);
+
+    try s.endObject();
+    return aw.toOwnedSlice();
+}
+
 pub fn encodeEmbeddingRequest(gpa: Allocator, req: gen.EmbeddingRequest) ![]u8 {
     var aw: Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
@@ -639,6 +881,212 @@ fn parseToolCallDeltas(arena: Allocator, v: ?Value) ![]const gen.ToolCallDelta {
         };
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Responses dialect decoding (POST /v1/responses)
+// ---------------------------------------------------------------------------
+
+/// One content part; the `"type"` token selects the variant. `input_image`'s
+/// `image_url` is a plain string here. Unknown types yield `null` (skipped).
+fn parseResponseContentPart(v: Value) ?gen.ResponseContentPart {
+    if (v != .object) return null;
+    const ty = getStr(v, "type") orelse return null;
+    if (std.mem.eql(u8, ty, "input_text")) {
+        return .{ .input_text = .{ .text = getStr(v, "text") orelse "" } };
+    } else if (std.mem.eql(u8, ty, "output_text")) {
+        return .{ .output_text = .{ .text = getStr(v, "text") orelse "" } };
+    } else if (std.mem.eql(u8, ty, "input_image")) {
+        return .{ .input_image = .{
+            .image_url = getStr(v, "image_url") orelse "",
+            .detail = getStr(v, "detail"),
+        } };
+    }
+    return null;
+}
+
+fn parseResponseContent(arena: Allocator, v: Value) !?gen.ResponseContent {
+    switch (v) {
+        .string => |s| return gen.ResponseContent{ .text = s },
+        .array => |arr| {
+            var parts = try arena.alloc(gen.ResponseContentPart, arr.items.len);
+            var n: usize = 0;
+            for (arr.items) |it| {
+                if (parseResponseContentPart(it)) |p| {
+                    parts[n] = p;
+                    n += 1;
+                }
+            }
+            return gen.ResponseContent{ .parts = parts[0..n] };
+        },
+        .null => return null,
+        else => return null,
+    }
+}
+
+/// Parse a reasoning `summary[]`/`content[]` list — both are `[{...,"text"}]`;
+/// only the `text` is retained (the entry's list, not its `type`, decides intent).
+fn parseReasoningTexts(arena: Allocator, v: ?Value) ![]const gen.ResponseReasoningText {
+    const arr = switch (v orelse return &.{}) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    var out = try arena.alloc(gen.ResponseReasoningText, arr.items.len);
+    var n: usize = 0;
+    for (arr.items) |it| {
+        if (getStr(it, "text")) |t| {
+            out[n] = .{ .text = t };
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+fn parseResponseMessageItem(arena: Allocator, v: Value) !gen.ResponseMessageItem {
+    return gen.ResponseMessageItem{
+        .id = getStr(v, "id"),
+        .role = getStr(v, "role") orelse "assistant",
+        .content = if (objGet(v, "content")) |c| try parseResponseContent(arena, c) else null,
+        .status = getStr(v, "status"),
+    };
+}
+
+/// Parse one `input`/`output` item. A missing or `"message"` `type` is a message
+/// (role-keyed). An unrecognised `type` yields `null` so the caller skips it.
+fn parseResponseItem(arena: Allocator, v: Value) !?gen.ResponseItem {
+    if (v != .object) return null;
+    const ty = getStr(v, "type");
+    if (ty == null or std.mem.eql(u8, ty.?, "message")) {
+        return gen.ResponseItem{ .message = try parseResponseMessageItem(arena, v) };
+    }
+    const t = ty.?;
+    if (std.mem.eql(u8, t, "function_call")) {
+        return gen.ResponseItem{ .function_call = .{
+            .id = getStr(v, "id"),
+            .call_id = getStr(v, "call_id") orelse "",
+            .name = getStr(v, "name") orelse "",
+            .arguments = getStr(v, "arguments") orelse "",
+            .status = getStr(v, "status"),
+        } };
+    } else if (std.mem.eql(u8, t, "function_call_output")) {
+        return gen.ResponseItem{ .function_call_output = .{
+            .id = getStr(v, "id"),
+            .call_id = getStr(v, "call_id") orelse "",
+            .output = getStr(v, "output") orelse "",
+        } };
+    } else if (std.mem.eql(u8, t, "reasoning")) {
+        return gen.ResponseItem{ .reasoning = .{
+            .id = getStr(v, "id"),
+            .summary = try parseReasoningTexts(arena, objGet(v, "summary")),
+            .content = try parseReasoningTexts(arena, objGet(v, "content")),
+            .encrypted_content = getStr(v, "encrypted_content"),
+        } };
+    }
+    return null; // unknown item type — ignore
+}
+
+fn parseResponseOutput(arena: Allocator, v: ?Value) ![]const gen.ResponseItem {
+    const arr = switch (v orelse return &.{}) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    var out = try arena.alloc(gen.ResponseItem, arr.items.len);
+    var n: usize = 0;
+    for (arr.items) |it| {
+        if (try parseResponseItem(arena, it)) |item| {
+            out[n] = item;
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+fn parseResponsesUsage(obj: Value, key: []const u8) ?gen.ResponsesUsage {
+    const u = objGet(obj, key) orelse return null;
+    if (u != .object) return null;
+    var in_details: ?gen.ResponsesInputTokensDetails = null;
+    if (objGet(u, "input_tokens_details")) |d| {
+        if (d == .object) in_details = .{ .cached_tokens = getInt(u32, d, "cached_tokens") };
+    }
+    var out_details: ?gen.ResponsesOutputTokensDetails = null;
+    if (objGet(u, "output_tokens_details")) |d| {
+        if (d == .object) out_details = .{ .reasoning_tokens = getInt(u32, d, "reasoning_tokens") };
+    }
+    return gen.ResponsesUsage{
+        .input_tokens = getInt(u32, u, "input_tokens") orelse 0,
+        .input_tokens_details = in_details,
+        .output_tokens = getInt(u32, u, "output_tokens") orelse 0,
+        .output_tokens_details = out_details,
+        .total_tokens = getInt(u32, u, "total_tokens") orelse 0,
+    };
+}
+
+fn parseErrorBody(v: Value) ?gen.ErrorBody {
+    if (v != .object) return null;
+    const msg = getStr(v, "message") orelse return null;
+    return gen.ErrorBody{ .message = msg, .type = getStr(v, "type"), .code = getStr(v, "code") };
+}
+
+fn parseResponsesReasoning(v: Value) ?gen.ResponsesReasoning {
+    if (v != .object) return null;
+    return gen.ResponsesReasoning{ .effort = getStr(v, "effort"), .summary = getStr(v, "summary") };
+}
+
+pub fn decodeResponsesResponse(arena: Allocator, root: Value) !gen.ResponsesResponse {
+    var incomplete: ?gen.ResponsesIncompleteDetails = null;
+    if (objGet(root, "incomplete_details")) |d| {
+        if (d == .object) {
+            if (getStr(d, "reason")) |r| incomplete = .{ .reason = r };
+        }
+    }
+    var err: ?gen.ErrorBody = null;
+    if (objGet(root, "error")) |e| err = parseErrorBody(e);
+    var reasoning: ?gen.ResponsesReasoning = null;
+    if (objGet(root, "reasoning")) |r| reasoning = parseResponsesReasoning(r);
+    return gen.ResponsesResponse{
+        .id = getStr(root, "id") orelse "",
+        .object = getStr(root, "object") orelse "response",
+        .created_at = getInt(i64, root, "created_at") orelse 0,
+        .status = getStr(root, "status") orelse "",
+        .incomplete_details = incomplete,
+        .@"error" = err,
+        .model = getStr(root, "model") orelse "",
+        .output = try parseResponseOutput(arena, objGet(root, "output")),
+        .usage = parseResponsesUsage(root, "usage"),
+        .store = getBool(root, "store"),
+        .instructions = getStr(root, "instructions"),
+        .max_output_tokens = getInt(u32, root, "max_output_tokens"),
+        .temperature = if (getFloat(root, "temperature")) |f| @floatCast(f) else null,
+        .top_p = if (getFloat(root, "top_p")) |f| @floatCast(f) else null,
+        .reasoning = reasoning,
+    };
+}
+
+/// Decode one streaming SSE event's already-parsed JSON `Value`. Every event
+/// type decodes into the same flat superset; `type` says which fields matter.
+pub fn decodeResponsesStreamEvent(arena: Allocator, root: Value) !gen.ResponsesStreamEvent {
+    var response: ?gen.ResponsesResponse = null;
+    if (objGet(root, "response")) |r| {
+        if (r == .object) response = try decodeResponsesResponse(arena, r);
+    }
+    var item: ?gen.ResponseItem = null;
+    if (objGet(root, "item")) |it| item = try parseResponseItem(arena, it);
+    var part: ?gen.ResponseContentPart = null;
+    if (objGet(root, "part")) |p| part = parseResponseContentPart(p);
+    return gen.ResponsesStreamEvent{
+        .type = getStr(root, "type") orelse "",
+        .sequence_number = getInt(u64, root, "sequence_number") orelse 0,
+        .response = response,
+        .output_index = getInt(u32, root, "output_index"),
+        .item_id = getStr(root, "item_id"),
+        .content_index = getInt(u32, root, "content_index"),
+        .item = item,
+        .part = part,
+        .delta = getStr(root, "delta"),
+        .text = getStr(root, "text"),
+        .arguments = getStr(root, "arguments"),
+        .message = getStr(root, "message"),
+    };
 }
 
 pub fn decodeEmbeddingResponse(arena: Allocator, root: Value) !gen.EmbeddingResponse {
@@ -1132,6 +1580,145 @@ test "decode streaming chunk with reasoning delta" {
     try testing.expectEqualStrings("hmm", chunk.choices[0].delta.reasoning.?);
     try testing.expectEqual(@as(usize, 1), chunk.choices[0].delta.reasoning_details.len);
     try testing.expectEqualStrings("a", chunk.choices[0].delta.reasoning_details[0].text.?);
+}
+
+// --- Responses dialect (POST /v1/responses) --------------------------------
+
+test "encode responses request with bare string input" {
+    const req = gen.ResponsesRequest{
+        .model = "gpt-5",
+        .input = .{ .text = "hi" },
+    };
+    const body = try encodeResponsesRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings(
+        \\{"model":"gpt-5","input":"hi"}
+    , body);
+}
+
+test "encode responses request flat tools, flat tool_choice, reasoning, store, extra" {
+    const req = gen.ResponsesRequest{
+        .model = "gpt-5",
+        .input = .{ .text = "weather?" },
+        .max_output_tokens = 256,
+        .tools = &.{.{
+            .name = "get_weather",
+            .description = "Get weather",
+            .parameters = "{\"type\":\"object\"}",
+            .strict = false,
+        }},
+        .tool_choice = .{ .named = .{ .name = "get_weather" } },
+        .reasoning = .{ .effort = "low", .summary = "auto" },
+        .store = false,
+        .extra = "{\"service_tier\":\"flex\"}",
+    };
+    const body = try encodeResponsesRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    // FLAT tool: type/name/parameters at the top level, no nested "function".
+    try testing.expect(std.mem.indexOf(u8, body, "\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\"},\"strict\":false}]") != null);
+    // FLAT named tool_choice: {"type","name"} — no nested "function".
+    try testing.expect(std.mem.indexOf(u8, body, "\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"max_output_tokens\":256") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
+    // `extra` spliced (not stringified) and merged at the top level.
+    try testing.expect(std.mem.indexOf(u8, body, "\"service_tier\":\"flex\"") != null);
+}
+
+test "encode responses request item array replay (message, reasoning, tool call, output)" {
+    const in_parts = [_]gen.ResponseContentPart{
+        .{ .input_text = .{ .text = "look:" } },
+        .{ .input_image = .{ .image_url = "https://x/y.png", .detail = "low" } },
+    };
+    const summary = [_]gen.ResponseReasoningText{.{ .text = "planning" }};
+    const rcontent = [_]gen.ResponseReasoningText{.{ .text = "step 1" }};
+    const out_parts = [_]gen.ResponseContentPart{.{ .output_text = .{ .text = "Sunny" } }};
+    const items = [_]gen.ResponseItem{
+        .{ .message = .{ .role = "user", .content = .{ .parts = &in_parts } } },
+        .{ .reasoning = .{ .summary = &summary, .content = &rcontent, .encrypted_content = "OPAQUE==" } },
+        .{ .function_call = .{ .call_id = "call_1", .name = "get_weather", .arguments = "{\"city\":\"SF\"}" } },
+        .{ .function_call_output = .{ .call_id = "call_1", .output = "72F" } },
+        .{ .message = .{ .role = "assistant", .content = .{ .parts = &out_parts } } },
+    };
+    const req = gen.ResponsesRequest{ .model = "gpt-5", .input = .{ .items = &items } };
+    const body = try encodeResponsesRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    // A message serialises role-keyed with NO "type" discriminator.
+    try testing.expect(std.mem.indexOf(u8, body, "{\"role\":\"user\",\"content\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"message\"") == null);
+    // input_image.image_url is a PLAIN string (not the chat dialect's nested {url}).
+    try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"input_image\",\"image_url\":\"https://x/y.png\",\"detail\":\"low\"}") != null);
+    // Reasoning entries take their wire token from the list they live in.
+    try testing.expect(std.mem.indexOf(u8, body, "\"summary\":[{\"type\":\"summary_text\",\"text\":\"planning\"}]") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"content\":[{\"type\":\"reasoning_text\",\"text\":\"step 1\"}]") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"encrypted_content\":\"OPAQUE==\"") != null);
+    // function_call / function_call_output carry their "type"; arguments stays a raw JSON string.
+    try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"72F\"}") != null);
+    // A constructed output_text part emits annotations:[].
+    try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"output_text\",\"text\":\"Sunny\",\"annotations\":[]}") != null);
+}
+
+test "decode responses response (usage cached/reasoning tokens, store:false, output items)" {
+    const json =
+        \\{"id":"resp_1","object":"response","created_at":1720000000,"status":"completed",
+        \\ "model":"gpt-5","store":false,
+        \\ "output":[
+        \\   {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking"}],
+        \\     "content":[],"encrypted_content":"BLOB=="},
+        \\   {"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather",
+        \\     "arguments":"{\"city\":\"SF\"}","status":"completed"},
+        \\   {"type":"message","id":"msg_1","role":"assistant","status":"completed",
+        \\     "content":[{"type":"output_text","text":"Sunny","annotations":[]}]}],
+        \\ "usage":{"input_tokens":20,"input_tokens_details":{"cached_tokens":8},
+        \\   "output_tokens":5,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":25}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    const resp = try decodeResponsesResponse(a, parsed);
+    try testing.expectEqualStrings("resp_1", resp.id);
+    try testing.expectEqualStrings("response", resp.object);
+    try testing.expectEqualStrings("completed", resp.status);
+    try testing.expectEqual(@as(i64, 1720000000), resp.created_at);
+    try testing.expectEqual(false, resp.store.?);
+    try testing.expectEqual(@as(usize, 3), resp.output.len);
+    // reasoning item (summary_text entry retained as text)
+    try testing.expectEqualStrings("thinking", resp.output[0].reasoning.summary[0].text);
+    try testing.expectEqualStrings("BLOB==", resp.output[0].reasoning.encrypted_content.?);
+    // function_call item
+    try testing.expectEqualStrings("get_weather", resp.output[1].function_call.name);
+    try testing.expectEqualStrings("call_1", resp.output[1].function_call.call_id);
+    try testing.expectEqualStrings("{\"city\":\"SF\"}", resp.output[1].function_call.arguments);
+    // message item with an output_text part
+    try testing.expectEqualStrings("assistant", resp.output[2].message.role);
+    try testing.expectEqualStrings("Sunny", resp.output[2].message.content.?.parts[0].output_text.text);
+    // usage in the dialect's own names + cached/reasoning helpers
+    try testing.expectEqual(@as(u32, 25), resp.usage.?.total_tokens);
+    try testing.expectEqual(@as(u32, 8), resp.usage.?.cachedTokens());
+    try testing.expectEqual(@as(u32, 3), resp.usage.?.reasoningTokens());
+}
+
+test "decode responses stream event carries nested response snapshot" {
+    const json =
+        \\{"type":"response.completed","sequence_number":6,
+        \\ "response":{"id":"resp_1","object":"response","status":"completed","model":"gpt-5",
+        \\   "output":[{"type":"message","role":"assistant",
+        \\     "content":[{"type":"output_text","text":"Hi","annotations":[]}]}],
+        \\   "usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12}}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, json, .{});
+    const event = try decodeResponsesStreamEvent(a, parsed);
+    try testing.expectEqualStrings("response.completed", event.type);
+    try testing.expectEqual(@as(u64, 6), event.sequence_number);
+    try testing.expect(event.isTerminal());
+    try testing.expectEqualStrings("completed", event.response.?.status);
+    try testing.expectEqual(@as(u32, 12), event.response.?.usage.?.total_tokens);
+    try testing.expectEqualStrings("Hi", event.response.?.output[0].message.content.?.parts[0].output_text.text);
 }
 
 test "encode multimodal content parts" {

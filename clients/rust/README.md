@@ -51,6 +51,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### OpenAI Responses dialect
+
+`POST /v1/responses` is the same canonical core behind a different edge dialect. `input` is a
+bare string (one user message) or an array of items; use `ResponseItem` to build multi-turn
+input (messages, `function_call` / `function_call_output` replay, reasoning items). llmleaf is
+stateless, so the response always reports `"store": false`.
+
+```rust
+use futures::StreamExt;
+use llmleaf_client::{ResponsesRequest, ResponseItem};
+
+// Non-streaming — bare-string input.
+let resp = client
+    .responses(ResponsesRequest::new("gpt-4o-mini", "Say hi."))
+    .await?;
+println!("{}", resp.output_text());
+
+// Multi-turn item array (replaying a tool call and its result).
+let req = ResponsesRequest::new(
+    "gpt-4o-mini",
+    vec![
+        ResponseItem::user("What's the weather in Paris?"),
+        ResponseItem::function_call("call_1", "get_weather", r#"{"city":"Paris"}"#),
+        ResponseItem::function_call_output("call_1", r#"{"temp_c":21}"#),
+    ],
+);
+
+// Streaming — typed events, NO [DONE] sentinel: the stream ends on the terminal
+// response.completed / .incomplete / .failed event. Accumulate output_text deltas.
+let mut events = client.responses_stream(req).await?;
+while let Some(event) = events.next().await {
+    if let Some(delta) = event?.output_text_delta() {
+        print!("{delta}");
+    }
+}
+```
+
 Need a timeout, an admin token, or your own `reqwest::Client`? Use the builder:
 
 ```rust
@@ -67,6 +104,7 @@ let client = Client::builder("https://gateway.example.com", "sk-...")
 | Call | Method | Notes |
 |------|--------|-------|
 | Chat | `chat` / `chat_stream` | stream yields `ChatCompletionChunk`, stops on `[DONE]` |
+| Responses | `responses` / `responses_stream` | stream yields `ResponsesStreamEvent`, ends on the terminal event (no `[DONE]`) |
 | Embeddings | `embeddings` | decodes base64 vectors → `Vec<f32>` |
 | Models | `list_models` | `type` filter + `search` |
 | Speech (TTS) | `speech` | returns `(bytes, content_type)` |
@@ -85,7 +123,8 @@ export LLMLEAF_API_KEY="sk-..."
 cargo run --example basic
 ```
 
-It lists models, does a non-streaming chat, and streams one (printing deltas live).
+It lists models, does a non-streaming chat, streams one, then does the same pair over the
+Responses dialect (printing deltas live).
 
 ## Regenerate from the proto
 

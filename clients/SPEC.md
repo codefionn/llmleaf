@@ -51,6 +51,37 @@ by a blank line; `<json>` is a `ChatCompletionChunk`. The stream ends with the l
 MUST stop on `[DONE]` without trying to JSON-parse it. Accumulate `choices[].delta.content`
 for the assembled text; `usage` appears only on the terminal chunk (when present).
 
+### POST /v1/responses
+Body = `ResponsesRequest` — the OpenAI Responses dialect on the same canonical core. Notes:
+- `input` is a bare string (one user message) or an array of items; each item's `"type"` selects
+  the `ResponseItem` variant (`"message"` may be implied by a bare role-keyed object — emit
+  role-keyed objects without `"type"` for plain messages, typed objects for the rest).
+- `content` on a message item is a string or an array of parts; `input_image.image_url` is a
+  plain **string** (not the chat dialect's nested `{url}` object). Output text parts carry an
+  `annotations` array — emit `[]` when constructing one.
+- Tools and the named `tool_choice` are **flat** (`type`/`name` at the top level, no nested
+  `function` object).
+- Reasoning items: `summary[]` entries serialise as `{"type":"summary_text","text"}` and
+  `content[]` entries as `{"type":"reasoning_text","text"}` — the list an entry lives in decides
+  its wire token. `encrypted_content` is opaque: echo it back verbatim in the next request's
+  input to continue an encrypted reasoning turn.
+- llmleaf is stateless: `store` is accepted but the response always reports `"store": false`;
+  `previous_response_id` and `background: true` are rejected with 400. Do not expose a
+  retrieval call — `GET /v1/responses/{id}` is an explained 404 by design.
+
+**Non-streaming** (`stream` absent/false): response = `ResponsesResponse` (`object:"response"`).
+
+**Streaming** (`stream:true`): SSE, but **typed events and no `[DONE]` sentinel** — each frame is
+`event: <type>` + `data: <json>`, the JSON self-describing via its `type` field (parse `data:`
+lines only; the `event:` line is redundant). Decode each into `ResponsesStreamEvent`, ignore
+unrecognised types, and stop after the terminal `response.completed` / `response.incomplete` /
+`response.failed` event (also stop if the connection closes without one). `sequence_number` is
+strictly increasing. Accumulate `response.output_text.delta` deltas for the assembled text; the
+terminal event's `response` snapshot carries the full output and usage. A mid-stream `error`
+event surfaces idiomatically, matching how the SDK's chat stream reports failures: either
+raised as the typed `ApiError` (status 0/502 — there is no HTTP status mid-stream) or yielded
+as the decoded event for the caller to inspect; it must never be silently dropped.
+
 ### POST /v1/embeddings
 Body = `EmbeddingRequest`. Response = `EmbeddingResponse` (`object:"list"`, `data[].object:"embedding"`).
 If `encoding_format:"base64"`, each `data[].embedding` is a base64 string of little-endian
@@ -87,8 +118,10 @@ The three return a `BatchHandle`.
 1. Generated types from the proto (real codegen wired into the build — see each client README).
 2. A `Client` constructed from `(baseUrl, apiKey, opts)` with a pluggable HTTP timeout and an
    optional `x-admin-token`.
-3. The eight calls above, with streaming chat surfaced idiomatically (async iterator / channel /
-   `Flow` / callback) and the `[DONE]` sentinel handled.
+3. The nine calls above, with streaming chat and streaming responses surfaced idiomatically
+   (async iterator / channel / `Flow` / callback) — chat streaming handles the `[DONE]`
+   sentinel; responses streaming stops on the terminal `response.completed` / `incomplete` /
+   `failed` event instead (there is no sentinel).
 4. Typed `ApiError`.
 5. One runnable example (non-stream chat, stream chat, list models) and a README with install +
    regen-from-proto instructions.

@@ -139,6 +139,69 @@ public sealed class LlmleafClient : IDisposable
         }
     }
 
+    // ---- responses ------------------------------------------------------
+
+    /// <summary>
+    /// Non-streaming Responses call (POST /v1/responses) — the OpenAI Responses dialect. The wire
+    /// <c>stream</c> flag is forced false; use <see cref="CreateResponseStreamAsync"/> for streaming.
+    /// llmleaf is stateless, so the response always reports <c>store:false</c>.
+    /// </summary>
+    public async Task<ResponsesResponse> CreateResponseAsync(ResponsesRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = Mapper.EncodeResponsesRequest(request, streamOverride: false);
+        var wire = await SendJsonForJsonAsync<WireResponsesResponse>(HttpMethod.Post, "v1/responses", body, cancellationToken).ConfigureAwait(false);
+        return Mapper.ResponsesResponseFromWire(wire);
+    }
+
+    /// <summary>
+    /// Streaming Responses call (POST /v1/responses with <c>stream:true</c>). Yields typed
+    /// <see cref="ResponsesStreamEvent"/> values parsed from the SSE body. Unlike chat streaming there is
+    /// NO <c>data: [DONE]</c> sentinel: unrecognised event types are skipped, and the stream ends after the
+    /// terminal <c>response.completed</c>/<c>response.incomplete</c>/<c>response.failed</c> event (or when the
+    /// connection closes). Accumulate <c>response.output_text.delta</c> deltas for the assembled text; the
+    /// terminal event's <see cref="ResponsesStreamEvent.Response"/> snapshot carries the full output and usage.
+    /// A mid-stream <c>"error"</c> event is surfaced as a frame (with <see cref="ResponsesStreamEvent.Message"/> set).
+    /// </summary>
+    public async IAsyncEnumerable<ResponsesStreamEvent> CreateResponseStreamAsync(
+        ResponsesRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = Mapper.EncodeResponsesRequest(request, streamOverride: true);
+
+        using var req = BuildRequest(HttpMethod.Post, "v1/responses");
+        req.Content = JsonContent(body);
+        req.Headers.Accept.ParseAdd("text/event-stream");
+
+        using var resp = await _http
+            .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+        await EnsureSuccessAsync(resp, cancellationToken).ConfigureAwait(false);
+
+#if NET8_0_OR_GREATER
+        await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+#else
+        await using var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+#endif
+        // Parse `data:` frames only (the `event:` line is redundant — SPEC.md). There is no `[DONE]`
+        // sentinel, so ParseSseDataAsync simply runs to the end of the body; we stop earlier on a terminal event.
+        await foreach (var payload in LineReader.ParseSseDataAsync(stream, cancellationToken).ConfigureAwait(false))
+        {
+            var wire = JsonSerializer.Deserialize<WireResponsesStreamEvent>(payload, Json.Options);
+            if (wire is null || string.IsNullOrEmpty(wire.Type) || !Mapper.IsRecognisedResponseEvent(wire.Type))
+            {
+                continue; // ignore unrecognised event types
+            }
+            var evt = Mapper.ResponsesStreamEventFromWire(wire);
+            yield return evt;
+            if (evt.IsTerminal)
+            {
+                yield break;
+            }
+        }
+    }
+
     // ---- embeddings -----------------------------------------------------
 
     /// <summary>

@@ -49,6 +49,30 @@ for {
     }
     fmt.Print(chunk.GetChoices()[0].GetDelta().GetContent())
 }
+
+// OpenAI Responses dialect — `input` is a bare string or an array of items
+resp, err := client.CreateResponse(ctx, &pb.ResponsesRequest{
+    Model: "gpt-4o-mini",
+    Input: &pb.ResponsesRequest_Text{Text: "Say hi."},
+})
+
+// Streaming Responses — typed SSE events, NO [DONE]; Recv() stops on the terminal
+// response.completed / .incomplete / .failed event. Unknown event types are
+// skipped; a mid-stream "error" event surfaces as *ApiError.
+rs, err := client.CreateResponseStream(ctx, req)
+defer rs.Close()
+for {
+    ev, err := rs.Recv()
+    if errors.Is(err, io.EOF) {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    if ev.GetType() == "response.output_text.delta" {
+        fmt.Print(ev.GetDelta())
+    }
+}
 ```
 
 Construct with options: `WithTimeout`, `WithAdminToken` (adds the `endpoints` array to
@@ -61,6 +85,7 @@ wins over `WithTimeout`; for long-lived streams prefer a client with `Timeout: 0
 | Method | Endpoint |
 |--------|----------|
 | `CreateChatCompletion` / `CreateChatCompletionStream` | `POST /v1/chat/completions` |
+| `CreateResponse` / `CreateResponseStream` | `POST /v1/responses` (typed SSE, no `[DONE]`) |
 | `CreateEmbeddings` | `POST /v1/embeddings` (decodes base64 vectors) |
 | `ListModels` | `GET /v1/models` |
 | `CreateSpeech` | `POST /v1/audio/speech` → `SpeechResult{Audio, ContentType}` |
@@ -83,12 +108,14 @@ name wins).
 
 ## Run the example
 
-[`examples/basic/main.go`](examples/basic/main.go) — chat, streaming, model list:
+[`examples/basic/main.go`](examples/basic/main.go) — chat, streaming, model list;
+[`examples/responses/main.go`](examples/responses/main.go) — the Responses dialect, non-stream + stream:
 
 ```sh
 export LLMLEAF_BASE_URL=https://gateway.example.com
 export LLMLEAF_API_KEY=sk-...
 go run ./examples/basic
+go run ./examples/responses
 ```
 
 ## Regenerate from the proto
@@ -107,8 +134,9 @@ on your `PATH`).
 ## Notes
 
 Verified against an in-process `httptest` server that mirrors the spec (bearer auth, lowercased
-enum tokens, base64 embeddings, SSE `[DONE]`, multipart, NDJSON), not yet against a live
-gateway. The SSE reader caps a single event frame at 1 MiB.
+enum tokens, base64 embeddings, chat SSE `[DONE]`, typed Responses SSE with no sentinel + unknown-event
+skipping, multipart, NDJSON), not yet against a live gateway. The SSE reader caps a single event
+frame at 1 MiB.
 
 ## License
 

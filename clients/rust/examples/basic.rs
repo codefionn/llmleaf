@@ -1,4 +1,5 @@
-//! Runnable example: non-streaming chat, streaming chat, and listing models.
+//! Runnable example: listing models, non-streaming + streaming chat, and the OpenAI
+//! Responses dialect (non-streaming + streaming).
 //!
 //! Configure with environment variables and run against a live gateway:
 //!
@@ -11,7 +12,7 @@
 //! ```
 
 use futures::StreamExt;
-use llmleaf_client::{ChatMessage, ChatRequest, Client, Error, ModelType};
+use llmleaf_client::{ChatMessage, ChatRequest, Client, Error, ModelType, ResponsesRequest};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,6 +72,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         if let Some(delta) = chunk.first_delta_text() {
+            print!("{delta}");
+            let _ = stdout.flush();
+        }
+    }
+    println!();
+
+    // 4. Responses dialect (non-streaming). `input` is a bare string here.
+    println!("\n== responses (non-streaming) ==");
+    let resp = client
+        .responses(ResponsesRequest::new(&model, "Say hello in one short sentence."))
+        .await?;
+    println!("{}", {
+        let text = resp.output_text();
+        if text.is_empty() { "(no text)".to_string() } else { text }
+    });
+    if let Some(usage) = &resp.usage {
+        println!(
+            "  [tokens input={} output={} total={} cached={}]",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+            usage.cached_tokens(),
+        );
+    }
+
+    // 5. Responses dialect (streaming) — accumulate output_text deltas; stops on the
+    //    terminal event (there is no [DONE] sentinel).
+    println!("\n== responses (streaming) ==");
+    let mut events = client
+        .responses_stream(ResponsesRequest::new(&model, "Count from 1 to 5."))
+        .await?;
+    while let Some(event) = events.next().await {
+        let event = event?;
+        if let Some(delta) = event.output_text_delta() {
             print!("{delta}");
             let _ = stdout.flush();
         }

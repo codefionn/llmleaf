@@ -207,6 +207,194 @@ internal sealed class WireChunk
     [JsonPropertyName("usage")] public WireUsage? Usage { get; set; }
 }
 
+// ---- responses: shared -------------------------------------------------
+
+// The canonical error envelope body, carried inline on a failed response.
+internal sealed class WireErrorBody
+{
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+    [JsonPropertyName("type")] public string? Type { get; set; }
+    [JsonPropertyName("code")] public string? Code { get; set; }
+}
+
+// ---- responses: content parts ------------------------------------------
+
+internal sealed class WireResponseInputImage
+{
+    // A PLAIN STRING on the wire, unlike the chat dialect's nested {url} object.
+    [JsonPropertyName("image_url")] public string ImageUrl { get; set; } = "";
+    [JsonPropertyName("detail")] public string? Detail { get; set; }
+}
+
+// A Responses content part: one of {type:input_text,text} | {type:input_image,image_url:"..."} |
+// {type:output_text,text,annotations:[]}. Custom (de)serialisation lives in ResponseContentPartConverter.
+// Exactly one field is non-null (the wire "type" discriminates).
+[JsonConverter(typeof(ResponseContentPartConverter))]
+internal sealed class WireResponseContentPart
+{
+    public string? InputText { get; set; }
+    public WireResponseInputImage? InputImage { get; set; }
+    public string? OutputText { get; set; }
+}
+
+// ---- responses: items --------------------------------------------------
+
+internal sealed class WireResponseMessageItem
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("role")] public string Role { get; set; } = "";
+
+    // string or array of content parts, or null/absent.
+    [JsonPropertyName("content")] public JsonNode? Content { get; set; }
+
+    [JsonPropertyName("status")] public string? Status { get; set; }
+}
+
+internal sealed class WireResponseFunctionCallItem
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("call_id")] public string CallId { get; set; } = "";
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("arguments")] public string Arguments { get; set; } = "";
+    [JsonPropertyName("status")] public string? Status { get; set; }
+}
+
+internal sealed class WireResponseFunctionCallOutputItem
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("call_id")] public string CallId { get; set; } = "";
+    [JsonPropertyName("output")] public string Output { get; set; } = "";
+}
+
+// summary[] entries are {"type":"summary_text","text"}, content[] entries {"type":"reasoning_text","text"} —
+// the list decides the wire token; only the texts are carried here.
+internal sealed class WireResponseReasoningItem
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    public List<string>? Summary { get; set; }
+    public List<string>? Content { get; set; }
+    [JsonPropertyName("encrypted_content")] public string? EncryptedContent { get; set; }
+}
+
+// A Responses item, discriminated by the wire "type" ("message" is also a role-keyed object with no
+// "type"). Exactly one field is non-null. Custom (de)serialisation lives in ResponseItemConverter.
+[JsonConverter(typeof(ResponseItemConverter))]
+internal sealed class WireResponseItem
+{
+    public WireResponseMessageItem? Message { get; set; }
+    public WireResponseFunctionCallItem? FunctionCall { get; set; }
+    public WireResponseFunctionCallOutputItem? FunctionCallOutput { get; set; }
+    public WireResponseReasoningItem? Reasoning { get; set; }
+}
+
+// ---- responses: tools / tool_choice / reasoning config -----------------
+
+internal sealed class WireResponsesToolDef
+{
+    // FLAT: type/name/parameters at the top level, no nested `function` object.
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("description")] public string? Description { get; set; }
+
+    // raw JSON object (JSON Schema), spliced verbatim.
+    [JsonPropertyName("parameters")] public JsonNode? Parameters { get; set; }
+
+    [JsonPropertyName("strict")] public bool? Strict { get; set; }
+}
+
+internal sealed class WireResponsesReasoning
+{
+    [JsonPropertyName("effort")] public string? Effort { get; set; }
+    [JsonPropertyName("summary")] public string? Summary { get; set; }
+}
+
+// ---- responses: request ------------------------------------------------
+
+// Every ResponsesRequest field except `extra`, which is merged at the top level by the mapper.
+internal sealed class WireResponsesRequest
+{
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+
+    // bare string (one user message) or an array of items.
+    [JsonPropertyName("input")] public JsonNode? Input { get; set; }
+
+    [JsonPropertyName("instructions")] public string? Instructions { get; set; }
+    [JsonPropertyName("stream")] public bool? Stream { get; set; }
+    [JsonPropertyName("temperature")] public float? Temperature { get; set; }
+    [JsonPropertyName("top_p")] public float? TopP { get; set; }
+    [JsonPropertyName("max_output_tokens")] public uint? MaxOutputTokens { get; set; }
+    [JsonPropertyName("tools")] public List<WireResponsesToolDef>? Tools { get; set; }
+
+    // bare mode string or a flat named-function object.
+    [JsonPropertyName("tool_choice")] public JsonNode? ToolChoice { get; set; }
+
+    [JsonPropertyName("reasoning")] public WireResponsesReasoning? Reasoning { get; set; }
+    [JsonPropertyName("store")] public bool? Store { get; set; }
+}
+
+// ---- responses: usage / response (decode) ------------------------------
+
+internal sealed class WireResponsesInputTokensDetails
+{
+    [JsonPropertyName("cached_tokens")] public uint? CachedTokens { get; set; }
+}
+
+internal sealed class WireResponsesOutputTokensDetails
+{
+    [JsonPropertyName("reasoning_tokens")] public uint? ReasoningTokens { get; set; }
+}
+
+internal sealed class WireResponsesUsage
+{
+    [JsonPropertyName("input_tokens")] public uint InputTokens { get; set; }
+    [JsonPropertyName("input_tokens_details")] public WireResponsesInputTokensDetails? InputTokensDetails { get; set; }
+    [JsonPropertyName("output_tokens")] public uint OutputTokens { get; set; }
+    [JsonPropertyName("output_tokens_details")] public WireResponsesOutputTokensDetails? OutputTokensDetails { get; set; }
+    [JsonPropertyName("total_tokens")] public uint TotalTokens { get; set; }
+}
+
+internal sealed class WireResponsesIncompleteDetails
+{
+    [JsonPropertyName("reason")] public string Reason { get; set; } = "";
+}
+
+internal sealed class WireResponsesResponse
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = "";
+    [JsonPropertyName("object")] public string Object { get; set; } = "";
+    [JsonPropertyName("created_at")] public long CreatedAt { get; set; }
+    [JsonPropertyName("status")] public string Status { get; set; } = "";
+    [JsonPropertyName("incomplete_details")] public WireResponsesIncompleteDetails? IncompleteDetails { get; set; }
+    [JsonPropertyName("error")] public WireErrorBody? Error { get; set; }
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("output")] public List<WireResponseItem>? Output { get; set; }
+    [JsonPropertyName("usage")] public WireResponsesUsage? Usage { get; set; }
+    [JsonPropertyName("store")] public bool? Store { get; set; }
+    [JsonPropertyName("instructions")] public string? Instructions { get; set; }
+    [JsonPropertyName("max_output_tokens")] public uint? MaxOutputTokens { get; set; }
+    [JsonPropertyName("temperature")] public float? Temperature { get; set; }
+    [JsonPropertyName("top_p")] public float? TopP { get; set; }
+    [JsonPropertyName("reasoning")] public WireResponsesReasoning? Reasoning { get; set; }
+}
+
+// ---- responses: streaming event (decode) -------------------------------
+
+internal sealed class WireResponsesStreamEvent
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("sequence_number")] public ulong SequenceNumber { get; set; }
+    [JsonPropertyName("response")] public WireResponsesResponse? Response { get; set; }
+    [JsonPropertyName("output_index")] public uint? OutputIndex { get; set; }
+    [JsonPropertyName("item_id")] public string? ItemId { get; set; }
+    [JsonPropertyName("content_index")] public uint? ContentIndex { get; set; }
+    [JsonPropertyName("item")] public WireResponseItem? Item { get; set; }
+    [JsonPropertyName("part")] public WireResponseContentPart? Part { get; set; }
+    [JsonPropertyName("delta")] public string? Delta { get; set; }
+    [JsonPropertyName("text")] public string? Text { get; set; }
+    [JsonPropertyName("arguments")] public string? Arguments { get; set; }
+    [JsonPropertyName("message")] public string? Message { get; set; }
+}
+
 // ---- embeddings ----------------------------------------------------------
 
 internal sealed class WireEmbeddingRequest

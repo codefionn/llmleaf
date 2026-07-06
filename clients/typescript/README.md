@@ -37,6 +37,21 @@ for await (const chunk of client.chatStream({
 })) {
   process.stdout.write(chunk.choices[0]?.delta.content ?? "");
 }
+
+// Responses dialect (POST /v1/responses) — `input` is a bare string or an item array
+const resp = await client.responses({
+  model: "gpt-4o-mini",
+  input: [{ type: "message", role: "user", content: "Say hi." }],
+});
+
+// Streaming responses — typed events, NO `[DONE]`; stops on the terminal
+// response.completed / .incomplete / .failed event; unknown event types are skipped
+for await (const event of client.responsesStream({
+  model: "gpt-4o-mini",
+  input: "Count to 5.",
+})) {
+  if (event.type === "response.output_text.delta") process.stdout.write(event.delta ?? "");
+}
 ```
 
 ## Endpoints
@@ -44,6 +59,8 @@ for await (const chunk of client.chatStream({
 ```ts
 await client.chat(req);              // POST /v1/chat/completions
 client.chatStream(req);              // stream:true, async iterable of chunks
+await client.responses(req);         // POST /v1/responses (OpenAI Responses dialect)
+client.responsesStream(req);         // stream:true, async iterable of typed events (no [DONE])
 await client.embeddings(req);        // base64 vectors decoded to floats
 await client.listModels({ type: "llm" });
 await client.speech(req);            // -> { bytes, contentType }

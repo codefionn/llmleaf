@@ -59,6 +59,29 @@ pub const ChatResponse = gen.ChatResponse;
 pub const Delta = gen.Delta;
 pub const ChunkChoice = gen.ChunkChoice;
 pub const ChatCompletionChunk = gen.ChatCompletionChunk;
+// Responses (POST /v1/responses)
+pub const ResponseTextPart = gen.ResponseTextPart;
+pub const ResponseInputImagePart = gen.ResponseInputImagePart;
+pub const ResponseContentPart = gen.ResponseContentPart;
+pub const ResponseContent = gen.ResponseContent;
+pub const ResponseMessageItem = gen.ResponseMessageItem;
+pub const ResponseFunctionCallItem = gen.ResponseFunctionCallItem;
+pub const ResponseFunctionCallOutputItem = gen.ResponseFunctionCallOutputItem;
+pub const ResponseReasoningText = gen.ResponseReasoningText;
+pub const ResponseReasoningItem = gen.ResponseReasoningItem;
+pub const ResponseItem = gen.ResponseItem;
+pub const ResponsesInput = gen.ResponsesInput;
+pub const ResponsesToolDef = gen.ResponsesToolDef;
+pub const ResponsesNamedToolChoice = gen.ResponsesNamedToolChoice;
+pub const ResponsesToolChoice = gen.ResponsesToolChoice;
+pub const ResponsesReasoning = gen.ResponsesReasoning;
+pub const ResponsesRequest = gen.ResponsesRequest;
+pub const ResponsesInputTokensDetails = gen.ResponsesInputTokensDetails;
+pub const ResponsesOutputTokensDetails = gen.ResponsesOutputTokensDetails;
+pub const ResponsesUsage = gen.ResponsesUsage;
+pub const ResponsesIncompleteDetails = gen.ResponsesIncompleteDetails;
+pub const ResponsesResponse = gen.ResponsesResponse;
+pub const ResponsesStreamEvent = gen.ResponsesStreamEvent;
 // Embeddings
 pub const EmbeddingRequest = gen.EmbeddingRequest;
 pub const Embedding = gen.Embedding;
@@ -95,6 +118,7 @@ pub const Client = client_mod.Client;
 pub const Options = client_mod.Options;
 pub const Owned = client_mod.Owned;
 pub const ChatStream = client_mod.ChatStream;
+pub const ResponsesStream = client_mod.ResponsesStream;
 pub const BatchResults = client_mod.BatchResults;
 pub const TranscriptionResult = client_mod.Client.TranscriptionResult;
 
