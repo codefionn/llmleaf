@@ -82,7 +82,9 @@ pub fn request_to_openai(req: &ChatRequest, max_tokens_field: &str, stream: bool
 
 /// Map the canonical thinking ladder onto OpenAI's `reasoning_effort`. OpenAI exposes only
 /// low/medium/high, so the two highest rungs collapse onto `high` (lossy by design — see [`Thinking`]).
-fn thinking_effort(t: Thinking) -> &'static str {
+/// `pub(crate)` so the Responses wire ([`crate::openai_responses_wire`]) reuses the same lossy mapping
+/// for its `reasoning.effort` field rather than duplicating the ladder.
+pub(crate) fn thinking_effort(t: Thinking) -> &'static str {
     match t {
         Thinking::Low => "low",
         Thinking::Med => "medium",
@@ -186,6 +188,21 @@ pub fn openai_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> 
         for choice in choices {
             let index = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
             let message = choice.get("message");
+
+            // Open reasoning text, ordered ahead of the visible answer it justifies. OpenRouter
+            // emits `reasoning`, DeepSeek `reasoning_content`; stock OpenAI keeps o-series
+            // reasoning server-side and emits neither.
+            if let Some(reasoning) = message
+                .and_then(|m| m.get("reasoning").or_else(|| m.get("reasoning_content")))
+                .and_then(Value::as_str)
+            {
+                if !reasoning.is_empty() {
+                    chunks.push(StreamChunk::Thinking {
+                        index,
+                        delta: reasoning.to_string(),
+                    });
+                }
+            }
 
             if let Some(content) = message
                 .and_then(|m| m.get("content"))
@@ -317,6 +334,21 @@ pub fn openai_chunk_to_canonical(
         for choice in choices {
             let index = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
             let delta = choice.get("delta");
+
+            // Open reasoning deltas — OpenRouter's `delta.reasoning` / DeepSeek's
+            // `delta.reasoning_content` — become canonical Thinking chunks, same as the collected
+            // mirror above.
+            if let Some(reasoning) = delta
+                .and_then(|d| d.get("reasoning").or_else(|| d.get("reasoning_content")))
+                .and_then(Value::as_str)
+            {
+                if !reasoning.is_empty() {
+                    out.push(StreamChunk::Thinking {
+                        index,
+                        delta: reasoning.to_string(),
+                    });
+                }
+            }
 
             if let Some(content) = delta.and_then(|d| d.get("content")).and_then(Value::as_str) {
                 if !content.is_empty() {
@@ -1319,6 +1351,36 @@ mod tests {
             }
         ));
         assert!(matches!(chunks[3], StreamChunk::Usage(u) if u.total_tokens == 6));
+    }
+
+    #[test]
+    fn maps_upstream_reasoning_to_thinking_chunks() {
+        // Collected: OpenRouter's `message.reasoning` leads the visible answer.
+        let resp = json!({
+            "id": "chatcmpl-x",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "reasoning": "let me think", "content": "hello" },
+                "finish_reason": "stop"
+            }]
+        });
+        let chunks = openai_to_chunks(resp, "gpt-4o");
+        assert!(
+            matches!(&chunks[1], StreamChunk::Thinking { delta, .. } if delta == "let me think")
+        );
+        assert!(matches!(&chunks[2], StreamChunk::Content { delta, .. } if delta == "hello"));
+
+        // Streaming: DeepSeek's `delta.reasoning_content` maps the same way.
+        let mut seen_start = true;
+        let chunks = openai_chunk_to_canonical(
+            &json!({ "choices": [{ "index": 0, "delta": { "reasoning_content": "hmm" } }] }),
+            &mut seen_start,
+            "gpt-4o",
+        );
+        assert!(
+            matches!(chunks.as_slice(), [StreamChunk::Thinking { index: 0, delta }] if delta == "hmm")
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use futures::stream;
 use llmleaf_model::{
     AudioChunk, AudioStream, ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse,
     FinishReason, Modality, ModelError, ModelInfo, ResponseStream, Role, SpeechRequest,
-    StreamChunk, TranscriptionRequest, TranscriptionResponse, Usage, VoiceInfo,
+    StreamChunk, Thinking, TranscriptionRequest, TranscriptionResponse, Usage, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx};
 
@@ -53,11 +53,27 @@ impl Provider for EchoProvider {
         };
 
         // A real, ordered canonical stream. Non-streaming consumers get this collected (principle 4).
-        let chunks: Vec<Result<StreamChunk, ModelError>> = vec![
-            Ok(StreamChunk::Start {
-                id,
-                model: req.model.clone(),
-            }),
+        let mut chunks: Vec<Result<StreamChunk, ModelError>> = vec![Ok(StreamChunk::Start {
+            id,
+            model: req.model.clone(),
+        })];
+        // A requested thinking effort produces a deterministic reasoning chunk ahead of the answer,
+        // so the whole thinking hot path — request knob through to the consumer surface's
+        // `delta.reasoning` — is exercisable offline, same as everything else here.
+        if let Some(t) = req.thinking {
+            let effort = match t {
+                Thinking::Low => "low",
+                Thinking::Med => "med",
+                Thinking::High => "high",
+                Thinking::Highx => "highx",
+                Thinking::Max => "max",
+            };
+            chunks.push(Ok(StreamChunk::Thinking {
+                index: 0,
+                delta: format!("echo thinking ({effort}): {last_user}"),
+            }));
+        }
+        chunks.extend([
             Ok(StreamChunk::Content {
                 index: 0,
                 delta: reply,
@@ -67,7 +83,7 @@ impl Provider for EchoProvider {
                 reason: FinishReason::Stop,
             }),
             Ok(StreamChunk::Usage(usage)),
-        ];
+        ]);
         Ok(Box::pin(stream::iter(chunks)))
     }
 
@@ -189,4 +205,53 @@ impl Provider for EchoProvider {
 
 fn count_words(s: &str) -> u64 {
     s.split_whitespace().count() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use llmleaf_model::Message;
+
+    /// A requested thinking effort yields a deterministic reasoning chunk ahead of the echo reply;
+    /// without one the stream keeps its historical shape.
+    #[tokio::test]
+    async fn echo_emits_thinking_when_requested() {
+        let mut req = ChatRequest {
+            model: "echo".into(),
+            messages: vec![Message::text(Role::User, "hi there")],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            stream: true,
+            tools: vec![],
+            tool_choice: None,
+            thinking: Some(Thinking::Low),
+            extra: Default::default(),
+        };
+        let cx = ProviderCx::default();
+
+        let chunks: Vec<_> = EchoProvider
+            .chat(req.clone(), &cx)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            chunks[1].as_ref().unwrap(),
+            StreamChunk::Thinking { index: 0, delta } if delta == "echo thinking (low): hi there"
+        ));
+        assert!(matches!(
+            chunks[2].as_ref().unwrap(),
+            StreamChunk::Content { delta, .. } if delta == "echo: hi there"
+        ));
+
+        req.thinking = None;
+        let chunks: Vec<_> = EchoProvider.chat(req, &cx).await.unwrap().collect().await;
+        assert!(matches!(
+            chunks[1].as_ref().unwrap(),
+            StreamChunk::Content { .. }
+        ));
+    }
 }

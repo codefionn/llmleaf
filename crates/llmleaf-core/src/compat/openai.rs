@@ -7,10 +7,11 @@
 
 use llmleaf_model::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Message, ModelError, Role, StreamChunk,
-    ToolCall, ToolChoice, ToolDef, Usage,
+    Thinking, ToolCall, ToolChoice, ToolDef, Usage,
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 
 fn mapping(msg: impl Into<String>) -> ModelError {
     ModelError::Mapping(msg.into())
@@ -53,6 +54,22 @@ pub fn parse_chat_request(value: Value) -> Result<ChatRequest, ModelError> {
     let tools = parse_tools(obj.remove("tools"))?;
     let tool_choice = parse_tool_choice(obj.remove("tool_choice"));
 
+    // A `reasoning_effort` the ladder can express becomes the canonical `thinking` knob, so *every*
+    // downstream dialect can speak it — the OpenAI wire re-emits its own `reasoning_effort` at that
+    // edge, while the budget-style providers (Anthropic, Gemini, Cohere) map it to a token budget they
+    // could never see from a passthrough. A vocabulary outside the ladder rides through `extra`
+    // untouched, exactly as before (principle 7).
+    let thinking = match obj.remove("reasoning_effort") {
+        Some(v) => match v.as_str().and_then(parse_reasoning_effort) {
+            Some(t) => Some(t),
+            None => {
+                obj.insert("reasoning_effort".into(), v);
+                None
+            }
+        },
+        None => None,
+    };
+
     // Whatever the consumer sent that we don't model rides through untouched.
     let extra = obj;
 
@@ -66,10 +83,27 @@ pub fn parse_chat_request(value: Value) -> Result<ChatRequest, ModelError> {
         stream,
         tools,
         tool_choice,
-        // The OpenAI surface keeps driving thinking via its own `reasoning_effort`, which rides through
-        // untouched in `extra` (above); the canonical `thinking` knob is left for callers that set it.
-        thinking: None,
+        thinking,
         extra,
+    })
+}
+
+/// An OpenAI-style `reasoning_effort` string → the canonical [`Thinking`] ladder. Accepts OpenAI's
+/// vocabulary (`minimal`/`low`/`medium`/`high`), the ladder's own serde names (`med`/`highx`), and the
+/// common extended rungs (`xhigh`/`max`). Anything else is not an error — the caller leaves it in
+/// `extra` to ride through verbatim.
+///
+/// `pub(crate)` so the Responses dialect ([`super::responses`]) reuses the exact same vocabulary when
+/// mapping its `reasoning.effort` onto the ladder — one source of truth, never a second copy that could
+/// drift (principle 3).
+pub(crate) fn parse_reasoning_effort(s: &str) -> Option<Thinking> {
+    Some(match s {
+        "minimal" | "low" => Thinking::Low,
+        "medium" | "med" => Thinking::Med,
+        "high" => Thinking::High,
+        "xhigh" | "highx" => Thinking::Highx,
+        "max" => Thinking::Max,
+        _ => return None,
     })
 }
 
@@ -281,10 +315,40 @@ struct ChoiceFrame<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Delta<'a> {
-    Role { role: &'static str },
-    Content { content: &'a str },
-    ToolCalls { tool_calls: [ToolCallFrame<'a>; 1] },
+    Role {
+        role: &'static str,
+    },
+    Content {
+        content: &'a str,
+    },
+    ToolCalls {
+        tool_calls: [ToolCallFrame<'a>; 1],
+    },
+    // Open reasoning text — the OpenRouter `delta.reasoning` extension; there is no stock-OpenAI
+    // chunk field for it. A client that doesn't know the field ignores the frame's empty-content
+    // delta harmlessly.
+    Reasoning {
+        reasoning: &'a str,
+    },
+    // A signed / redacted reasoning block, as one OpenRouter-style `reasoning_details` entry.
+    ReasoningDetails {
+        reasoning_details: [ReasoningDetailFrame<'a>; 1],
+    },
     Empty {},
+}
+
+/// One OpenRouter-style `reasoning_details[]` entry (`reasoning.text` carries `signature`,
+/// `reasoning.encrypted` carries `data`). Field order is sorted, like every frame here.
+#[derive(Serialize)]
+struct ReasoningDetailFrame<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[derive(Serialize)]
@@ -375,11 +439,64 @@ struct ChoiceView<'a> {
 #[derive(Serialize)]
 struct MessageView<'a> {
     content: &'a str,
+    // Open reasoning text and structured blocks — the OpenRouter `message.reasoning` /
+    // `message.reasoning_details` extensions, mirroring the streaming deltas above. Both are
+    // omitted for a choice with no thinking, so a non-reasoning response serialises exactly as
+    // before. `reasoning` is a `Cow`: one open block (the overwhelmingly common shape) borrows,
+    // multiple blocks concatenate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reasoning_details: Vec<ReasoningDetailFrame<'a>>,
     role: &'static str,
     // Omitted entirely when the choice has no tool calls — matches the old
     // `if !c.tool_calls.is_empty()` insert-or-skip.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<ToolCallView<'a>>,
+}
+
+/// The choice's open reasoning text: `None` when it has no open thinking block, a borrow of the one
+/// block's text in the common case, an owned concatenation when there are several.
+fn choice_reasoning(thinking: &[ContentPart]) -> Option<Cow<'_, str>> {
+    let mut open = thinking.iter().filter_map(|p| match p {
+        ContentPart::Thinking { thinking, .. } => Some(thinking.as_str()),
+        _ => None,
+    });
+    let first = open.next()?;
+    Some(match open.next() {
+        None => Cow::Borrowed(first),
+        Some(second) => {
+            let mut all = String::from(first);
+            all.push_str(second);
+            open.for_each(|t| all.push_str(t));
+            Cow::Owned(all)
+        }
+    })
+}
+
+/// The choice's thinking blocks as OpenRouter-style `reasoning_details[]` entries.
+fn choice_reasoning_details(thinking: &[ContentPart]) -> Vec<ReasoningDetailFrame<'_>> {
+    thinking
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::Thinking {
+                thinking,
+                signature,
+            } => Some(ReasoningDetailFrame {
+                data: None,
+                signature: signature.as_deref(),
+                text: Some(thinking),
+                kind: "reasoning.text",
+            }),
+            ContentPart::RedactedThinking { data } => Some(ReasoningDetailFrame {
+                data: Some(data),
+                signature: None,
+                text: None,
+                kind: "reasoning.encrypted",
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -408,6 +525,8 @@ pub(crate) fn completion_view(resp: &ChatResponse, created: u64) -> CompletionVi
             index: c.index,
             message: MessageView {
                 content: &c.text,
+                reasoning: choice_reasoning(&c.thinking),
+                reasoning_details: choice_reasoning_details(&c.thinking),
                 role: "assistant",
                 tool_calls: c
                     .tool_calls
@@ -496,11 +615,51 @@ impl ChunkEncoder {
                 }],
                 None,
             ),
-            // Reasoning has no OpenAI `chat.completion.chunk` representation; it is preserved on the
-            // canonical side for providers that round-trip it and produces no frame on this surface.
-            StreamChunk::Thinking { .. }
-            | StreamChunk::ThinkingSignature { .. }
-            | StreamChunk::RedactedThinking { .. } => return false,
+            // Reasoning surfaces as the OpenRouter extension fields — `delta.reasoning` for open
+            // text, `delta.reasoning_details` for signed/encrypted blocks — since stock OpenAI
+            // chunks have no representation for it and dropping it blinds every consumer downstream
+            // of the gateway (a reasoning model's visible thinking would vanish here).
+            StreamChunk::Thinking { index, delta } => self.write_frame(
+                buf,
+                &[ChoiceFrame {
+                    delta: Delta::Reasoning { reasoning: delta },
+                    finish_reason: None,
+                    index: *index,
+                }],
+                None,
+            ),
+            StreamChunk::ThinkingSignature { index, signature } => self.write_frame(
+                buf,
+                &[ChoiceFrame {
+                    delta: Delta::ReasoningDetails {
+                        reasoning_details: [ReasoningDetailFrame {
+                            data: None,
+                            signature: Some(signature),
+                            text: None,
+                            kind: "reasoning.text",
+                        }],
+                    },
+                    finish_reason: None,
+                    index: *index,
+                }],
+                None,
+            ),
+            StreamChunk::RedactedThinking { index, data } => self.write_frame(
+                buf,
+                &[ChoiceFrame {
+                    delta: Delta::ReasoningDetails {
+                        reasoning_details: [ReasoningDetailFrame {
+                            data: Some(data),
+                            signature: None,
+                            text: None,
+                            kind: "reasoning.encrypted",
+                        }],
+                    },
+                    finish_reason: None,
+                    index: *index,
+                }],
+                None,
+            ),
             StreamChunk::Usage(u) => self.write_frame(buf, &[], Some(UsageFrame::from(u))),
             StreamChunk::Finish { index, reason } => self.write_frame(
                 buf,
@@ -571,6 +730,130 @@ mod tests {
         let req = parse_chat_request(v).unwrap();
         assert_eq!(req.extra.get("seed"), Some(&json!(42)));
         assert!(req.extra.contains_key("logit_bias"));
+    }
+
+    #[test]
+    fn reasoning_effort_maps_to_canonical_thinking() {
+        let req = |effort: &str| {
+            parse_chat_request(json!({
+                "model": "gpt-4o",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "reasoning_effort": effort
+            }))
+            .unwrap()
+        };
+        assert_eq!(req("low").thinking, Some(Thinking::Low));
+        assert_eq!(req("minimal").thinking, Some(Thinking::Low));
+        assert_eq!(req("medium").thinking, Some(Thinking::Med));
+        assert_eq!(req("high").thinking, Some(Thinking::High));
+        assert_eq!(req("xhigh").thinking, Some(Thinking::Highx));
+        assert_eq!(req("max").thinking, Some(Thinking::Max));
+        // A mapped effort is consumed — it must not ALSO ride through `extra`, or the OpenAI wire
+        // edge would emit the consumer's raw string alongside its own canonical re-emission.
+        assert!(!req("low").extra.contains_key("reasoning_effort"));
+        // Outside the ladder → not canonical, rides through verbatim (the old behaviour).
+        let exotic = req("galaxy-brain");
+        assert_eq!(exotic.thinking, None);
+        assert_eq!(
+            exotic.extra.get("reasoning_effort"),
+            Some(&json!("galaxy-brain"))
+        );
+    }
+
+    #[test]
+    fn encode_reasoning_frames() {
+        let enc = ChunkEncoder::new("resp-1", "gpt-4o", 1000);
+        let mut buf = Vec::new();
+
+        // Open reasoning text → OpenRouter-style `delta.reasoning`.
+        assert!(enc.encode_into(
+            &StreamChunk::Thinking {
+                index: 0,
+                delta: "weighing options".into()
+            },
+            &mut buf
+        ));
+        let frame: Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(
+            frame["choices"][0]["delta"]["reasoning"],
+            "weighing options"
+        );
+
+        // A signature rides as a `reasoning.text` details entry.
+        assert!(enc.encode_into(
+            &StreamChunk::ThinkingSignature {
+                index: 0,
+                signature: "sig-abc".into()
+            },
+            &mut buf
+        ));
+        let frame: Value = serde_json::from_slice(&buf).unwrap();
+        let d = &frame["choices"][0]["delta"]["reasoning_details"][0];
+        assert_eq!(d["type"], "reasoning.text");
+        assert_eq!(d["signature"], "sig-abc");
+
+        // A redacted block rides as a `reasoning.encrypted` details entry.
+        assert!(enc.encode_into(
+            &StreamChunk::RedactedThinking {
+                index: 0,
+                data: "opaque".into()
+            },
+            &mut buf
+        ));
+        let frame: Value = serde_json::from_slice(&buf).unwrap();
+        let d = &frame["choices"][0]["delta"]["reasoning_details"][0];
+        assert_eq!(d["type"], "reasoning.encrypted");
+        assert_eq!(d["data"], "opaque");
+    }
+
+    #[test]
+    fn collected_response_carries_reasoning() {
+        let resp = ChatResponse {
+            id: "r1".into(),
+            model: "m".into(),
+            choices: vec![llmleaf_model::Choice {
+                index: 0,
+                text: "answer".into(),
+                thinking: vec![
+                    ContentPart::Thinking {
+                        thinking: "step by step".into(),
+                        signature: Some("sig-xyz".into()),
+                    },
+                    ContentPart::RedactedThinking {
+                        data: "opaque".into(),
+                    },
+                ],
+                tool_calls: Vec::new(),
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage::default(),
+        };
+        let v = serde_json::to_value(response_to_openai(&resp, 1000)).unwrap();
+        let msg = &v["choices"][0]["message"];
+        assert_eq!(msg["content"], "answer");
+        assert_eq!(msg["reasoning"], "step by step");
+        assert_eq!(msg["reasoning_details"][0]["type"], "reasoning.text");
+        assert_eq!(msg["reasoning_details"][0]["signature"], "sig-xyz");
+        assert_eq!(msg["reasoning_details"][1]["type"], "reasoning.encrypted");
+
+        // A choice with no thinking serialises without either field — byte-compatible with the
+        // pre-reasoning shape.
+        let bare = ChatResponse {
+            id: "r2".into(),
+            model: "m".into(),
+            choices: vec![llmleaf_model::Choice {
+                index: 0,
+                text: "plain".into(),
+                thinking: Vec::new(),
+                tool_calls: Vec::new(),
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: Usage::default(),
+        };
+        let v = serde_json::to_value(response_to_openai(&bare, 1000)).unwrap();
+        let msg = v["choices"][0]["message"].as_object().unwrap();
+        assert!(!msg.contains_key("reasoning"));
+        assert!(!msg.contains_key("reasoning_details"));
     }
 
     #[test]
