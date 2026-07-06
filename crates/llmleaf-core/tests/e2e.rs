@@ -609,6 +609,162 @@ async fn inbound_mutation_surfaces_are_gone() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// OpenAI Responses surface (`POST /v1/responses`) — a third chat dialect on the same core
+// ---------------------------------------------------------------------------------------------
+
+/// Build a `POST /v1/responses` request with the `local` bearer.
+fn responses_request(model: &str, stream: bool) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": model,
+                "stream": stream,
+                "input": "hello",
+                "store": true
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn responses_non_streaming_round_trip() {
+    let (app, _bus) = app_and_bus();
+    let resp = app.oneshot(responses_request("demo", false)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+
+    assert_eq!(v["object"], "response");
+    assert_eq!(v["model"], "demo");
+    assert_eq!(v["status"], "completed");
+    assert!(v["id"].as_str().unwrap().starts_with("resp_"));
+    // Stateless: `store: true` in the request is answered `false`.
+    assert_eq!(v["store"], false);
+    // The visible answer is a `message` output item.
+    let output = v["output"].as_array().unwrap();
+    let msg = output.iter().find(|i| i["type"] == "message").unwrap();
+    assert_eq!(msg["role"], "assistant");
+    assert_eq!(msg["content"][0]["type"], "output_text");
+    assert_eq!(msg["content"][0]["text"], "reply to: hello");
+    // Usage in the Responses shape, relayed from the provider's 4/3/7 report.
+    assert_eq!(v["usage"]["input_tokens"], 4);
+    assert_eq!(v["usage"]["output_tokens"], 3);
+    assert_eq!(v["usage"]["total_tokens"], 7);
+}
+
+#[tokio::test]
+async fn responses_streaming_emits_event_sequence() {
+    let (app, _bus) = app_and_bus();
+    let resp = app.oneshot(responses_request("demo", true)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.starts_with("text/event-stream"), "got {ct}");
+
+    let text = body_text(resp).await;
+    // The Responses event lifecycle, in order, carried as named SSE events.
+    let order = [
+        "event: response.created",
+        "event: response.in_progress",
+        "event: response.output_item.added",
+        "event: response.content_part.added",
+        "event: response.output_text.delta",
+        "event: response.output_text.done",
+        "event: response.content_part.done",
+        "event: response.output_item.done",
+        "event: response.completed",
+    ];
+    let mut cursor = 0usize;
+    for needle in order {
+        let at = text[cursor..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}` after position {cursor} in:\n{text}"));
+        cursor += at + needle.len();
+    }
+    // The streamed text and the terminal snapshot's usage both landed.
+    assert!(text.contains("reply to: hello"));
+    assert!(text.contains("\"output_tokens\":3"));
+    // No OpenAI `[DONE]` sentinel on the Responses dialect.
+    assert!(!text.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn responses_previous_response_id_is_bad_request() {
+    // Stateless: continuing from a stored response is unsupported and rejected at the map-in edge.
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": "demo",
+                "input": "hi",
+                "previous_response_id": "resp_abc"
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("previous_response_id"));
+}
+
+#[tokio::test]
+async fn responses_missing_bearer_is_unauthorized() {
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"model":"demo","input":"hi"}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn responses_retrieval_is_404_stateless() {
+    // Retrieval is unsupported by design; the client is told exactly why (P7).
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/responses/resp_xyz")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let v = body_json(resp).await;
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("stateless"));
+    assert!(msg.contains("store"));
+
+    // Even the always-404 stub authenticates first — the unauthenticated surface is enumerated in
+    // SOUL.md (`/healthz`, `/v1/openapi.json`) and this endpoint is not on it.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/responses/resp_xyz")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------------------------
 // The new modalities: embeddings, speech (TTS), transcription (STT) — through the real HTTP edge.
 // ---------------------------------------------------------------------------------------------
 
@@ -1226,6 +1382,8 @@ async fn openapi_documents_every_served_consumer_path() {
         "/v1/openapi.json",
         "/v1/chat/completions",
         "/v1/messages",
+        "/v1/responses",
+        "/v1/responses/{id}",
         "/v1/embeddings",
         "/v1/audio/speech",
         "/v1/audio/voices",

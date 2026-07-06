@@ -67,6 +67,19 @@ enum Op {
 
 const ALL_OPS: [Op; 2] = [Op::Chat, Op::Embed];
 
+/// Which chat wire the provider is pinned to for one op. The `openai` brand serves two chat dialects —
+/// the classic `/chat/completions` SSE and the Responses API's typed-event SSE — and both must survive
+/// every scripted fault identically, so the wire is one more seeded dimension. Pinned explicitly via
+/// `settings.chat_api` (never left to the brand default) so the scenario stays a pure function of the
+/// seed even if the brand's default wire changes again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wire {
+    Completions,
+    Responses,
+}
+
+const ALL_WIRES: [Wire; 2] = [Wire::Completions, Wire::Responses];
+
 /// The canonical content + usage a healthy chat response carries — the single source of truth the canned
 /// SSE body and the reference assertion both read, so they can never drift apart.
 const CHAT_ID: &str = "chatcmpl-sim";
@@ -122,6 +135,36 @@ fn healthy_chat_sse() -> String {
     )
 }
 
+/// A canned, well-formed Responses-API typed-event SSE stream carrying the very same id/model/content/
+/// usage truths as [`healthy_chat_sse`]: `response.created`, one `output_text` delta, then the terminal
+/// `response.completed` with usage (no `[DONE]` on this dialect). Parsed by the real provider's
+/// [`llmleaf_providers::openai_responses_wire::openai_responses_sse_to_stream`].
+fn healthy_responses_sse() -> String {
+    let created = serde_json::json!({
+        "type": "response.created",
+        "response": { "id": CHAT_ID, "model": CHAT_MODEL, "status": "in_progress" },
+    });
+    let delta = serde_json::json!({
+        "type": "response.output_text.delta",
+        "item_id": "msg_sim",
+        "delta": CHAT_CONTENT,
+    });
+    let completed = serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": CHAT_ID,
+            "model": CHAT_MODEL,
+            "status": "completed",
+            "usage": {
+                "input_tokens": CHAT_USAGE.prompt_tokens,
+                "output_tokens": CHAT_USAGE.completion_tokens,
+                "total_tokens": CHAT_USAGE.total_tokens,
+            },
+        },
+    });
+    format!("data: {created}\n\ndata: {delta}\n\ndata: {completed}\n\n")
+}
+
 /// A canned, well-formed OpenAI-wire embeddings response (one float vector + usage), parsed by the real
 /// provider's [`llmleaf_providers::openai_wire::openai_to_embeddings`].
 fn healthy_embed_json() -> serde_json::Value {
@@ -136,12 +179,15 @@ fn healthy_embed_json() -> serde_json::Value {
     })
 }
 
-/// Build a fresh [`FakeHttpTransport`] scripted for exactly `fault` on `op`. A fresh transport per op
-/// (no shared mutable responder) keeps behaviour a pure function of the seed.
-fn transport_for(op: Op, fault: Fault) -> FakeHttpTransport {
+/// Build a fresh [`FakeHttpTransport`] scripted for exactly `fault` on `op` over `wire`. A fresh
+/// transport per op (no shared mutable responder) keeps behaviour a pure function of the seed.
+fn transport_for(op: Op, wire: Wire, fault: Fault) -> FakeHttpTransport {
     match fault {
         Fault::Healthy => match op {
-            Op::Chat => FakeHttpTransport::sse(healthy_chat_sse()),
+            Op::Chat => match wire {
+                Wire::Completions => FakeHttpTransport::sse(healthy_chat_sse()),
+                Wire::Responses => FakeHttpTransport::sse(healthy_responses_sse()),
+            },
             Op::Embed => FakeHttpTransport::json(healthy_embed_json()),
         },
         Fault::TransportFail => {
@@ -155,7 +201,8 @@ fn transport_for(op: Op, fault: Fault) -> FakeHttpTransport {
         }
         // A 200 with a body the JSON/SSE parser cannot make sense of. For embeddings this hits
         // `post_json`'s JSON parse (→ Mapping); for chat the SSE frame is non-JSON after `data:`
-        // (→ Mapping from `openai_sse_to_stream`).
+        // (→ Mapping from `openai_sse_to_stream` and `openai_responses_sse_to_stream` alike — the
+        // classification must not depend on the wire).
         Fault::MalformedJson => match op {
             Op::Chat => {
                 FakeHttpTransport::sse("data: this is not json at all\n\n".as_bytes().to_vec())
@@ -194,11 +241,19 @@ fn expect(op: Op, fault: Fault) -> Expect {
 }
 
 /// A `ProviderCx` with a credential and endpoint, so the real provider builds a fully-formed request
-/// (the fake transport ignores the URL, but the provider's auth/URL building still runs).
-fn cx() -> ProviderCx {
+/// (the fake transport ignores the URL, but the provider's auth/URL building still runs). The chat wire
+/// is pinned explicitly per scenario pick — never left to the brand default (see [`Wire`]).
+fn cx(wire: Wire) -> ProviderCx {
+    let chat_api = match wire {
+        Wire::Completions => "chat_completions",
+        Wire::Responses => "responses",
+    };
+    let mut settings = serde_json::Map::new();
+    settings.insert("chat_api".into(), serde_json::json!(chat_api));
     ProviderCx {
         credential: Some("k".into()),
         endpoint: Some("https://example.test".into()),
+        settings,
         ..Default::default()
     }
 }
@@ -210,6 +265,7 @@ fn cx() -> ProviderCx {
 async fn drive(
     provider: &OpenAiCompatProvider,
     op: Op,
+    wire: Wire,
     seed: u64,
     step: u64,
 ) -> Result<Expect, String> {
@@ -228,7 +284,7 @@ async fn drive(
                 thinking: None,
                 extra: Default::default(),
             };
-            match provider.chat(req, &cx()).await {
+            match provider.chat(req, &cx(wire)).await {
                 // `chat` may fail at the transport stage (TransportFail / non-2xx Upstream) or only once
                 // the SSE stream is consumed (a malformed frame). Collecting the stream surfaces the
                 // latter, so this exercises the whole parse path (principle 4).
@@ -265,7 +321,7 @@ async fn drive(
                 encoding_format: None,
                 extra: Default::default(),
             };
-            match provider.embed(req, &cx()).await {
+            match provider.embed(req, &cx(wire)).await {
                 Ok(resp) => {
                     ensure!(
                         resp.model == EMBED_MODEL,
@@ -313,23 +369,24 @@ pub async fn run_scenario(seed: u64) -> Result<(), String> {
     let nops = rng.range(40, 90);
     for step in 0..nops {
         let op = *rng.pick(&ALL_OPS);
+        let wire = *rng.pick(&ALL_WIRES);
         let fault = *rng.pick(&ALL_FAULTS);
 
         // A real provider, freshly built with a transport scripted for exactly this seed's fault — so
         // behaviour is a pure function of the seed (no shared mutable responder across ops).
         let transports = Transports {
-            http: std::sync::Arc::new(transport_for(op, fault)),
+            http: std::sync::Arc::new(transport_for(op, wire, fault)),
             ..Transports::fake()
         };
         let brand = Brand::for_kind("openai").expect("openai is a known brand");
         let provider = OpenAiCompatProvider::new(brand, &transports);
 
-        let actual = drive(&provider, op, seed, step).await?;
+        let actual = drive(&provider, op, wire, seed, step).await?;
         let expected = expect(op, fault);
 
         ensure!(
             actual == expected,
-            "seed={seed} step={step}: op={op:?} fault={fault:?}\n  actual:   {actual:?}\n  expected: {expected:?}"
+            "seed={seed} step={step}: op={op:?} wire={wire:?} fault={fault:?}\n  actual:   {actual:?}\n  expected: {expected:?}"
         );
     }
 

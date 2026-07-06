@@ -93,7 +93,8 @@ const CEILINGS: &[(&str, u64)] = &[
     // the request body, parses the JSON response, and rebuilds the canonical response. Ceilings sit a
     // little above the observed counts, same as every budget above.
     ("provider/openai_chat_sse", 160), // ~133 (request build + SSE parse + collect)
-    ("provider/openai_embed", 64),     // ~51 (request build + JSON response parse)
+    ("provider/openai_responses_sse", 152), // ~126 (Responses build + typed-event SSE parse + collect)
+    ("provider/openai_embed", 64),          // ~51 (request build + JSON response parse)
 ];
 
 #[test]

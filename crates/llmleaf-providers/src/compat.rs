@@ -21,6 +21,10 @@ use std::sync::Arc;
 
 use crate::batch::{build_jsonl, jsonl_result_stream};
 use crate::http::{post_json, send_checked};
+use crate::openai_responses_wire::{
+    needs_chat_completions, openai_responses_sse_to_stream, openai_responses_to_chunks,
+    request_to_openai_responses, ResponsesFlavor,
+};
 use crate::openai_wire::{
     audio_content_type, decode_speech_envelope, embedding_request_to_openai,
     mistral_voices_to_canonical, openai_speech_model, openai_sse_to_stream, openai_to_chunks,
@@ -71,6 +75,20 @@ pub enum UrlStyle {
     Standard,
     /// `<endpoint>/openai/deployments/<model>/chat/completions?api-version=<v>` — Azure OpenAI.
     Azure,
+}
+
+/// Which chat wire a brand serves. OpenAI-wire is not uniform here: OpenAI and xAI have made the
+/// Responses API (`POST /responses`) their primary chat surface, while the rest of the family still
+/// defaults to the older `/chat/completions`. This selects the request/response mapping and the endpoint
+/// path; the choice is a brand default an operator can override per instance via `settings.chat_api`, and
+/// a single request can transparently fall back to [`ChatApi::Completions`] when it carries chat-only
+/// fields the Responses endpoint rejects (see [`crate::openai_responses_wire::needs_chat_completions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatApi {
+    /// The classic `/chat/completions` dialect ([`crate::openai_wire`]).
+    Completions,
+    /// OpenAI's Responses API `/responses` ([`crate::openai_responses_wire`]).
+    Responses,
 }
 
 /// Cerebras's *public*, unauthenticated model catalog (`GET /public/v1/models`). Far richer than the
@@ -138,6 +156,15 @@ pub struct Brand {
     pub filter_inactive_models: bool,
     /// Which batch dialect this brand speaks (default [`BatchFlavor::Unsupported`]).
     pub batch_flavor: BatchFlavor,
+    /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for all but OpenAI and
+    /// xAI, whose primary chat surface is now the Responses API). Overridable per instance via
+    /// `settings.chat_api`.
+    pub chat_api: ChatApi,
+    /// Which Responses-wire flavor the brand's `POST /responses` endpoint speaks (see
+    /// [`ResponsesFlavor`]): [`ResponsesFlavor::OpenRouter`] for OpenRouter's beta endpoint (open
+    /// reasoning + signature replay), [`ResponsesFlavor::OpenAi`] for everyone else. Only consulted when
+    /// the effective chat API is [`ChatApi::Responses`].
+    pub responses_flavor: ResponsesFlavor,
 }
 
 impl Brand {
@@ -160,6 +187,8 @@ impl Brand {
             models_query: "",
             filter_inactive_models: false,
             batch_flavor: BatchFlavor::Unsupported,
+            chat_api: ChatApi::Completions,
+            responses_flavor: ResponsesFlavor::OpenAi,
         };
         let bc = |name, default_endpoint, auth| Brand {
             name,
@@ -177,13 +206,18 @@ impl Brand {
             models_query: "",
             filter_inactive_models: false,
             batch_flavor: BatchFlavor::Unsupported,
+            chat_api: ChatApi::Completions,
+            responses_flavor: ResponsesFlavor::OpenAi,
         };
         Some(match kind {
-            // OpenAI is the one brand with a native Realtime WebSocket upstream.
+            // OpenAI is the one brand with a native Realtime WebSocket upstream, and the one whose primary
+            // chat surface is now the Responses API (`POST /responses`) — every OpenAI chat model serves
+            // on it, so it is the brand default (an operator can pin it back with `chat_api`).
             "openai" => Brand {
                 realtime_native: true,
                 models_api: true,
                 batch_flavor: BatchFlavor::OpenAi,
+                chat_api: ChatApi::Responses,
                 ..bc("openai", "https://api.openai.com/v1", AuthStyle::Bearer)
             },
             // OpenRouter's `/audio/transcriptions` takes a JSON body with base64 audio, not the OpenAI
@@ -194,6 +228,11 @@ impl Brand {
                 // OpenRouter's `/models` defaults to `output_modalities=text`; without `=all` the
                 // catalog omits TTS models (audio output), so a speech model could never be listed.
                 models_query: "output_modalities=all",
+                // OpenRouter serves its own Responses endpoint (`POST /api/v1/responses`, currently
+                // beta) in the OpenRouter flavor: open reasoning + per-item signatures replay across
+                // its providers, and usage carries the routed cost. The default chat wire stays
+                // completions while the endpoint is beta — opt in with `chat_api = "responses"`.
+                responses_flavor: ResponsesFlavor::OpenRouter,
                 ..b(
                     "openrouter",
                     "https://openrouter.ai/api/v1",
@@ -212,16 +251,29 @@ impl Brand {
             // standard `<endpoint>/models` shape resolves to `https://api.groq.com/openai/v1/models`) and
             // mirrors OpenAI's batch shape. Its listing is the one that flags retired-but-still-listed
             // models with `active: false` — drop those so the catalog only advertises live models.
+            // Groq also serves its own Responses API (the standard `<endpoint>/responses` shape resolves
+            // to the documented `https://api.groq.com/openai/v1/responses`), speaking the Groq flavor:
+            // open unsigned reasoning replay, no `include`/encrypted reasoning. It is beta, so like
+            // OpenRouter the default stays chat completions — opt in with `chat_api = "responses"`.
             "groq" => Brand {
                 models_api: true,
                 filter_inactive_models: true,
                 batch_flavor: BatchFlavor::OpenAi,
+                responses_flavor: ResponsesFlavor::Groq,
                 ..b("groq", "https://api.groq.com/openai/v1", AuthStyle::Bearer)
             },
             // DeepSeek's base has no `/v1` segment (verified against official docs).
             "deepseek" => b("deepseek", "https://api.deepseek.com", AuthStyle::Bearer),
-            // xAI deprecates max_tokens in favor of max_completion_tokens.
-            "xai" | "grok" => bc("xai", "https://api.x.ai/v1", AuthStyle::Bearer),
+            // xAI deprecates max_tokens in favor of max_completion_tokens. Its Responses API
+            // (`https://api.x.ai/v1/responses`) is its documented-preferred chat surface ("the preferred
+            // way of interacting with our models via API") and speaks the stock OpenAI flavor — `store`
+            // and `include: ["reasoning.encrypted_content"]` are both documented, so the statelessness
+            // defaults apply verbatim — so like OpenAI it is the brand default. The 404/405 downgrade
+            // still covers an upstream without it, and an operator can pin `chat_api = "completions"`.
+            "xai" | "grok" => Brand {
+                chat_api: ChatApi::Responses,
+                ..bc("xai", "https://api.x.ai/v1", AuthStyle::Bearer)
+            },
             // Mistral exposes a real `GET /v1/audio/voices` listing — fetch it live. Its batch API is
             // its own "jobs" dialect (`/v1/batch/jobs`), not OpenAI's `/v1/batches`.
             "mistral" => Brand {
@@ -286,6 +338,15 @@ impl Brand {
                 // Azure batch is resource-scoped (`/openai/batches?api-version=`), not under the
                 // deployment URL its chat uses — handled by the AzureOpenAi batch flavor.
                 batch_flavor: BatchFlavor::AzureOpenAi,
+                // Azure serves the Responses API only on its *v1* surface — resource-scoped
+                // (`<endpoint>/openai/v1/responses`, built by `responses_url`; the deployment name rides
+                // in the body `model`), never the deployment-scoped shape chat completions uses. That
+                // surface is region- and feature-gated, so the brand default stays chat completions; an
+                // operator opts a resource in with `chat_api = "responses"` (the 404/405 downgrade covers
+                // a resource where the surface isn't enabled). The wire is stock OpenAI, including the
+                // store/include statelessness defaults.
+                chat_api: ChatApi::Completions,
+                responses_flavor: ResponsesFlavor::OpenAi,
             },
             _ => return None,
         })
@@ -362,6 +423,101 @@ impl OpenAiCompatProvider {
 
     fn build_url(&self, cx: &ProviderCx, model: &str) -> String {
         self.url_for(cx, model, "chat/completions")
+    }
+
+    /// The Responses API URL (`POST /responses`). Standard brands append the path to the base like any
+    /// other op. Azure is NOT [`Self::url_for`]'s deployment-scoped shape: its Responses API serves only
+    /// on the *v1* surface, resource-scoped (`<endpoint>/openai/v1/responses`), with the deployment name
+    /// riding in the body `model`. The v1 GA surface takes no `api-version` — the classic data-plane
+    /// versions (`settings.api_version`, e.g. `2024-10-21`) are not valid there and must not leak onto
+    /// this URL — but an operator can pin one (e.g. `preview`, for preview-only features) via the
+    /// dedicated `settings.responses_api_version`. The base is [`Self::batch_endpoint`] — the shared
+    /// "config override or brand default, trailing slash trimmed" resolution `models_url` also reuses.
+    fn responses_url(&self, cx: &ProviderCx) -> String {
+        let e = self.batch_endpoint(cx);
+        match self.brand.url_style {
+            UrlStyle::Standard => format!("{e}/responses"),
+            UrlStyle::Azure => match cx.setting_str("responses_api_version") {
+                Some(v) => format!("{e}/openai/v1/responses?api-version={v}"),
+                None => format!("{e}/openai/v1/responses"),
+            },
+        }
+    }
+
+    /// Resolve the effective chat API for a request: the brand default, overridden by the operator's
+    /// `settings.chat_api`, then downgraded to `/chat/completions` for this one request when it carries a
+    /// chat-completions-only feature the Responses endpoint rejects.
+    ///
+    /// The setting accepts `"responses"` and `"chat_completions"`/`"completions"`; any other value is
+    /// ignored and the brand default stands (an operator typo must never silently change the wire). This
+    /// lets an operator opt any OpenAI-wire brand (groq, fireworks, openrouter, azure, …) into Responses,
+    /// or pin OpenAI/xAI back to chat completions. The per-request downgrade is the documented transparent
+    /// fallback (principle 7: a chat-only field is served where it is legal, never dropped).
+    fn effective_chat_api(&self, cx: &ProviderCx, req: &ChatRequest) -> ChatApi {
+        let mut api = self.brand.chat_api;
+        match cx.setting_str("chat_api") {
+            Some("responses") => api = ChatApi::Responses,
+            Some("chat_completions") | Some("completions") => api = ChatApi::Completions,
+            _ => {} // absent or unrecognized: keep the brand default.
+        }
+        if api == ChatApi::Responses && needs_chat_completions(req) {
+            api = ChatApi::Completions;
+        }
+        api
+    }
+
+    /// The classic `/chat/completions` chat path — the original two branches: a brand that doesn't stream
+    /// cleanly collects the whole response and re-chunks it; a streaming brand parses SSE incrementally so
+    /// tokens flow as they arrive (principle 4). The canonical boundary is a stream either way.
+    ///
+    /// Takes `&ChatRequest` (it only reads it): this lets [`Provider::chat`] borrow one request across
+    /// both wire paths so the Responses→Completions endpoint downgrade needs no clone of the whole
+    /// request (principle 1 — the only allocation is the `req.model` `String` the SSE model-id fallback
+    /// already required).
+    async fn chat_completions(
+        &self,
+        req: &ChatRequest,
+        cx: &ProviderCx,
+    ) -> Result<ResponseStream, ModelError> {
+        let url = self.build_url(cx, &req.model);
+        if !self.brand.supports_stream {
+            let body = request_to_openai(req, self.brand.max_tokens_field, false);
+            let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
+            let value = post_json(&*self.http, http_req).await?;
+            let chunks = openai_to_chunks(value, &req.model);
+            return Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))));
+        }
+        let body = request_to_openai(req, self.brand.max_tokens_field, true);
+        let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(openai_sse_to_stream(resp.body, req.model.clone()))
+    }
+
+    /// The OpenAI Responses API (`POST /responses`) chat path — the mirror of [`Self::chat_completions`]
+    /// over the Responses wire ([`crate::openai_responses_wire`]), with the same non-streaming/streaming
+    /// split. The URL comes from [`Self::responses_url`] — for [`UrlStyle::Azure`] that is the
+    /// resource-scoped v1 surface, not the deployment shape chat completions uses.
+    ///
+    /// Borrows `&ChatRequest` for the same reason as [`Self::chat_completions`]: one request served over
+    /// either wire with no per-retry clone.
+    async fn chat_responses(
+        &self,
+        req: &ChatRequest,
+        cx: &ProviderCx,
+    ) -> Result<ResponseStream, ModelError> {
+        let url = self.responses_url(cx);
+        let flavor = self.brand.responses_flavor;
+        if !self.brand.supports_stream {
+            let body = request_to_openai_responses(req, false, flavor);
+            let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
+            let value = post_json(&*self.http, http_req).await?;
+            let chunks = openai_responses_to_chunks(value, &req.model);
+            return Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))));
+        }
+        let body = request_to_openai_responses(req, true, flavor);
+        let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(openai_responses_sse_to_stream(resp.body, req.model.clone()))
     }
 
     /// Apply the brand's auth header and the brand-agnostic passthrough headers (org id, OpenRouter
@@ -782,25 +938,29 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
-        let url = self.build_url(cx, &req.model);
-
-        // Brands that don't stream cleanly: collect the whole response and re-chunk it (the original
-        // path). The canonical boundary is a stream either way (principle 4).
-        if !self.brand.supports_stream {
-            let body = request_to_openai(&req, self.brand.max_tokens_field, false);
-            let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
-            let value = post_json(&*self.http, http_req).await?;
-            let chunks = openai_to_chunks(value, &req.model);
-            return Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))));
+        // Endpoint selection is the only thing this level decides; each wire path owns its own mapping.
+        // The helpers borrow `&req`, so the Responses→Completions retry below reuses the same request
+        // with no clone of the whole `ChatRequest` (principle 1: every allocation justified).
+        match self.effective_chat_api(cx, &req) {
+            ChatApi::Completions => self.chat_completions(&req, cx).await,
+            // An operator can opt any OpenAI-wire brand into Responses (`settings.chat_api`), but a
+            // brand/deployment that turns out not to serve `POST /responses` must degrade to the endpoint
+            // that is universally served rather than hard-fail (principle 8: fail toward availability).
+            // Only 404/405 trigger it — they mean "no such endpoint here" and arrive from
+            // `send_checked`/`post_json` as `Upstream{status}` *before* any SSE byte has flowed, so the
+            // retry can never splice into a half-streamed response. The request itself is never mutated,
+            // only the endpoint choice — the same transparent nature as the per-request
+            // `needs_chat_completions` downgrade (principle 7: a documented mapping, not silent magic).
+            // Every other status (401/429/5xx) keeps its meaning and stays fallback-eligible at the
+            // engine's provider-chain level, not here: the engine still sees one `chat()` that either
+            // succeeds or fails once (no double health penalty, no duplicate events).
+            ChatApi::Responses => match self.chat_responses(&req, cx).await {
+                Err(ModelError::Upstream {
+                    status: 404 | 405, ..
+                }) => self.chat_completions(&req, cx).await,
+                other => other,
+            },
         }
-
-        // Streaming brands: ask upstream for SSE and parse it incrementally into canonical chunks, so
-        // tokens flow as they arrive (principle 4). Both the realtime bridge and the SSE consumer
-        // surface get genuinely live output instead of a collected-then-replayed response.
-        let body = request_to_openai(&req, self.brand.max_tokens_field, true);
-        let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(openai_sse_to_stream(resp.body, req.model.clone()))
     }
 
     async fn embed(
@@ -1624,5 +1784,172 @@ mod tests {
         assert_eq!(batch_result_file_ids(&v), ["out"]);
         // No files yet → empty, which the caller turns into "no output file yet".
         assert!(batch_result_file_ids(&json!({})).is_empty());
+    }
+
+    fn chat_req(model: &str) -> ChatRequest {
+        use llmleaf_model::{Message, Role};
+        ChatRequest {
+            model: model.into(),
+            messages: vec![Message::text(Role::User, "hi")],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            stream: false,
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            extra: Default::default(),
+        }
+    }
+
+    fn cx_with_chat_api(value: &str) -> ProviderCx {
+        ProviderCx {
+            settings: serde_json::from_value(json!({ "chat_api": value })).unwrap(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn openai_defaults_to_responses_others_to_completions() {
+        // OpenAI and xAI document the Responses API as their primary chat surface — brand default.
+        for kind in ["openai", "xai", "grok"] {
+            assert_eq!(
+                Brand::for_kind(kind).unwrap().chat_api,
+                ChatApi::Responses,
+                "{kind} must default to the Responses API"
+            );
+        }
+        // Every other OpenAI-wire brand — and Azure — defaults to chat completions. OpenRouter and
+        // Groq because their Responses endpoints are beta; Azure because its v1 Responses surface is
+        // region/feature-gated. All stay opt-in (`chat_api = "responses"`).
+        for kind in ["openrouter", "groq", "together", "deepseek", "azure"] {
+            assert_eq!(
+                Brand::for_kind(kind).unwrap().chat_api,
+                ChatApi::Completions,
+                "{kind} must default to chat completions"
+            );
+        }
+        // OpenRouter's `/responses` endpoint speaks the OpenRouter flavor (open reasoning + signature
+        // replay) and Groq's speaks the Groq flavor (open unsigned reasoning, no `include`); everyone
+        // else's is stock OpenAI.
+        assert_eq!(
+            Brand::for_kind("openrouter").unwrap().responses_flavor,
+            ResponsesFlavor::OpenRouter
+        );
+        assert_eq!(
+            Brand::for_kind("groq").unwrap().responses_flavor,
+            ResponsesFlavor::Groq
+        );
+        for kind in ["openai", "xai", "together", "deepseek", "azure"] {
+            assert_eq!(
+                Brand::for_kind(kind).unwrap().responses_flavor,
+                ResponsesFlavor::OpenAi,
+                "{kind} must speak the stock OpenAI Responses flavor"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_url_standard_and_azure_v1() {
+        let t = crate::transport::Transports::fake();
+        // Standard brands append `/responses` to the base — xAI's documented URL.
+        let xai = OpenAiCompatProvider::for_kind("xai", &t).unwrap();
+        assert_eq!(
+            xai.responses_url(&ProviderCx::default()),
+            "https://api.x.ai/v1/responses"
+        );
+        // Azure: resource-scoped on the v1 surface — NOT the deployment-scoped chat shape, and with NO
+        // api-version by default (the v1 GA surface takes none).
+        let az =
+            OpenAiCompatProvider::for_kind("azure", &crate::transport::Transports::fake()).unwrap();
+        let cx = ProviderCx {
+            endpoint: Some("https://my-res.openai.azure.com".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            az.responses_url(&cx),
+            "https://my-res.openai.azure.com/openai/v1/responses"
+        );
+        // The classic data-plane `api_version` (chat's deployment surface) must NOT leak onto the v1
+        // URL; the dedicated `responses_api_version` pins one when an operator needs preview features.
+        let cx = ProviderCx {
+            endpoint: Some("https://my-res.openai.azure.com".into()),
+            settings: serde_json::from_value(json!({
+                "api_version": "2024-10-21",
+                "responses_api_version": "preview"
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            az.responses_url(&cx),
+            "https://my-res.openai.azure.com/openai/v1/responses?api-version=preview"
+        );
+    }
+
+    #[test]
+    fn effective_chat_api_honors_brand_default_and_settings_override() {
+        let t = crate::transport::Transports::fake();
+        let openai = OpenAiCompatProvider::for_kind("openai", &t).unwrap();
+        let groq = OpenAiCompatProvider::for_kind("groq", &t).unwrap();
+        let default_cx = ProviderCx::default();
+
+        // Brand default with no setting.
+        assert_eq!(
+            openai.effective_chat_api(&default_cx, &chat_req("gpt-5")),
+            ChatApi::Responses
+        );
+        assert_eq!(
+            groq.effective_chat_api(&default_cx, &chat_req("llama")),
+            ChatApi::Completions
+        );
+
+        // Settings override both directions: pin OpenAI back to completions; opt groq into responses.
+        assert_eq!(
+            openai.effective_chat_api(&cx_with_chat_api("chat_completions"), &chat_req("gpt-5")),
+            ChatApi::Completions
+        );
+        assert_eq!(
+            openai.effective_chat_api(&cx_with_chat_api("completions"), &chat_req("gpt-5")),
+            ChatApi::Completions
+        );
+        assert_eq!(
+            groq.effective_chat_api(&cx_with_chat_api("responses"), &chat_req("llama")),
+            ChatApi::Responses
+        );
+
+        // An unrecognized setting is ignored — the brand default stands (no silent wire change).
+        assert_eq!(
+            openai.effective_chat_api(&cx_with_chat_api("nonsense"), &chat_req("gpt-5")),
+            ChatApi::Responses
+        );
+    }
+
+    #[test]
+    fn effective_chat_api_downgrades_per_request_for_chat_only_fields() {
+        let t = crate::transport::Transports::fake();
+        let openai = OpenAiCompatProvider::for_kind("openai", &t).unwrap();
+        let cx = ProviderCx::default();
+
+        // A canonical `stop` has no Responses representation → serve this request over chat completions.
+        let mut req = chat_req("gpt-5");
+        req.stop = vec!["\n".into()];
+        assert_eq!(openai.effective_chat_api(&cx, &req), ChatApi::Completions);
+
+        // A chat-only `extra` field (`response_format`) forces the same downgrade.
+        let mut req = chat_req("gpt-5");
+        req.extra
+            .insert("response_format".into(), json!({ "type": "json_object" }));
+        assert_eq!(openai.effective_chat_api(&cx, &req), ChatApi::Completions);
+
+        // An operator opting groq into responses still downgrades a chat-only request.
+        let groq = OpenAiCompatProvider::for_kind("groq", &t).unwrap();
+        let mut req = chat_req("llama");
+        req.stop = vec!["\n".into()];
+        assert_eq!(
+            groq.effective_chat_api(&cx_with_chat_api("responses"), &req),
+            ChatApi::Completions
+        );
     }
 }

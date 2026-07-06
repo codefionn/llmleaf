@@ -1,18 +1,23 @@
 //! Example: a streaming CLI chat client for a stood-up llmleaf server.
 //!
-//! A *consumer* of the proxy — it talks the OpenAI-compatible surface (`POST /v1/chat/completions`)
-//! over HTTP, like any other client. It reads its connection settings from `llmleaf.toml` via the
-//! shared [`common`] helper (where to connect, what bearer to present, which models exist), so there
-//! is nothing extra to configure for a local demo.
+//! A *consumer* of the proxy — it talks the OpenAI-compatible surface over HTTP, like any other
+//! client: `POST /v1/chat/completions` by default, or the Responses dialect (`POST /v1/responses`)
+//! with `--responses` (or `/api responses` at the prompt). Both drive the same conversation through
+//! the same gateway — only the edge dialect differs (SOUL.md principle 3). It reads its connection
+//! settings from `llmleaf.toml` via the shared [`common`] helper (where to connect, what bearer to
+//! present, which models exist), so there is nothing extra to configure for a local demo.
 //!
 //! Streaming is the default (SOUL.md principle 4): the request sets `stream: true` and the reply is
-//! printed token-by-token as the SSE `chat.completion.chunk` frames arrive.
+//! printed token-by-token as the SSE frames arrive — `chat.completion.chunk` frames terminated by
+//! `[DONE]` on the chat surface; typed `response.*` events ending at `response.completed` on the
+//! Responses surface.
 //!
 //! Run it (with the server up via `cargo run -p llmleaf`):
 //!
 //! ```text
-//! cargo run -p llmleaf --example chat            # default model = first route in llmleaf.toml
-//! cargo run -p llmleaf --example chat -- smart   # pick a model by name
+//! cargo run -p llmleaf --example chat                         # default model = first route in llmleaf.toml
+//! cargo run -p llmleaf --example chat -- smart                # pick a model by name
+//! cargo run -p llmleaf --example chat -- smart --responses    # same conversation over POST /v1/responses
 //! ```
 //!
 //! See [`common`] for the auth/base-url/config-path environment overrides.
@@ -25,22 +30,58 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
 
-/// Session state. The bearer is fixed for the session; only the model changes (via `/model`).
+/// Which consumer dialect a turn is sent over. Both reach the same models through the same gateway;
+/// the conversation history is dialect-agnostic (role-keyed messages parse as chat `messages` and as
+/// Responses `input` items alike), so switching mid-conversation keeps the context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Api {
+    /// `POST /v1/chat/completions` — `chat.completion.chunk` SSE frames, `[DONE]`-terminated.
+    Chat,
+    /// `POST /v1/responses` — typed `response.*` SSE events, ending at the terminal event.
+    Responses,
+}
+
+impl Api {
+    fn label(self) -> &'static str {
+        match self {
+            Api::Chat => "chat completions (/v1/chat/completions)",
+            Api::Responses => "responses (/v1/responses)",
+        }
+    }
+}
+
+/// Session state. The bearer is fixed for the session; the model (`/model`) and the consumer
+/// dialect (`/api`) can change between turns.
 struct Session {
     base_url: String,
     bearer: String,
     model: String,
+    api: Api,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let conn = common::connect()?;
-    let model = common::pick_model(&conn.config, std::env::args().nth(1))
+    // `--responses` picks the Responses dialect; the first non-flag argument is the model.
+    let mut api = Api::Chat;
+    let mut model_arg: Option<String> = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--responses" => api = Api::Responses,
+            "--chat" => api = Api::Chat,
+            other if !other.starts_with("--") && model_arg.is_none() => {
+                model_arg = Some(other.to_string());
+            }
+            other => return Err(format!("unknown argument `{other}` (try --responses)").into()),
+        }
+    }
+    let model = common::pick_model(&conn.config, model_arg)
         .ok_or("no model given and no [[routes]] in the config to default to")?;
     let session = &mut Session {
         base_url: conn.base_url,
         bearer: conn.bearer,
         model,
+        api,
     };
 
     let mut out = tokio::io::stdout();
@@ -128,6 +169,20 @@ async fn handle_command(
             }
             None => format!("  current model: `{}`", session.model),
         },
+        // Switch the consumer dialect mid-conversation. The history survives the switch: the same
+        // role-keyed messages are chat `messages` and Responses `input` items alike.
+        "api" => match arg {
+            Some("chat") | Some("chat_completions") | Some("completions") => {
+                session.api = Api::Chat;
+                format!("  api is now {}", session.api.label())
+            }
+            Some("responses") => {
+                session.api = Api::Responses;
+                format!("  api is now {}", session.api.label())
+            }
+            Some(other) => format!("  unknown api `{other}` — chat | responses"),
+            None => format!("  current api: {}", session.api.label()),
+        },
         "models" => {
             let mut s = String::from("  routable models (from the config):");
             for r in &config.routes {
@@ -158,6 +213,7 @@ async fn handle_command(
 const HELP: &str = "  commands:\n\
     \x20   /model [name]   show or switch the model\n\
     \x20   /models         list routable models from the config\n\
+    \x20   /api [name]     show or switch the consumer dialect: chat | responses\n\
     \x20   /system <text>  set a system prompt for the conversation\n\
     \x20   /reset          clear the conversation history\n\
     \x20   /help           show this help\n\
@@ -185,7 +241,7 @@ struct Decoded {
 
 /// Decode one SSE line (`data: <json>`). Anything that isn't a recognisable data frame yields an
 /// empty `Decoded` (skipped): event boundaries, other SSE fields, or a frame we can't parse.
-fn decode_sse_line(line: &str) -> Decoded {
+fn decode_sse_line(api: Api, line: &str) -> Decoded {
     let mut decoded = Decoded::default();
     // axum writes the field as `data: ` (with a trailing space); the `trim()` below absorbs it, so
     // stripping the no-space `data:` prefix is load-bearing together with that trim.
@@ -197,12 +253,20 @@ fn decode_sse_line(line: &str) -> Decoded {
         return decoded;
     }
     if data == "[DONE]" {
-        decoded.done = true;
+        decoded.done = true; // chat-surface sentinel; the Responses stream never sends one
         return decoded;
     }
     let Ok(frame) = serde_json::from_str::<Value>(data) else {
         return decoded;
     };
+    match api {
+        Api::Chat => decode_chat_frame(&frame, decoded),
+        Api::Responses => decode_responses_event(&frame, decoded),
+    }
+}
+
+/// One OpenAI `chat.completion.chunk` (or the mid-stream error envelope) → its contribution.
+fn decode_chat_frame(frame: &Value, mut decoded: Decoded) -> Decoded {
     // A mid-stream error frame (e.g. the upstream failed after headers were sent).
     if let Some(err) = frame
         .get("error")
@@ -231,6 +295,47 @@ fn decode_sse_line(line: &str) -> Decoded {
     decoded
 }
 
+/// One Responses typed event (self-describing via `type`) → its contribution. Only the events this
+/// REPL renders are read — text deltas, the terminal snapshot (for usage), and errors; everything
+/// else (item/part lifecycle, reasoning deltas) is skipped, as the dialect prescribes for
+/// unrecognised types. There is no `[DONE]`: the terminal `response.*` event ends the turn.
+fn decode_responses_event(event: &Value, mut decoded: Decoded) -> Decoded {
+    match event.get("type").and_then(Value::as_str).unwrap_or("") {
+        "response.output_text.delta" => {
+            if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                decoded.content.push_str(delta);
+            }
+        }
+        "response.completed" | "response.incomplete" => {
+            decoded.done = true;
+            if let Some(u) = event.get("response").and_then(|r| r.get("usage")) {
+                if !u.is_null() {
+                    decoded.usage = Some(u.clone());
+                }
+            }
+        }
+        "response.failed" => {
+            decoded.done = true;
+            let message = event
+                .get("response")
+                .and_then(|r| r.get("error"))
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("response failed");
+            decoded.error = Some(message.to_string());
+        }
+        "error" => {
+            let message = event
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("stream error");
+            decoded.error = Some(message.to_string());
+        }
+        _ => {}
+    }
+    decoded
+}
+
 /// Send one turn and stream the assistant's reply to stdout. Returns the full reply text so the
 /// caller can append it to the conversation history.
 async fn send(
@@ -239,14 +344,21 @@ async fn send(
     messages: &[Value],
     out: &mut Stdout,
 ) -> Result<String, BoxError> {
-    let body = json!({
-        "model": session.model,
-        "messages": messages,
-        "stream": true,
-    });
+    // The same role-keyed history serves both dialects: chat takes it as `messages`, the Responses
+    // surface as `input` items (a role-keyed object with string content is a message item there).
+    let (path, body) = match session.api {
+        Api::Chat => (
+            "/v1/chat/completions",
+            json!({ "model": session.model, "messages": messages, "stream": true }),
+        ),
+        Api::Responses => (
+            "/v1/responses",
+            json!({ "model": session.model, "input": messages, "stream": true }),
+        ),
+    };
 
     let resp = client
-        .post(format!("{}/v1/chat/completions", session.base_url))
+        .post(format!("{}{path}", session.base_url))
         .bearer_auth(&session.bearer)
         .json(&body)
         .send()
@@ -283,7 +395,7 @@ async fn send(
 
         while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
             let raw: Vec<u8> = buf.drain(..=nl).collect();
-            let decoded = decode_sse_line(&String::from_utf8_lossy(&raw));
+            let decoded = decode_sse_line(session.api, &String::from_utf8_lossy(&raw));
 
             if let Some(err) = decoded.error {
                 out.write_all(b"\n").await?;
@@ -321,12 +433,16 @@ async fn send(
 /// present only when the upstream reported caching, so a non-caching turn's footer is unchanged.
 fn usage_footer(usage: &Value) -> Option<String> {
     let n = |k: &str| usage.get(k).and_then(Value::as_u64);
-    let prompt = n("prompt_tokens");
-    let completion = n("completion_tokens");
+    // The two dialects name the same counters differently: chat says `prompt_tokens` /
+    // `completion_tokens` with cache hits under `prompt_tokens_details`; the Responses surface says
+    // `input_tokens` / `output_tokens` with hits under `input_tokens_details`. Read either.
+    let prompt = n("prompt_tokens").or_else(|| n("input_tokens"));
+    let completion = n("completion_tokens").or_else(|| n("output_tokens"));
     let total = n("total_tokens");
     let cost = usage.get("cost_usd").and_then(Value::as_f64);
     let cached = usage
         .get("prompt_tokens_details")
+        .or_else(|| usage.get("input_tokens_details"))
         .and_then(|d| d.get("cached_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
@@ -359,8 +475,12 @@ async fn banner(
     let text = format!(
         "llmleaf chat — connected to {}\n  \
          model: {}    key: {}    ({route_count} route(s) configured)\n  \
+         api: {}\n  \
          type a message, or /help for commands. Ctrl-D to exit.\n",
-        session.base_url, session.model, id_label,
+        session.base_url,
+        session.model,
+        id_label,
+        session.api.label(),
     );
     out.write_all(text.as_bytes()).await?;
     out.flush().await?;

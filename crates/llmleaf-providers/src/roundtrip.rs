@@ -18,8 +18,8 @@ use llmleaf_provider::{ProviderCx, RealtimeParams, RealtimePeer, RealtimeWire};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::fake::{FakeHttpTransport, FakeRealtimeTransport};
-use crate::transport::{RealtimeTransport, Transports};
+use crate::fake::{FakeHttpTransport, FakeRealtimeTransport, FakeResponse};
+use crate::transport::{HttpBody, HttpRequest, RealtimeTransport, Transports};
 use crate::{AnthropicProvider, OpenAiCompatProvider};
 
 /// Build a [`Transports`] whose HTTP side is `http` and whose realtime side is a no-op (the chat /
@@ -84,8 +84,15 @@ async fn openai_chat_sse_roundtrips_to_canonical_stream() {
     let transports = http_transports(FakeHttpTransport::sse(body));
     let provider = OpenAiCompatProvider::for_kind("openai", &transports).unwrap();
 
+    // The stock `openai` brand now defaults to the Responses API, so pin it back to chat completions to
+    // exercise the classic `chat.completion.chunk` SSE round-trip here (the Responses SSE is covered by
+    // `openai_chat_posts_responses_shape_and_parses_responses_sse`).
+    let cx = ProviderCx {
+        settings: serde_json::from_value(json!({ "chat_api": "chat_completions" })).unwrap(),
+        ..cx()
+    };
     let stream = provider
-        .chat(user_chat("gpt-4o", "hi"), &cx())
+        .chat(user_chat("gpt-4o", "hi"), &cx)
         .await
         .expect("chat returns a stream");
     let resp = collect(stream).await.expect("stream collects cleanly");
@@ -137,6 +144,525 @@ async fn openai_embeddings_roundtrips_to_canonical_vectors() {
     assert_eq!(resp.embeddings[1].vector, vec![-0.4_f32, 0.5]);
     assert_eq!(resp.usage.prompt_tokens, 7);
     assert_eq!(resp.usage.total_tokens, 7);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 2b. Responses API (openai brand default) — endpoint + body shape + SSE parse, and the per-request
+//     downgrade to /chat/completions when the request carries a chat-only field.
+// ---------------------------------------------------------------------------------------------
+
+/// The JSON body a captured [`HttpRequest`] carried (panics if it was not a JSON body).
+fn json_body(req: &HttpRequest) -> serde_json::Value {
+    match &req.body {
+        HttpBody::Json(v) => v.clone(),
+        other => panic!("expected a JSON body, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_posts_responses_shape_and_parses_responses_sse() {
+    use std::sync::Mutex;
+
+    // A realistic Responses SSE: created → reasoning delta → two output_text deltas → completed+usage.
+    // The `event:` lines are decoration (`sse_payloads` reads only the self-describing `data:` JSON).
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\"}}\n\n",
+        "event: response.reasoning_text.delta\n",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"mull\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\", world\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"total_tokens\":12}}}\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+
+    let stream = provider
+        .chat(user_chat("gpt-5", "hi"), &cx())
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    // The stock openai brand posted to `/responses` with a Responses-shaped body (stateless defaults on).
+    let req = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert!(req.url.ends_with("/responses"), "posted to {}", req.url);
+    let body = json_body(&req);
+    assert!(
+        body.get("input").is_some(),
+        "Responses body has `input`, not `messages`"
+    );
+    assert!(body.get("messages").is_none());
+    assert_eq!(body["store"], false); // llmleaf never lets the upstream store the payload
+    assert_eq!(
+        body["include"],
+        serde_json::json!(["reasoning.encrypted_content"])
+    );
+    assert_eq!(body["stream"], true);
+
+    // The Responses SSE parsed into the canonical stream: id/model, reasoning, the two content deltas.
+    assert_eq!(resp.id, "resp_1");
+    assert_eq!(resp.model, "gpt-5");
+    assert_eq!(resp.choices[0].text, "Hello, world");
+    assert!(matches!(
+        resp.choices[0].thinking.first(),
+        Some(llmleaf_model::ContentPart::Thinking { thinking, .. }) if thinking == "mull"
+    ));
+    assert_eq!(resp.usage.prompt_tokens, 9);
+    assert_eq!(resp.usage.total_tokens, 12);
+}
+
+#[tokio::test]
+async fn openai_chat_with_stop_downgrades_to_chat_completions() {
+    use std::sync::Mutex;
+
+    // A canonical `stop` has no Responses representation, so the stock openai brand serves this request
+    // over `/chat/completions` instead (the documented per-request downgrade).
+    let sse = concat!(
+        "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+
+    let mut req = user_chat("gpt-5", "hi");
+    req.stop = vec!["\n".into()];
+    let stream = provider
+        .chat(req, &cx())
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert!(
+        sent.url.ends_with("/chat/completions"),
+        "chat-only request must downgrade to chat completions, posted to {}",
+        sent.url
+    );
+    let body = json_body(&sent);
+    assert!(
+        body.get("messages").is_some(),
+        "chat body carries `messages`"
+    );
+    assert_eq!(body["stop"], serde_json::json!(["\n"]));
+    assert_eq!(resp.choices[0].text, "hi");
+}
+
+#[tokio::test]
+async fn openrouter_responses_opt_in_posts_beta_endpoint_and_replays_signed_reasoning() {
+    use llmleaf_model::ContentPart;
+    use std::sync::Mutex;
+
+    // OpenRouter's beta `POST /responses`: same typed-event SSE, plus the OpenRouter extras — a
+    // trailing `[DONE]` sentinel, a per-item reasoning `signature`, and `usage.cost`.
+    let sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"gen-1\",\"model\":\"anthropic/claude-4.5-sonnet\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"ponder\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"signature\":\"SIG2\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"sunny\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"gen-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":8,\"output_tokens\":2,\"total_tokens\":10,\"cost\":0.00021}}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openrouter", &http_transports(http)).unwrap();
+
+    // Opt the brand into its beta Responses endpoint; no endpoint override, so the brand default URL
+    // builds the documented beta path.
+    let cx = ProviderCx {
+        credential: Some("test-key".into()),
+        settings: serde_json::from_value(json!({ "chat_api": "responses" })).unwrap(),
+        ..Default::default()
+    };
+
+    // A second turn replaying a prior signed thinking block — the OpenRouter-flavor request shape.
+    let mut req = user_chat("anthropic/claude-4.5-sonnet", "weather?");
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![
+            ContentPart::Thinking {
+                thinking: "prior reasoning".into(),
+                signature: Some("SIG1".into()),
+            },
+            ContentPart::Text {
+                text: "checking".into(),
+            },
+        ],
+        tool_calls: vec![],
+        tool_call_id: None,
+        name: None,
+    });
+    let stream = provider
+        .chat(req, &cx)
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    // The documented beta endpoint, verbatim.
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert_eq!(sent.url, "https://openrouter.ai/api/v1/responses");
+    // The prior signed thinking replays as an OpenRouter-flavor reasoning item (content + signature);
+    // the stock-OpenAI flavor would have dropped it.
+    let body = json_body(&sent);
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(
+        input[1],
+        json!({
+            "type": "reasoning",
+            "summary": [],
+            "content": [{ "type": "reasoning_text", "text": "prior reasoning" }],
+            "signature": "SIG1",
+        })
+    );
+    // The OpenRouter extras parsed back: signed thinking on the choice, upstream cost on usage; the
+    // `[DONE]` sentinel was skipped, not decoded.
+    assert!(matches!(
+        resp.choices[0].thinking.first(),
+        Some(ContentPart::Thinking { thinking, signature })
+            if thinking == "ponder" && signature.as_deref() == Some("SIG2")
+    ));
+    assert_eq!(resp.choices[0].text, "sunny");
+    assert_eq!(resp.usage.cost_usd, Some(0.00021));
+    assert_eq!(resp.usage.total_tokens, 10);
+}
+
+#[tokio::test]
+async fn groq_responses_opt_in_posts_beta_endpoint_with_unsigned_open_reasoning() {
+    use llmleaf_model::ContentPart;
+    use std::sync::Mutex;
+
+    // Groq's beta `POST /responses`: the same typed-event SSE as stock OpenAI, with open (plaintext)
+    // reasoning deltas and no signature/encrypted extras.
+    let sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_g1\",\"model\":\"openai/gpt-oss-120b\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"mull\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"sunny\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_g1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":8,\"output_tokens\":2,\"total_tokens\":10}}}\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("groq", &http_transports(http)).unwrap();
+
+    // Opt the brand into its beta Responses endpoint; no endpoint override, so the brand default URL
+    // builds the documented path.
+    let cx = ProviderCx {
+        credential: Some("test-key".into()),
+        settings: serde_json::from_value(json!({ "chat_api": "responses" })).unwrap(),
+        ..Default::default()
+    };
+
+    // A second turn replaying prior open thinking (signed by a foreign vendor) plus a redacted block —
+    // the Groq flavor must replay the plaintext unsigned and drop the encrypted block.
+    let mut req = user_chat("openai/gpt-oss-120b", "weather?");
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![
+            ContentPart::Thinking {
+                thinking: "prior reasoning".into(),
+                signature: Some("SIG1".into()),
+            },
+            ContentPart::RedactedThinking { data: "ENC".into() },
+            ContentPart::Text {
+                text: "checking".into(),
+            },
+        ],
+        tool_calls: vec![],
+        tool_call_id: None,
+        name: None,
+    });
+    let stream = provider
+        .chat(req, &cx)
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    // The documented beta endpoint, verbatim (the brand base already carries `/openai/v1`).
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert_eq!(sent.url, "https://api.groq.com/openai/v1/responses");
+    let body = json_body(&sent);
+    // Groq documents `include` as unsupported: the statelessness default is omitted; `store: false`
+    // still goes out (Groq accepts false/null).
+    assert!(body.get("include").is_none());
+    assert_eq!(body["store"], json!(false));
+    // The prior thinking replays as a plaintext reasoning item with NO signature; the redacted block
+    // has no Groq representation and produced no item.
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(
+        input[1],
+        json!({
+            "type": "reasoning",
+            "summary": [],
+            "content": [{ "type": "reasoning_text", "text": "prior reasoning" }],
+        })
+    );
+    assert!(!input
+        .iter()
+        .any(|item| item.get("encrypted_content").is_some()));
+    // The open reasoning and answer parsed back into the canonical stream.
+    assert!(matches!(
+        resp.choices[0].thinking.first(),
+        Some(ContentPart::Thinking { thinking, signature })
+            if thinking == "mull" && signature.is_none()
+    ));
+    assert_eq!(resp.choices[0].text, "sunny");
+    assert_eq!(resp.usage.total_tokens, 10);
+}
+
+#[tokio::test]
+async fn xai_chat_defaults_to_responses_endpoint() {
+    use llmleaf_model::ContentPart;
+    use std::sync::Mutex;
+
+    // xAI's Responses API is its documented-preferred chat surface, so the brand defaults to it — the
+    // same typed-event SSE as stock OpenAI, encrypted reasoning included for stateless replay.
+    let sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_x1\",\"model\":\"grok-4\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"sunny\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"XENC\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":8,\"output_tokens\":2,\"total_tokens\":10}}}\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("xai", &http_transports(http)).unwrap();
+
+    // No endpoint override and no settings: the brand default builds xAI's documented URL and wire.
+    let cx = ProviderCx {
+        credential: Some("test-key".into()),
+        ..Default::default()
+    };
+    let stream = provider
+        .chat(user_chat("grok-4", "hi"), &cx)
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    // The documented endpoint, verbatim, with the stock-OpenAI statelessness defaults on (xAI
+    // documents both `store` and `include: ["reasoning.encrypted_content"]`).
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert_eq!(sent.url, "https://api.x.ai/v1/responses");
+    let body = json_body(&sent);
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    // The answer parsed; the encrypted reasoning block survives for next-turn stateless replay.
+    assert_eq!(resp.choices[0].text, "sunny");
+    assert!(resp.choices[0]
+        .thinking
+        .iter()
+        .any(|p| matches!(p, ContentPart::RedactedThinking { data } if data == "XENC")));
+    assert_eq!(resp.usage.total_tokens, 10);
+}
+
+#[tokio::test]
+async fn azure_responses_opt_in_posts_v1_resource_url() {
+    use std::sync::Mutex;
+
+    // Azure's Responses API serves on the *v1* surface: resource-scoped URL (never deployment-scoped
+    // like its chat completions), deployment name in the body `model`, `api-key` header auth.
+    let sse = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_az1\",\"model\":\"gpt-5-deploy\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_az1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"total_tokens\":12}}}\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("azure", &http_transports(http)).unwrap();
+
+    // The v1 surface is region/feature-gated, so Responses is an explicit opt-in for azure.
+    let cx = ProviderCx {
+        credential: Some("azure-key".into()),
+        endpoint: Some("https://my-res.openai.azure.com".into()),
+        settings: serde_json::from_value(json!({ "chat_api": "responses" })).unwrap(),
+        ..Default::default()
+    };
+    let stream = provider
+        .chat(user_chat("gpt-5-deploy", "hi"), &cx)
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    // Resource-scoped v1 URL — no deployment segment, no api-version.
+    assert_eq!(
+        sent.url,
+        "https://my-res.openai.azure.com/openai/v1/responses"
+    );
+    // Azure authenticates with the `api-key` header, not a bearer token.
+    assert!(
+        sent.headers
+            .iter()
+            .any(|(k, v)| k == "api-key" && v == "azure-key"),
+        "api-key header must carry the credential: {:?}",
+        sent.headers
+    );
+    // The deployment name rides in the body `model`; the statelessness defaults still apply.
+    let body = json_body(&sent);
+    assert_eq!(body["model"], "gpt-5-deploy");
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(resp.choices[0].text, "Hello");
+    assert_eq!(resp.usage.total_tokens, 12);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 2c. Responses → /chat/completions endpoint fallback: a brand opted into Responses whose upstream
+//     answers `POST /responses` with 404/405 ("no such endpoint") transparently retries the same
+//     request over `/chat/completions`; every other status keeps its meaning and does NOT downgrade.
+// ---------------------------------------------------------------------------------------------
+
+/// A canned chat-completions SSE the fallback path parses (one content delta + finish + `[DONE]`).
+const CHAT_FALLBACK_SSE: &str = concat!(
+    "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n",
+);
+
+/// Drive the stock `openai` brand (Responses default) against a transport that answers `/responses`
+/// with `responses_status` and `/chat/completions` with [`CHAT_FALLBACK_SSE`], recording every URL it
+/// saw in order. Shared by the 404 and 405 cases, which differ only in the status.
+async fn responses_status_downgrades(responses_status: u16) {
+    use std::sync::Mutex;
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_c = seen.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        seen_c.lock().unwrap().push(req.url.clone());
+        if req.url.ends_with("/responses") {
+            Ok(FakeResponse::status(
+                responses_status,
+                "{\"error\":{\"message\":\"no such endpoint\"}}",
+            ))
+        } else if req.url.ends_with("/chat/completions") {
+            Ok(FakeResponse::ok_bytes(
+                "text/event-stream",
+                CHAT_FALLBACK_SSE,
+            ))
+        } else {
+            panic!("unexpected url {}", req.url)
+        }
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+
+    let stream = provider
+        .chat(user_chat("gpt-5", "hi"), &cx())
+        .await
+        .expect("chat downgrades to /chat/completions and returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+    // The canonical chunks came from the chat-completions body, not the (absent) responses one.
+    assert_eq!(resp.id, "chatcmpl-1");
+    assert_eq!(resp.choices[0].text, "Hello");
+    assert_eq!(resp.choices[0].finish_reason, Some(FinishReason::Stop));
+
+    // Both endpoints were tried, responses first then chat/completions — one `chat()`, two upstream hits.
+    let urls = seen.lock().unwrap().clone();
+    assert_eq!(urls.len(), 2, "exactly two upstream requests: {urls:?}");
+    assert!(
+        urls[0].ends_with("/responses"),
+        "responses is tried first: {urls:?}"
+    );
+    assert!(
+        urls[1].ends_with("/chat/completions"),
+        "then it downgrades to chat/completions: {urls:?}"
+    );
+}
+
+#[tokio::test]
+async fn responses_404_downgrades_to_chat_completions() {
+    responses_status_downgrades(404).await;
+}
+
+#[tokio::test]
+async fn responses_405_downgrades_to_chat_completions() {
+    responses_status_downgrades(405).await;
+}
+
+#[tokio::test]
+async fn responses_500_does_not_downgrade() {
+    use std::sync::Mutex;
+
+    // A 500 (like 401/429/5xx) keeps its meaning: it is NOT "no such endpoint", so `chat()` fails once
+    // with the upstream status and never touches `/chat/completions`.
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_c = seen.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        seen_c.lock().unwrap().push(req.url.clone());
+        assert!(
+            req.url.ends_with("/responses"),
+            "a 500 must not trigger the chat/completions retry, but saw {}",
+            req.url
+        );
+        Ok(FakeResponse::status(500, "internal error"))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+
+    // `chat` yields a non-`Debug` stream, so match the result directly (cf. `upstream_429_...`).
+    match provider.chat(user_chat("gpt-5", "hi"), &cx()).await {
+        Err(ModelError::Upstream { status, message }) => {
+            assert_eq!(status, 500);
+            assert!(
+                message.contains("internal error"),
+                "body relayed: {message}"
+            );
+        }
+        Err(other) => panic!("expected Upstream{{500}}, got {other:?}"),
+        Ok(_) => panic!("a 500 from /responses must surface as an error, not downgrade"),
+    }
+    let urls = seen.lock().unwrap().clone();
+    assert_eq!(
+        urls.len(),
+        1,
+        "only the responses endpoint was hit: {urls:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

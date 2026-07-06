@@ -39,7 +39,7 @@ use crate::admin::{AdminAccess, Observability};
 use crate::compat::openai::{self, ChunkEncoder};
 use crate::compat::realtime::{session as rt_session, wire as rt_wire};
 use crate::compat::transcription::TranscriptionBody;
-use crate::compat::{anthropic, batch, embeddings, openapi, speech, transcription};
+use crate::compat::{anthropic, batch, embeddings, openapi, responses, speech, transcription};
 use crate::config::Config;
 use crate::engine::{Engine, EngineError};
 use crate::events::{Event, EventBus};
@@ -133,6 +133,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/openapi.json", get(openapi_spec))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/messages", post(anthropic_messages))
+        .route("/v1/responses", post(responses_create))
+        .route("/v1/responses/{id}", get(get_response))
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/audio/speech", post(audio_speech))
         .route("/v1/audio/voices", get(audio_voices))
@@ -380,6 +382,138 @@ fn anthropic_sse_from_response(
 }
 
 // ---------------------------------------------------------------------------------------------
+// OpenAI Responses surface (`POST /v1/responses`) — a third chat dialect on the same core
+// ---------------------------------------------------------------------------------------------
+
+/// The OpenAI Responses compat surface. Same hot path as [`chat_completions`] — authenticate → map in →
+/// route → stream → map out — but in the Responses dialect: the body maps via
+/// [`responses::parse_responses_request`], and the output is either a single Responses `response` object
+/// or the Responses streaming-event sequence. Served statelessly: `store` is always answered `false`,
+/// and the stateless-continuation knobs are rejected at the map-in edge (see [`responses`]).
+async fn responses_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "missing bearer token");
+    };
+
+    // Map in (principle 3: dialect → canonical at the edge).
+    let req = match responses::parse_responses_request(body) {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let logical_model = req.model.clone();
+    let stream_requested = req.stream;
+    // Capture what the response echoes from the request before the request is consumed by the engine.
+    let echo = responses::RequestEcho::from_request(&req);
+    let now = now_secs();
+
+    // Authenticate: a verdict lookup, never arithmetic (principle 5).
+    let key = match authorize_token(&state, &token, &logical_model, now).await {
+        Ok(id) => id,
+        Err(e) => return auth_error(e),
+    };
+
+    let request_id = next_request_id(&state.request_seq);
+    let created = now;
+
+    // Route → stream.
+    let stream = match state.engine.run(req, key, request_id.clone(), now).await {
+        Ok(s) => s,
+        Err(e) => return engine_error(e),
+    };
+
+    // Map out (principle 4: a non-streaming response is a collected stream).
+    if stream_requested {
+        let encoder = responses::EventEncoder::new(request_id, logical_model, created, echo);
+        responses_sse_from_response(stream, encoder).into_response()
+    } else {
+        match llmleaf_model::collect(stream).await {
+            Ok(mut resp) => {
+                // The Responses object is keyed by the consumer request id (`resp_<id>`), not the
+                // upstream's — stamp it so `id`, the output-item ids, and the streaming encoder agree.
+                resp.id = request_id;
+                Json(responses::response_to_responses(&resp, &echo, created)).into_response()
+            }
+            Err(e) => error(StatusCode::BAD_GATEWAY, e.to_string()),
+        }
+    }
+}
+
+/// Turn a canonical response stream into the Responses streaming-event SSE response. Like the Anthropic
+/// pump, one canonical chunk can yield several named events, the terminal `response.completed` (or
+/// `response.incomplete`/`response.failed`) is flushed by [`responses::EventEncoder::finish`] after the
+/// stream ends, and a mid-stream failure surfaces as an `event: error` frame. There is no `[DONE]`
+/// sentinel — the Responses stream ends after the terminal event.
+fn responses_sse_from_response(
+    stream: ResponseStream,
+    encoder: responses::EventEncoder,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let body = async_stream::stream! {
+        let mut stream = stream;
+        let mut encoder = encoder;
+        // One frame buffer for the whole connection: `encode`/`finish` clear and refill it, reusing the
+        // Vec's capacity across the stream.
+        let mut frames: Vec<responses::Frame> = Vec::new();
+        let mut errored = false;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    frames.clear();
+                    encoder.encode(&chunk, &mut frames);
+                    for frame in &frames {
+                        yield Ok(SseEvent::default().event(frame.event).data(frame.data.as_str()));
+                    }
+                }
+                Err(e) => {
+                    let frame = encoder.error_frame(&e.to_string());
+                    yield Ok(SseEvent::default().event(frame.event).data(frame.data.as_str()));
+                    errored = true;
+                    break;
+                }
+            }
+        }
+        if !errored {
+            frames.clear();
+            encoder.finish(&mut frames);
+            for frame in &frames {
+                yield Ok(SseEvent::default().event(frame.event).data(frame.data.as_str()));
+            }
+        }
+    };
+    Sse::new(body).keep_alive(KeepAlive::default())
+}
+
+/// `GET /v1/responses/{id}` — always 404. llmleaf is stateless and stores no responses (`store` is
+/// always `false`), so retrieval is unsupported by design. This is P7 transparency: a client that
+/// ignored `"store": false` is told exactly why, in the same OpenAI error envelope as the rest of the
+/// surface.
+async fn get_response(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    // Authenticate first, like every other consumer route — SOUL.md enumerates the unauthenticated
+    // surface (`/healthz`, `/v1/openapi.json`) and this endpoint is not on it. Identity only:
+    // retrieval names no model, so there is no allow-list to check.
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "missing bearer token");
+    };
+    if let Err(e) = authorize_token_identity(&state, &token, now_secs()).await {
+        return auth_error(e);
+    }
+    error(
+        StatusCode::NOT_FOUND,
+        format!(
+            "response '{id}' not found: llmleaf is stateless and does not store responses \
+             (`store` is always false), so retrieval is unsupported by design"
+        ),
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
 // Realtime surface (`GET /v1/realtime`, WebSocket) — the OpenAI Realtime dialect
 // ---------------------------------------------------------------------------------------------
 
@@ -454,12 +588,23 @@ async fn handle_realtime(
     }
 }
 
-/// Proxy a native realtime session: shuttle frames verbatim between the consumer socket and the
-/// provider (principle 7), tapping the provider's terminal `response.done` for usage so the event bus
-/// still sees it (principle 5). Lifecycle events bracket the session.
+/// Proxy a native realtime session in two phases, so a native transport that fails *before producing
+/// any output* falls back to the chat bridge instead of erroring the consumer (principle 8: fail toward
+/// availability), while a native session that has already committed is proxied verbatim (principle 7).
+///
+/// **Phase 1 — probe (socket unsplit).** The native session is "committed" only once the provider emits
+/// its first frame. Until then the consumer has seen no upstream output, so any provider error is safe
+/// to recover from: we run the chat bridge on the *same* socket, replaying the consumer frames buffered
+/// during the probe. A genuinely broken key/route is not masked — it resurfaces as an ordinary bridge
+/// turn error (principle 7).
+///
+/// **Phase 2 — committed native (post-first-frame).** Split, pump verbatim both ways, tap usage. A
+/// MID-SESSION provider error keeps the error-frame-and-close behavior: the upstream holds session state
+/// the core cannot replay, so a silent restart onto the bridge would fabricate a fresh context
+/// (principle 7). Fallback is a strictly pre-output affordance.
 async fn run_native_realtime(
     state: AppState,
-    socket: WebSocket,
+    mut socket: WebSocket,
     target: crate::engine::RealtimeTarget,
     model: String,
     key: String,
@@ -467,6 +612,7 @@ async fn run_native_realtime(
 ) {
     let events = state.events.clone();
     let engine = state.engine.clone();
+    let provider_name = target.provider_name.clone();
     events.emit(Event::RequestStarted {
         id: request_id.clone(),
         key: key.clone(),
@@ -475,7 +621,7 @@ async fn run_native_realtime(
     });
     events.emit(Event::RequestRouted {
         id: request_id.clone(),
-        provider: target.provider_name.clone(),
+        provider: provider_name.clone(),
         upstream_model: target.params.model.clone(),
     });
 
@@ -492,6 +638,105 @@ async fn run_native_realtime(
     let params = target.params;
     let provider_task = tokio::spawn(async move { provider.realtime(params, peer, &cx).await });
 
+    // ---- Phase 1: probe. The socket stays UNSPLIT until the provider proves the session is live.
+    // Every non-committed outcome is handled inline and returns here; the loop only *breaks* with the
+    // first provider frame, so `socket`/`out_rx`/`in_tx`/`provider_task` all survive intact into phase 2.
+    let mut replay: Vec<RealtimeWire> = Vec::new();
+    let committed: RealtimeWire = loop {
+        tokio::select! {
+            maybe_wire = out_rx.recv() => {
+                match maybe_wire {
+                    // First provider frame ⇒ the native session is committed. Forward it in phase 2.
+                    Some(wire) => break wire,
+                    // The provider task ended before emitting a single frame. Nothing consumer-visible
+                    // has been sent, so we are free to fall back or complete an empty session.
+                    None => {
+                        match provider_task.await {
+                            // Pre-output failure ⇒ FALL BACK to the chat bridge on the same, still-unsplit
+                            // socket, replaying the consumer frames buffered during the probe. The native
+                            // reason stays visible as a warn; a genuinely broken key/route resurfaces as an
+                            // ordinary bridge turn error (principle 7), so nothing is masked. No second
+                            // `RequestStarted` — the bridge reports routing per-turn via `Engine::run`.
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    provider = %provider_name, error = %e,
+                                    "native realtime failed before first frame; falling back to chat bridge"
+                                );
+                                rt_session::run_bridge_replaying(
+                                    socket,
+                                    engine,
+                                    key,
+                                    model,
+                                    &request_id,
+                                    std::mem::take(&mut replay),
+                                )
+                                .await;
+                                events.emit(Event::RequestCompleted {
+                                    id: request_id,
+                                    finish: None,
+                                });
+                            }
+                            // A clean close with no output at all: treat as an empty native session.
+                            Ok(Ok(())) => {
+                                let _ = socket.send(WsMessage::Close(None)).await;
+                                events.emit(Event::RequestCompleted {
+                                    id: request_id,
+                                    finish: None,
+                                });
+                            }
+                            Err(_join) => {
+                                events.emit(Event::RequestFailed {
+                                    id: request_id,
+                                    error: "realtime session task aborted".to_string(),
+                                });
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+            maybe_msg = socket.recv() => {
+                match maybe_msg {
+                    Some(Ok(msg)) => match msg {
+                        // A fast client may send frames before the upstream is up. Forward them to the
+                        // (connecting) provider AND buffer a copy so a fallback can replay them.
+                        WsMessage::Text(t) => {
+                            let wire = RealtimeWire::Text(t.as_str().to_owned());
+                            replay.push(wire.clone());
+                            let _ = in_tx.send(wire).await;
+                        }
+                        WsMessage::Binary(b) => {
+                            let wire = RealtimeWire::Binary(b);
+                            replay.push(wire.clone());
+                            let _ = in_tx.send(wire).await;
+                        }
+                        // The consumer closed before the upstream produced anything: nothing to proxy.
+                        WsMessage::Close(_) => {
+                            provider_task.abort();
+                            events.emit(Event::RequestCompleted {
+                                id: request_id,
+                                finish: None,
+                            });
+                            return;
+                        }
+                        WsMessage::Ping(_) | WsMessage::Pong(_) => {}
+                    },
+                    // Socket error or end before the upstream produced anything: abort and complete.
+                    Some(Err(_)) | None => {
+                        provider_task.abort();
+                        events.emit(Event::RequestCompleted {
+                            id: request_id,
+                            finish: None,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+    };
+
+    // ---- Phase 2: committed native. Exactly the prior behavior — split, pump verbatim both ways, tap
+    // usage — starting from the frame that committed the session.
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Consumer → provider: forward every frame verbatim, then signal close.
@@ -511,7 +756,17 @@ async fn run_native_realtime(
     });
 
     // Provider → consumer: forward verbatim, tapping usage from the terminal frame for the event bus.
-    while let Some(wire) = out_rx.recv().await {
+    // The committed first frame is processed through the same match (so usage is tapped even on it),
+    // then the loop drains the rest.
+    let mut pending = Some(committed);
+    loop {
+        let wire = match pending.take() {
+            Some(w) => w,
+            None => match out_rx.recv().await {
+                Some(w) => w,
+                None => break,
+            },
+        };
         match wire {
             RealtimeWire::Text(t) => {
                 if let Some(usage) = rt_wire::usage_from_server_frame(&t) {
@@ -549,7 +804,9 @@ async fn run_native_realtime(
             });
         }
         Ok(Err(e)) => {
-            // Surface the failure to the consumer as a Realtime error frame, not just a bare close.
+            // A MID-SESSION failure (the session had already committed): surface it to the consumer as a
+            // Realtime error frame and close — never a silent restart onto the bridge, which would
+            // fabricate a fresh context the client never asked for (principle 7).
             let frame = rt_wire::error_frame("upstream_error", &e.to_string());
             let _ = ws_tx.send(WsMessage::Text(frame.to_string().into())).await;
             events.emit(Event::RequestFailed {

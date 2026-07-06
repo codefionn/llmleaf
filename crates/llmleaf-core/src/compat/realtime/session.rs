@@ -11,6 +11,7 @@
 //! events, so `response.cancel` mid-turn is observed only after the turn completes (a documented v1
 //! simplification — text clients send `response.create` and await `response.done`).
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -18,6 +19,7 @@ use futures::StreamExt;
 use llmleaf_model::{
     ChatRequest, FinishReason, Message, Role, StreamChunk, ToolChoice, ToolDef, Usage,
 };
+use llmleaf_provider::RealtimeWire;
 use serde_json::{json, Value};
 
 use super::wire::{
@@ -184,8 +186,11 @@ fn tool_choice_to_realtime(tc: Option<&ToolChoice>) -> Value {
 /// usage/lifecycle events). The session itself is bracketed with `RequestStarted`/`RequestCompleted`
 /// on the bare `request_id` — symmetric with the native path — so an observer sees the whole session
 /// on the event bus, not just its individual turns (principle 5).
+///
+/// This is the entry point used when routing found no native realtime target at all: it owns the
+/// lifecycle bracket and delegates the session loop to [`run_bridge_replaying`] with nothing to replay.
 pub async fn run_bridge(
-    mut socket: WebSocket,
+    socket: WebSocket,
     engine: Arc<Engine>,
     events: EventBus,
     key: String,
@@ -198,137 +203,214 @@ pub async fn run_bridge(
         model: model.clone(),
         request: None,
     });
+    run_bridge_replaying(socket, engine, key, model, &request_id, Vec::new()).await;
+    events.emit(Event::RequestCompleted {
+        id: request_id,
+        finish: None,
+    });
+}
 
+/// Run the bridge session loop over `socket`: first replay any frames the caller already received from
+/// the consumer (`replay`), then serve live client events until the socket closes.
+///
+/// This is the shared body behind both the plain [`run_bridge`] entry and the native path's pre-output
+/// fallback (in [`crate::server`]). When a native realtime session fails before its first frame, the
+/// consumer socket has only ever carried consumer→core traffic, so the core can still serve the whole
+/// session over the chat bridge (principle 8) — it hands the consumer frames buffered during the probe
+/// here to be replayed through the *exact same* handler as live ones, so nothing the client already
+/// sent is dropped (principle 7). The caller owns the `RequestStarted`/`RequestCompleted` bracket on
+/// `request_id` (on the fallback path the native side already emitted `RequestStarted`), so this
+/// function emits no session-level lifecycle events itself — only the per-turn events that
+/// [`run_turn`]'s [`Engine::run`] produces.
+pub async fn run_bridge_replaying(
+    mut socket: WebSocket,
+    engine: Arc<Engine>,
+    key: String,
+    model: String,
+    request_id: &str,
+    replay: Vec<RealtimeWire>,
+) {
     let mut session = BridgeSession::new(model);
     if send(&mut socket, &session.session_frame("session.created"))
         .await
         .is_err()
     {
-        events.emit(Event::RequestCompleted {
-            id: request_id,
-            finish: None,
-        });
         return;
     }
 
     let mut turn: u64 = 0;
-    while let Some(incoming) = socket.recv().await {
-        let Ok(msg) = incoming else { break };
-        let text = match msg {
-            WsMessage::Text(t) => t.as_str().to_owned(),
-            // Binary frames on the bridge mean audio input — unsupported.
-            WsMessage::Binary(_) => {
-                let _ = send(
-                    &mut socket,
-                    &error_frame(
-                        "unsupported_modality",
-                        "audio input is not available for the routed provider",
-                    ),
-                )
-                .await;
-                continue;
-            }
-            WsMessage::Close(_) => break,
-            WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
-        };
 
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            let _ = send(
-                &mut socket,
-                &error_frame("invalid_request_error", "frame is not valid JSON"),
-            )
-            .await;
-            continue;
+    // Replay the consumer frames buffered during the (failed) native probe, through the SAME handler as
+    // a live frame — but only after `session.created`, so the client still sees a clean session opening.
+    // A replayed binary frame gets the same `unsupported_modality` error a live one would.
+    for wire in replay {
+        let frame = match wire {
+            RealtimeWire::Text(t) => IncomingFrame::Text(t),
+            RealtimeWire::Binary(_) => IncomingFrame::Binary,
+            // The probe only ever buffers Text/Binary; a stray Close is nothing to replay.
+            RealtimeWire::Close => continue,
         };
-
-        match parse_client_event(value) {
-            ClientEvent::SessionUpdate(patch) => {
-                session.apply(patch);
-                if send(&mut socket, &session.session_frame("session.updated"))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            ClientEvent::AddUserMessage(text) => {
-                let item = json!({
-                    "id": format!("item_{}", session.item_seq + 1),
-                    "object": "realtime.item", "type": "message", "role": "user",
-                    "content": [{ "type": "input_text", "text": text }]
-                });
-                session.messages.push(Message::text(Role::User, text));
-                let frame = session.item_added(item);
-                if send(&mut socket, &frame).await.is_err() {
-                    break;
-                }
-            }
-            ClientEvent::AddFunctionOutput { call_id, output } => {
-                let item = json!({
-                    "id": format!("item_{}", session.item_seq + 1),
-                    "object": "realtime.item", "type": "function_call_output",
-                    "call_id": call_id, "output": output
-                });
-                session.messages.push(Message {
-                    role: Role::Tool,
-                    content: vec![llmleaf_model::ContentPart::Text { text: output }],
-                    tool_calls: Vec::new(),
-                    tool_call_id: Some(call_id),
-                    name: None,
-                });
-                let frame = session.item_added(item);
-                if send(&mut socket, &frame).await.is_err() {
-                    break;
-                }
-            }
-            // v1: item deletion is not mapped back onto accumulated history (clients overwhelmingly
-            // append). Tolerated as a no-op rather than silently corrupting state.
-            ClientEvent::DeleteItem(_) | ClientEvent::Cancel | ClientEvent::Other => {}
-            ClientEvent::AudioUnsupported => {
-                let _ = send(
-                    &mut socket,
-                    &error_frame(
-                        "unsupported_modality",
-                        "audio is not available for the routed provider",
-                    ),
-                )
-                .await;
-            }
-            ClientEvent::Create(over) => {
-                if session.wants_audio(&over) {
-                    let _ = send(
-                        &mut socket,
-                        &error_frame(
-                            "unsupported_modality",
-                            "audio output is not available for the routed provider; set output_modalities to [\"text\"]",
-                        ),
-                    )
-                    .await;
-                    continue;
-                }
-                turn += 1;
-                if run_turn(
-                    &mut socket,
-                    &engine,
-                    &mut session,
-                    &over,
-                    &key,
-                    &request_id,
-                    turn,
-                )
-                .await
-                .is_err()
-                {
-                    break;
-                }
-            }
+        if handle_frame(
+            &mut socket,
+            &engine,
+            &mut session,
+            &key,
+            request_id,
+            &mut turn,
+            frame,
+        )
+        .await
+        .is_break()
+        {
+            return;
         }
     }
 
-    events.emit(Event::RequestCompleted {
-        id: request_id,
-        finish: None,
-    });
+    while let Some(incoming) = socket.recv().await {
+        let Ok(msg) = incoming else { break };
+        let frame = match msg {
+            WsMessage::Text(t) => IncomingFrame::Text(t.as_str().to_owned()),
+            // Binary frames on the bridge mean audio input — unsupported.
+            WsMessage::Binary(_) => IncomingFrame::Binary,
+            WsMessage::Close(_) => break,
+            WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+        };
+        if handle_frame(
+            &mut socket,
+            &engine,
+            &mut session,
+            &key,
+            request_id,
+            &mut turn,
+            frame,
+        )
+        .await
+        .is_break()
+        {
+            break;
+        }
+    }
+}
+
+/// One incoming consumer frame, normalized so the live loop and the replay pass share a handler. A
+/// binary frame carries no payload the text bridge can use (it means audio input, which it cannot
+/// serve), so it is represented without its bytes.
+enum IncomingFrame {
+    Text(String),
+    Binary,
+}
+
+/// Handle one incoming consumer frame. `ControlFlow::Break` means the socket has died and the caller
+/// should stop the session; `Continue` means keep serving. This is the exact per-message body the
+/// bridge loop runs, factored out so the fallback can replay buffered frames through it verbatim.
+async fn handle_frame(
+    socket: &mut WebSocket,
+    engine: &Arc<Engine>,
+    session: &mut BridgeSession,
+    key: &str,
+    request_id: &str,
+    turn: &mut u64,
+    frame: IncomingFrame,
+) -> ControlFlow<()> {
+    let text = match frame {
+        IncomingFrame::Text(t) => t,
+        IncomingFrame::Binary => {
+            let _ = send(
+                socket,
+                &error_frame(
+                    "unsupported_modality",
+                    "audio input is not available for the routed provider",
+                ),
+            )
+            .await;
+            return ControlFlow::Continue(());
+        }
+    };
+
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        let _ = send(
+            socket,
+            &error_frame("invalid_request_error", "frame is not valid JSON"),
+        )
+        .await;
+        return ControlFlow::Continue(());
+    };
+
+    match parse_client_event(value) {
+        ClientEvent::SessionUpdate(patch) => {
+            session.apply(patch);
+            if send(socket, &session.session_frame("session.updated"))
+                .await
+                .is_err()
+            {
+                return ControlFlow::Break(());
+            }
+        }
+        ClientEvent::AddUserMessage(text) => {
+            let item = json!({
+                "id": format!("item_{}", session.item_seq + 1),
+                "object": "realtime.item", "type": "message", "role": "user",
+                "content": [{ "type": "input_text", "text": text }]
+            });
+            session.messages.push(Message::text(Role::User, text));
+            let frame = session.item_added(item);
+            if send(socket, &frame).await.is_err() {
+                return ControlFlow::Break(());
+            }
+        }
+        ClientEvent::AddFunctionOutput { call_id, output } => {
+            let item = json!({
+                "id": format!("item_{}", session.item_seq + 1),
+                "object": "realtime.item", "type": "function_call_output",
+                "call_id": call_id, "output": output
+            });
+            session.messages.push(Message {
+                role: Role::Tool,
+                content: vec![llmleaf_model::ContentPart::Text { text: output }],
+                tool_calls: Vec::new(),
+                tool_call_id: Some(call_id),
+                name: None,
+            });
+            let frame = session.item_added(item);
+            if send(socket, &frame).await.is_err() {
+                return ControlFlow::Break(());
+            }
+        }
+        // v1: item deletion is not mapped back onto accumulated history (clients overwhelmingly
+        // append). Tolerated as a no-op rather than silently corrupting state.
+        ClientEvent::DeleteItem(_) | ClientEvent::Cancel | ClientEvent::Other => {}
+        ClientEvent::AudioUnsupported => {
+            let _ = send(
+                socket,
+                &error_frame(
+                    "unsupported_modality",
+                    "audio is not available for the routed provider",
+                ),
+            )
+            .await;
+        }
+        ClientEvent::Create(over) => {
+            if session.wants_audio(&over) {
+                let _ = send(
+                    socket,
+                    &error_frame(
+                        "unsupported_modality",
+                        "audio output is not available for the routed provider; set output_modalities to [\"text\"]",
+                    ),
+                )
+                .await;
+                return ControlFlow::Continue(());
+            }
+            *turn += 1;
+            if run_turn(socket, engine, session, &over, key, request_id, *turn)
+                .await
+                .is_err()
+            {
+                return ControlFlow::Break(());
+            }
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 /// Run one generation turn: issue the chat request, stream the synthesized scaffold, persist the

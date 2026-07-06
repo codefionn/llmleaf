@@ -211,6 +211,56 @@ fn paths() -> Value {
                 },
             }
         },
+        "/v1/responses": {
+            "post": {
+                "tags": ["responses"],
+                "operationId": "createResponse",
+                "summary": "Create a model response (OpenAI Responses API)",
+                "description": "OpenAI Responses API compatibility — a third chat dialect on the same \
+                    canonical core (P3), served statelessly. llmleaf stores nothing (the core is not a \
+                    database), so `store` is accepted but the response always reports `\"store\": \
+                    false`, and `previous_response_id`, `background: true`, and `item_reference` inputs \
+                    are rejected. With `stream: true` the response is a `text/event-stream` of named \
+                    Responses events (`response.created`, `response.output_text.delta`, …, \
+                    `response.completed`); otherwise a single `response` object (a collected stream — P4).",
+                "requestBody": json_body("ResponsesRequest"),
+                "responses": error_responses(json!({
+                    "200": {
+                        "description": "A response object, or an SSE stream of response events when `stream` is true",
+                        "content": {
+                            "application/json": { "schema": schema_ref("ResponseObject") },
+                            "text/event-stream": {
+                                "schema": { "type": "string" },
+                                "description": "Named SSE events (`event: response.created` … \
+                                    `event: response.completed`) whose `data:` lines carry the \
+                                    Responses streaming event objects. No `[DONE]` sentinel.",
+                            },
+                        },
+                    },
+                    "404": json_err("No route for the requested model"),
+                })),
+            }
+        },
+        "/v1/responses/{id}": {
+            "get": {
+                "tags": ["responses"],
+                "operationId": "getResponse",
+                "summary": "Retrieve a stored response (always 404 — stateless)",
+                "description": "Always returns 404: llmleaf is stateless and stores no responses \
+                    (`store` is always false), so retrieval is unsupported by design. This is P7 \
+                    transparency — a client that ignored `\"store\": false` is told exactly why.",
+                "parameters": [{
+                    "name": "id",
+                    "in": "path",
+                    "required": true,
+                    "schema": { "type": "string" },
+                    "description": "A response id. Never resolvable — nothing is stored.",
+                }],
+                "responses": {
+                    "404": json_err("No stored response — llmleaf is stateless (`store` is always false)"),
+                },
+            }
+        },
         "/v1/embeddings": {
             "post": {
                 "tags": ["embeddings"],
@@ -412,8 +462,86 @@ fn batch_id_param() -> Value {
     })
 }
 
-fn components() -> Value {
+/// The `ResponsesRequest` component schema (factored out of [`components`] to keep that macro under the
+/// recursion limit — see the call site).
+fn responses_request_schema() -> Value {
     json!({
+        "type": "object",
+        "description": "OpenAI Responses API request, mapped into llmleaf's canonical request at the \
+            edge (P3). Served statelessly: `store` is accepted but ignored (the response always reports \
+            false); `previous_response_id`, `background: true`, and `item_reference` inputs are \
+            rejected. Unlisted fields (`text`, `truncation`, `include`, `metadata`, \
+            `parallel_tool_calls`, …) are accepted and ride through verbatim.",
+        "properties": {
+            "model": { "type": "string", "description": "The logical model id to route." },
+            "input": {
+                "description": "A string, or an ordered array of input items (messages, function \
+                    calls, function-call outputs, reasoning).",
+                "oneOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "object" } },
+                ],
+            },
+            "instructions": { "type": "string", "description": "Hoisted to a leading system message." },
+            "max_output_tokens": { "type": "integer" },
+            "temperature": { "type": "number" },
+            "top_p": { "type": "number" },
+            "stream": { "type": "boolean", "default": false },
+            "tools": {
+                "type": "array",
+                "items": { "type": "object" },
+                "description": "Flat function tools; hosted tools are rejected.",
+            },
+            "tool_choice": {},
+            "reasoning": { "type": "object" },
+            "store": {
+                "type": "boolean",
+                "description": "Accepted but ignored; the response always reports false.",
+            },
+        },
+        "required": ["model"],
+        "additionalProperties": true,
+    })
+}
+
+/// The `ResponseObject` component schema (factored out of [`components`], as above).
+fn response_object_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "An OpenAI Responses object. With `stream: true` the response is a \
+            `text/event-stream` of Responses events instead of this object. `store` is always false \
+            (llmleaf is stateless).",
+        "properties": {
+            "id": { "type": "string" },
+            "object": { "type": "string", "const": "response" },
+            "created_at": { "type": "integer" },
+            "status": { "type": "string", "enum": ["completed", "incomplete", "failed"] },
+            "model": { "type": "string" },
+            "output": {
+                "type": "array",
+                "items": { "type": "object" },
+                "description": "Output items: `reasoning`, `message`, `function_call`.",
+            },
+            "store": { "type": "boolean", "const": false },
+            "reasoning": { "type": "object" },
+            "usage": {
+                "type": "object",
+                "properties": {
+                    "input_tokens": { "type": "integer" },
+                    "output_tokens": { "type": "integer" },
+                    "total_tokens": { "type": "integer" },
+                },
+            },
+        },
+    })
+}
+
+fn components() -> Value {
+    // The Responses schemas are inserted *after* the base document is built rather than inlined here:
+    // this `json!` is already near the macro recursion limit, and adding keys inline tips it over
+    // (each object key deepens the expansion). Merging post-construction — like `error_responses` does
+    // for its extra status codes — keeps the macro at its original size.
+    let mut components = json!({
         "securitySchemes": {
             "bearerAuth": {
                 "type": "http",
@@ -462,9 +590,33 @@ fn components() -> Value {
                     "name": { "type": "string" },
                     "tool_calls": { "type": "array", "items": { "type": "object" } },
                     "tool_call_id": { "type": "string" },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Open reasoning text (OpenRouter-style extension). Emitted on \
+                            responses when the model produced thinking; omitted otherwise.",
+                    },
+                    "reasoning_details": {
+                        "type": "array",
+                        "items": schema_ref("ReasoningDetail"),
+                        "description": "Structured reasoning blocks (OpenRouter-style extension), \
+                            emitted alongside `reasoning` when the thinking is signed or encrypted.",
+                    },
                 },
                 "required": ["role"],
                 "additionalProperties": true,
+            },
+            "ReasoningDetail": {
+                "type": "object",
+                "description": "One OpenRouter-style `reasoning_details[]` entry: `reasoning.text` \
+                    carries open thinking text and, when the upstream signs it, a `signature`; \
+                    `reasoning.encrypted` carries an opaque `data` block, replayed verbatim.",
+                "properties": {
+                    "type": { "type": "string", "enum": ["reasoning.text", "reasoning.encrypted"] },
+                    "text": { "type": "string" },
+                    "signature": { "type": "string" },
+                    "data": { "type": "string" },
+                },
+                "required": ["type"],
             },
             "ChatCompletionRequest": {
                 "type": "object",
@@ -526,7 +678,25 @@ fn components() -> Value {
                             "type": "object",
                             "properties": {
                                 "index": { "type": "integer" },
-                                "delta": { "type": "object" },
+                                "delta": {
+                                    "type": "object",
+                                    "description": "The incremental change: `role`/`content` and \
+                                        `tool_calls` per the OpenAI dialect, plus the OpenRouter-style \
+                                        reasoning extensions — `reasoning` (open thinking text delta) \
+                                        and `reasoning_details` (signed/encrypted blocks, see \
+                                        ReasoningDetail).",
+                                    "properties": {
+                                        "role": { "type": "string" },
+                                        "content": { "type": ["string", "null"] },
+                                        "tool_calls": { "type": "array", "items": { "type": "object" } },
+                                        "reasoning": { "type": "string" },
+                                        "reasoning_details": {
+                                            "type": "array",
+                                            "items": schema_ref("ReasoningDetail"),
+                                        },
+                                    },
+                                    "additionalProperties": true,
+                                },
                                 "finish_reason": { "type": ["string", "null"] },
                             },
                         },
@@ -771,5 +941,10 @@ fn components() -> Value {
                 "additionalProperties": true,
             },
         },
-    })
+    });
+    if let Some(schemas) = components["schemas"].as_object_mut() {
+        schemas.insert("ResponsesRequest".into(), responses_request_schema());
+        schemas.insert("ResponseObject".into(), response_object_schema());
+    }
+    components
 }

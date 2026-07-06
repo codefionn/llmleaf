@@ -39,6 +39,18 @@ name = "openai-main"
 kind = "openai"
 credential = "env:OPENAI_API_KEY"
 settings = { organization = "org-xxxx" }
+# Chat API: `kind = "openai"` speaks the Responses API (`POST /responses`) by default, transparently
+# falling back to `/chat/completions` per-request when the request carries chat-only fields (`stop`,
+# `response_format`, `logit_bias`, …). A brand opted into Responses whose upstream turns out not to
+# serve `POST /responses` (answers 404/405) also transparently retries that request over
+# `/chat/completions`. Pin it back with `settings = { chat_api = "chat_completions" }`;
+# opt any OTHER OpenAI-wire brand (xai, groq, fireworks, …) into Responses with
+# `settings = { chat_api = "responses" }` — for `kind = "openrouter"` that targets OpenRouter's own
+# beta Responses endpoint (see the openrouter provider below), and for `kind = "groq"` Groq's beta
+# `POST /openai/v1/responses` (open unsigned reasoning replay; Groq documents `include`,
+# `previous_response_id`, and `store: true` as unsupported, so llmleaf's stateless mapping omits
+# `include` there). Not supported for `azure-openai` (its Responses URL differs).
+#   settings = { organization = "org-xxxx", chat_api = "chat_completions" }
 # Node-local rate limits (optional) — flow control TOWARD this provider so a node never pushes it past
 # its published limits and eats 429s. This is the node-local HA family (principles 8 and 9), NOT per-key
 # usage accounting (that is the pulled [control.limits] verdicts, principle 5). Each dimension is
@@ -110,6 +122,10 @@ credential = "env:OPENROUTER_API_KEY"
 prefix = "or"
 # OpenRouter attribution headers (optional):
 settings = { http_referer = "https://your.app", x_title = "your-app" }
+# OpenRouter also serves its own Responses API (`POST /api/v1/responses`, currently beta) with signed
+# open-reasoning replay across its providers; the default stays `/chat/completions` while it is beta.
+# Opt in per instance:
+#   settings = { http_referer = "https://your.app", x_title = "your-app", chat_api = "responses" }
 # Voice catalog for `GET /v1/audio/voices` (text-to-speech). llmleaf serves voices automatically where a
 # real catalog exists: a *documented* set for OpenAI speech models (incl. via this prefix, e.g.
 # `or/openai/gpt-4o-mini-tts`, and Azure OpenAI), and a *live* fetch for a `mistral` provider (its

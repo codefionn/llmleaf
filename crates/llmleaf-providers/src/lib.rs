@@ -30,6 +30,7 @@ mod http;
 mod lmstudio;
 mod mock;
 mod ollama;
+mod openai_responses_wire;
 mod openai_wire;
 mod realtime_ws;
 mod thinking;
@@ -52,11 +53,12 @@ mod roundtrip;
 
 pub use anthropic::AnthropicProvider;
 pub use cohere::CohereProvider;
-pub use compat::{Brand, OpenAiCompatProvider};
+pub use compat::{Brand, ChatApi, OpenAiCompatProvider};
 pub use gemini::GeminiProvider;
 pub use lmstudio::LmStudioProvider;
 pub use mock::EchoProvider;
 pub use ollama::OllamaProvider;
+pub use openai_responses_wire::ResponsesFlavor;
 pub use transport::{
     HttpRequest, HttpResponse, HttpTransport, Method, RealtimeTransport, ReqwestTransport,
     Transports,

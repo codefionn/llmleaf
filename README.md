@@ -22,6 +22,12 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty dif
 - Per-model fallback chains with node-local, health-aware switchover — no consensus or shared
   state, so N nodes run behind a plain load balancer.
 - Opt-in per request/provider: Anthropic prompt caching, a unified thinking/reasoning-effort ladder.
+- Responses API both ways: consumers can `POST /v1/responses` to *any* routed provider — upstreams
+  without a Responses endpoint are served over their chat-completions wire transparently. Upstream,
+  OpenAI and xAI speak their Responses APIs by default; OpenRouter's beta `POST /responses` (signed
+  open-reasoning replay, routed cost), Groq's beta `POST /responses` (open unsigned reasoning), and
+  Azure OpenAI's v1 surface (resource-scoped `POST /openai/v1/responses`) are per-provider opt-ins
+  (`chat_api = "responses"`).
 - Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits, and usage ride an
   **outbound** control plane (pull verdicts, push usage). Fully operable from the config file alone.
 
@@ -66,6 +72,7 @@ Consumer endpoints (OpenAI-compatible unless noted):
 |----------|---------|
 | `POST /v1/chat/completions` | Chat (SSE streaming) |
 | `POST /v1/messages` | Anthropic Messages dialect |
+| `POST /v1/responses` | OpenAI Responses dialect (stateless; `store` always `false`, `GET /v1/responses/{id}` is a 404-by-design stub) |
 | `POST /v1/embeddings` | Embeddings |
 | `POST /v1/audio/speech`, `GET /v1/audio/voices` | Text-to-speech |
 | `POST /v1/audio/transcriptions` | Speech-to-text |

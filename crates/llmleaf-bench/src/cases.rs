@@ -870,8 +870,26 @@ fn register_provider(suite: &mut Suite) {
     // build-request → SSE-parse → fold path one streaming chat request drives through the provider.
     {
         let provider = openai_provider(FakeHttpTransport::sse(canned_chat_sse()));
-        let cx = bench_provider_cx();
+        // The openai brand now defaults to the Responses wire; pin this instance back to chat
+        // completions so the case keeps measuring exactly the wire its label names.
+        let mut cx = bench_provider_cx();
+        cx.settings
+            .insert("chat_api".into(), json!("chat_completions"));
         suite.bench("provider/openai_chat_sse", small_request, move |req| {
+            block_on(async {
+                let stream = provider.chat(req, &cx).await.expect("chat");
+                collect(stream).await.expect("collect")
+            })
+        });
+    }
+
+    // Chat over the Responses wire — the openai brand's *default* chat path: build the `POST /responses`
+    // body, hand it to the transport, then parse the canned typed-event SSE incrementally and collect
+    // the canonical stream. The Responses sibling of the chat-completions case above.
+    {
+        let provider = openai_provider(FakeHttpTransport::sse(canned_responses_sse()));
+        let cx = bench_provider_cx();
+        suite.bench("provider/openai_responses_sse", small_request, move |req| {
             block_on(async {
                 let stream = provider.chat(req, &cx).await.expect("chat");
                 collect(stream).await.expect("collect")
@@ -964,6 +982,46 @@ fn canned_chat_sse() -> Bytes {
         body.push_str("\n\n");
     }
     body.push_str("data: [DONE]\n\n");
+    Bytes::from(body)
+}
+
+/// A canned OpenAI Responses SSE stream: `response.created`, two `output_text` deltas, a
+/// `function_call` item with an arguments delta, and the terminal `response.completed` carrying usage —
+/// the representative typed-event shape `openai_responses_sse_to_stream` parses (the Responses mirror
+/// of [`canned_chat_sse`]; no `[DONE]` sentinel on this dialect).
+fn canned_responses_sse() -> Bytes {
+    let frames = [
+        json!({
+            "type": "response.created",
+            "response": { "id": "resp-bench", "model": "gpt-4o", "status": "in_progress" }
+        }),
+        json!({ "type": "response.output_text.delta", "item_id": "msg_1", "delta": "Hello" }),
+        json!({ "type": "response.output_text.delta", "item_id": "msg_1", "delta": ", world!" }),
+        json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_weather", "arguments": "" }
+        }),
+        json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "delta": "{\"city\":\"NYC\"}"
+        }),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp-bench",
+                "model": "gpt-4o",
+                "status": "completed",
+                "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
+            }
+        }),
+    ];
+    let mut body = String::new();
+    for frame in &frames {
+        body.push_str("data: ");
+        body.push_str(&serde_json::to_string(frame).expect("frame serialises"));
+        body.push_str("\n\n");
+    }
     Bytes::from(body)
 }
 
