@@ -1090,7 +1090,11 @@ async fn list_models(
                 for info in models {
                     let bare = info.id.clone();
                     let id = format!("{prefix}/{bare}");
-                    let meta = enrich(info, engine.pricing().card(&bare));
+                    let mut meta = enrich(info, engine.pricing().card(&bare));
+                    // Tag the display name with the namespace so a consumer can tell which prefix
+                    // serves the model without parsing the id.
+                    let display = meta.name.take().unwrap_or_else(|| bare.clone());
+                    meta.name = Some(format!("[{prefix}] {display}"));
                     entries.entry(id).or_insert(ModelEntry {
                         source: Source::Prefix,
                         meta: Some(meta),

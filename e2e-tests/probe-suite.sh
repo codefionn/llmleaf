@@ -78,6 +78,9 @@ have FIREWORKS_API_KEY  && chat_tools+=("fireworks-chat")
 have CEREBRAS_API_KEY   && chat_tools+=("cerebras-chat")
 have ZAI_API_KEY        && chat_tools+=("zai-chat")
 have MOONSHOT_API_KEY   && chat_tools+=("moonshot-chat")
+have MINIMAX_API_KEY     && chat_tools+=("minimax-chat")
+have ZAI_CODING_API_KEY  && chat_tools+=("zai-coding-chat")
+have KIMI_CODING_API_KEY && chat_tools+=("kimi-coding-chat")
 if [ ${#chat_tools[@]} -gt 0 ]; then
   run "chat + tool calls" "${chat_tools[@]}" --only chat,tools
 fi

@@ -798,6 +798,81 @@ async fn transport_error_propagates_as_unavailable() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// 4b. MiniMax's `base_resp` envelope — an error smuggled inside a 2xx still classifies as Upstream
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn minimax_200_json_base_resp_error_maps_to_upstream() {
+    // MiniMax answers a (streaming) chat request with HTTP 200 + a plain JSON `base_resp` error —
+    // its envelope quirk. The provider detects the JSON body by content type and classifies the
+    // business code as the HTTP status it stands for (1002 → 429), so the engine retries/falls back
+    // exactly as for an honest 429.
+    let transports = http_transports(FakeHttpTransport::json(json!({
+        "base_resp": { "status_code": 1002, "status_msg": "rate limit" }
+    })));
+    let provider = OpenAiCompatProvider::for_kind("minimax", &transports).unwrap();
+
+    match provider.chat(user_chat("MiniMax-M3", "hi"), &cx()).await {
+        Err(ModelError::Upstream { status, message }) => {
+            assert_eq!(status, 429);
+            assert!(message.contains("1002"), "code relayed: {message}");
+            assert!(message.contains("rate limit"), "msg relayed: {message}");
+        }
+        Err(other) => panic!("expected Upstream{{429}}, got {other:?}"),
+        Ok(_) => panic!("a non-zero base_resp at HTTP 200 must surface as an error"),
+    }
+}
+
+#[tokio::test]
+async fn minimax_sse_frame_with_base_resp_error_fails_the_stream() {
+    // Output moderation / quota can trip mid-stream inside a 200 SSE: a frame carrying a non-zero
+    // `base_resp` ends the stream with the classified error instead of silently truncating.
+    let body = concat!(
+        "data: {\"id\":\"mm-1\",\"model\":\"MiniMax-M3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\"}}]}\n\n",
+        "data: {\"base_resp\":{\"status_code\":1027,\"status_msg\":\"output flagged\"}}\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::sse(body));
+    let provider = OpenAiCompatProvider::for_kind("minimax", &transports).unwrap();
+
+    let stream = provider
+        .chat(user_chat("MiniMax-M3", "hi"), &cx())
+        .await
+        .expect("the SSE response opens as a stream");
+    match collect(stream).await {
+        Err(ModelError::Upstream { status, message }) => {
+            assert_eq!(status, 400);
+            assert!(message.contains("output flagged"), "msg relayed: {message}");
+        }
+        Err(other) => panic!("expected Upstream{{400}}, got {other:?}"),
+        Ok(_) => panic!("a mid-stream base_resp error must fail the stream"),
+    }
+}
+
+#[tokio::test]
+async fn minimax_chat_sse_roundtrips_despite_benign_base_resp() {
+    // Success frames may carry `base_resp.status_code: 0` — the per-frame check must treat that as
+    // success and the stream must round-trip like any other OpenAI-wire SSE.
+    let body = concat!(
+        "data: {\"id\":\"mm-2\",\"model\":\"MiniMax-M3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"}}],\"base_resp\":{\"status_code\":0,\"status_msg\":\"\"}}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\", world\"},\"finish_reason\":\"stop\"}],\"base_resp\":{\"status_code\":0}}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::sse(body));
+    let provider = OpenAiCompatProvider::for_kind("minimax", &transports).unwrap();
+
+    let stream = provider
+        .chat(user_chat("MiniMax-M3", "hi"), &cx())
+        .await
+        .expect("chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+    assert_eq!(resp.id, "mm-2");
+    assert_eq!(resp.choices[0].text, "Hello, world");
+    assert_eq!(resp.choices[0].finish_reason, Some(FinishReason::Stop));
+    assert_eq!(resp.usage.total_tokens, 10);
+}
+
+// ---------------------------------------------------------------------------------------------
 // 5. Realtime — scripted frames arrive on the consumer side; a failing transport surfaces the error
 // ---------------------------------------------------------------------------------------------
 

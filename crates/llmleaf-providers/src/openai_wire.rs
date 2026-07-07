@@ -460,6 +460,19 @@ pub fn sse_payloads(buf: &mut Vec<u8>, incoming: &[u8]) -> Vec<String> {
 /// one. A transport error becomes [`ModelError::Unavailable`] (fallback-eligible); an undecodable frame
 /// becomes [`ModelError::Mapping`].
 pub fn openai_sse_to_stream(body: crate::transport::BytesStream, model: String) -> ResponseStream {
+    openai_sse_to_stream_checked(body, model, |_| None)
+}
+
+/// [`openai_sse_to_stream`] with a per-frame envelope check, for a brand that can smuggle an error
+/// into a 2xx SSE frame (MiniMax's `base_resp` — see [`crate::compat`]). `check` runs on every decoded
+/// frame *before* canonical mapping; a `Some(err)` ends the stream with that error instead of mapping
+/// the frame. The brand-specific classification lives at the provider edge (the caller passes it in);
+/// this shared core only provides the hook, and the plain [`openai_sse_to_stream`] passes a no-op.
+pub fn openai_sse_to_stream_checked(
+    body: crate::transport::BytesStream,
+    model: String,
+    check: fn(&Value) -> Option<ModelError>,
+) -> ResponseStream {
     Box::pin(async_stream::stream! {
         let mut bytes = body;
         let mut buf: Vec<u8> = Vec::with_capacity(1024);
@@ -481,6 +494,10 @@ pub fn openai_sse_to_stream(body: crate::transport::BytesStream, model: String) 
                 }
                 match serde_json::from_str::<Value>(&payload) {
                     Ok(v) => {
+                        if let Some(e) = check(&v) {
+                            yield Err(e);
+                            return;
+                        }
                         for c in openai_chunk_to_canonical(&v, &mut seen_start, &model) {
                             yield Ok(c);
                         }

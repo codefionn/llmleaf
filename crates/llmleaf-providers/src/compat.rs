@@ -27,10 +27,10 @@ use crate::openai_responses_wire::{
 };
 use crate::openai_wire::{
     audio_content_type, decode_speech_envelope, embedding_request_to_openai,
-    mistral_voices_to_canonical, openai_speech_model, openai_sse_to_stream, openai_to_chunks,
-    openai_to_embeddings, openai_to_transcription, openai_voices, openai_wire_models_to_canonical,
-    openrouter_to_transcription, request_to_openai, speech_request_to_openai,
-    transcription_request_to_openrouter,
+    mistral_voices_to_canonical, openai_speech_model, openai_sse_to_stream,
+    openai_sse_to_stream_checked, openai_to_chunks, openai_to_embeddings, openai_to_transcription,
+    openai_voices, openai_wire_models_to_canonical, openrouter_to_transcription, request_to_openai,
+    speech_request_to_openai, transcription_request_to_openrouter,
 };
 use crate::transport::{HttpRequest, HttpTransport, MultipartForm, RealtimeTransport, Transports};
 
@@ -154,6 +154,15 @@ pub struct Brand {
     /// flag rides verbatim in `extra` via [`crate::openai_wire::openai_wire_models_to_canonical`]), never
     /// in that shared parser — the quirk stays at the edge. Only consulted when `models_api` is `true`.
     pub filter_inactive_models: bool,
+    /// Whether this brand's upstream wraps every response — success and failure alike, even at HTTP
+    /// 200 — in MiniMax's legacy `base_resp` envelope (`{"status_code": N, "status_msg": "…"}`), where
+    /// a non-zero `status_code` IS the error regardless of the HTTP status. When `true`, chat and
+    /// embeddings responses are classified through [`base_resp_error`] before canonical mapping (a
+    /// JSON body answering a stream request is detected by content type), so a smuggled quota/auth
+    /// error surfaces as the honest [`ModelError::Upstream`] it stands for instead of an empty
+    /// response or a `Mapping` error. `false` (the default) adds no check — no other brand ships the
+    /// envelope, and the shared parsers stay quirk-free (the drop happens at this provider edge).
+    pub base_resp_envelope: bool,
     /// Which batch dialect this brand speaks (default [`BatchFlavor::Unsupported`]).
     pub batch_flavor: BatchFlavor,
     /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for all but OpenAI and
@@ -186,6 +195,7 @@ impl Brand {
             models_url_override: None,
             models_query: "",
             filter_inactive_models: false,
+            base_resp_envelope: false,
             batch_flavor: BatchFlavor::Unsupported,
             chat_api: ChatApi::Completions,
             responses_flavor: ResponsesFlavor::OpenAi,
@@ -205,6 +215,7 @@ impl Brand {
             models_url_override: None,
             models_query: "",
             filter_inactive_models: false,
+            base_resp_envelope: false,
             batch_flavor: BatchFlavor::Unsupported,
             chat_api: ChatApi::Completions,
             responses_flavor: ResponsesFlavor::OpenAi,
@@ -307,14 +318,50 @@ impl Brand {
                 ..bc("cerebras", "https://api.cerebras.ai/v1", AuthStyle::Bearer)
             },
             // Z.AI (Zhipu GLM), international host. The /api/paas/v4 base already carries the version
-            // segment — unlike the OpenAI default there is no trailing /v1 to append.
+            // segment — unlike the OpenAI default there is no trailing /v1 to append. Mainland China
+            // serves the same wire at https://open.bigmodel.cn/api/paas/v4 (an `endpoint` override).
             "zai" | "z.ai" | "glm" => b("zai", "https://api.z.ai/api/paas/v4", AuthStyle::Bearer),
+            // Z.AI's GLM Coding Plan (subscription): the same wire as `zai` on a dedicated base — the
+            // plan serves ONLY at /api/coding/paas/v4 (mainland override:
+            // https://open.bigmodel.cn/api/coding/paas/v4), and its keys are rejected on the general
+            // endpoint exactly as general keys are rejected here (business codes 1315/1311). A distinct
+            // kind, not an alias of `zai`, because the two differ in the one thing a kind defaults: the
+            // endpoint.
+            "zai-coding" | "glm-coding" => b(
+                "zai-coding",
+                "https://api.z.ai/api/coding/paas/v4",
+                AuthStyle::Bearer,
+            ),
             // Moonshot (Kimi, incl. Kimi K2), international host. Its API deprecates max_tokens in
-            // favor of max_completion_tokens.
+            // favor of max_completion_tokens. Mainland China serves the same wire at
+            // https://api.moonshot.cn/v1 (an `endpoint` override).
             "moonshot" | "kimi" | "kimi-k2" => Brand {
                 models_api: true,
                 batch_flavor: BatchFlavor::OpenAi,
                 ..bc("moonshot", "https://api.moonshot.ai/v1", AuthStyle::Bearer)
+            },
+            // Moonshot's "Kimi for Coding" subscription: the same OpenAI wire on a dedicated host+path
+            // (keys come from kimi.com/code/console, not the platform console, and are not
+            // interchangeable with pay-as-you-go `moonshot` keys). The upstream serves exactly one
+            // model id, `kimi-for-coding`. Neither `GET /models` nor batch is documented on this host,
+            // so both stay off — the namespace shows as non-enumerable rather than guessing.
+            "kimi-coding" | "kimi-for-coding" => bc(
+                "kimi-coding",
+                "https://api.kimi.com/coding/v1",
+                AuthStyle::Bearer,
+            ),
+            // MiniMax, international host (mainland: https://api.minimaxi.com/v1 — note the extra `i` —
+            // via an `endpoint` override). OpenAI chat wire with `max_completion_tokens` (`max_tokens`
+            // is its documented-deprecated alias), but its legacy `base_resp` envelope survives on this
+            // surface: errors can arrive as HTTP 200 with a non-zero `base_resp.status_code`, so
+            // responses are classified through `base_resp_error` before mapping. `GET /models` returns
+            // 404 — the catalog stays non-enumerable. The Token Plan subscription (né "Coding Plan")
+            // rides the SAME host and paths — only the key differs (plan-bound `sk-cp…` keys, not
+            // interchangeable with pay-as-you-go keys) — so the subscription kinds resolve to this
+            // identical row rather than implying an endpoint difference that does not exist.
+            "minimax" | "minimax-coding" | "minimax-token-plan" => Brand {
+                base_resp_envelope: true,
+                ..bc("minimax", "https://api.minimax.io/v1", AuthStyle::Bearer)
             },
             "azure-openai" | "azure" => Brand {
                 name: "azure-openai",
@@ -335,6 +382,7 @@ impl Brand {
                 models_query: "",
                 // Azure's listing carries no `active` flag — nothing to filter.
                 filter_inactive_models: false,
+                base_resp_envelope: false,
                 // Azure batch is resource-scoped (`/openai/batches?api-version=`), not under the
                 // deployment URL its chat uses — handled by the AzureOpenAi batch flavor.
                 batch_flavor: BatchFlavor::AzureOpenAi,
@@ -370,9 +418,16 @@ impl Brand {
             "zai",
             "z.ai",
             "glm",
+            "zai-coding",
+            "glm-coding",
             "moonshot",
             "kimi",
             "kimi-k2",
+            "kimi-coding",
+            "kimi-for-coding",
+            "minimax",
+            "minimax-coding",
+            "minimax-token-plan",
             "azure-openai",
             "azure",
         ]
@@ -484,13 +539,52 @@ impl OpenAiCompatProvider {
             let body = request_to_openai(req, self.brand.max_tokens_field, false);
             let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
             let value = post_json(&*self.http, http_req).await?;
+            if let Some(err) = self.envelope_error(&value) {
+                return Err(err);
+            }
             let chunks = openai_to_chunks(value, &req.model);
             return Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))));
         }
         let body = request_to_openai(req, self.brand.max_tokens_field, true);
         let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
         let resp = send_checked(&*self.http, http_req).await?;
+        if self.brand.base_resp_envelope {
+            // MiniMax can answer a stream request with a plain JSON body at HTTP 200 — its `base_resp`
+            // error envelope, or (defensively) a complete non-streamed completion. An SSE parse of a
+            // bare JSON object yields zero frames, which would surface as an empty response; detect the
+            // JSON body by content type, classify the envelope, and re-chunk a success (principle 4:
+            // the canonical boundary stays a stream). A real SSE stream gets the same per-frame check,
+            // since output moderation/quota can trip mid-stream inside a 200.
+            let is_json = resp
+                .header("content-type")
+                .is_some_and(|ct| ct.contains("application/json"));
+            if is_json {
+                let bytes = resp.collect_body().await?;
+                let value: Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| ModelError::Mapping(e.to_string()))?;
+                if let Some(err) = base_resp_error(&value) {
+                    return Err(err);
+                }
+                let chunks = openai_to_chunks(value, &req.model);
+                return Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))));
+            }
+            return Ok(openai_sse_to_stream_checked(
+                resp.body,
+                req.model.clone(),
+                base_resp_error,
+            ));
+        }
         Ok(openai_sse_to_stream(resp.body, req.model.clone()))
+    }
+
+    /// The brand's 200-with-error envelope check ([`base_resp_error`]) when it carries one; `None`
+    /// for every envelope-free brand (the default — a single flag check, nothing parsed).
+    fn envelope_error(&self, value: &Value) -> Option<ModelError> {
+        if self.brand.base_resp_envelope {
+            base_resp_error(value)
+        } else {
+            None
+        }
     }
 
     /// The OpenAI Responses API (`POST /responses`) chat path — the mirror of [`Self::chat_completions`]
@@ -931,6 +1025,42 @@ fn drop_inactive(brand: &Brand, mut models: Vec<ModelInfo>) -> Vec<ModelInfo> {
     models
 }
 
+/// Classify MiniMax's `base_resp` envelope ([`Brand::base_resp_envelope`]): every response — success
+/// and failure, even at HTTP 200 — carries `{"base_resp": {"status_code": N, "status_msg": "…"}}`,
+/// and a non-zero `status_code` IS the error regardless of the HTTP status. Map the documented
+/// business code to the HTTP status it stands for, so a smuggled quota error is retried/fallback-
+/// handled exactly like an honest 429 and an auth error surfaces as the 401 it is. An absent envelope
+/// or `status_code: 0` is success (`None`). Pure (no I/O) so the mapping is unit-testable; the quirk
+/// stays at this provider edge, never in the shared wire parsers.
+fn base_resp_error(value: &Value) -> Option<ModelError> {
+    let resp = value.get("base_resp")?;
+    let code = resp.get("status_code").and_then(Value::as_i64).unwrap_or(0);
+    if code == 0 {
+        return None;
+    }
+    let message = resp
+        .get("status_msg")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // The documented code table (platform.minimax.io/docs/api-reference/errorcode): 1004/2049 auth,
+    // 1008 insufficient balance, 1002 rate limit / 1041 connection limit / 2056 quota exhausted,
+    // 1026 input flagged / 1027 output flagged / 1039 token limit / 1042 invisible-character ratio /
+    // 2013 invalid params, 1001 timeout; everything else (1000/1013/1024/1033/…) is upstream-internal.
+    let status = match code {
+        1004 | 2049 => 401,
+        1008 => 402,
+        1002 | 1041 | 2056 => 429,
+        1026 | 1027 | 1039 | 1042 | 2013 => 400,
+        1001 => 504,
+        _ => 500,
+    };
+    Some(ModelError::Upstream {
+        status,
+        message: format!("minimax base_resp {code}: {message}"),
+    })
+}
+
 #[async_trait]
 impl Provider for OpenAiCompatProvider {
     fn name(&self) -> &str {
@@ -972,6 +1102,9 @@ impl Provider for OpenAiCompatProvider {
         let body = embedding_request_to_openai(&req);
         let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
         let value = post_json(&*self.http, http_req).await?;
+        if let Some(err) = self.envelope_error(&value) {
+            return Err(err);
+        }
         Ok(openai_to_embeddings(value, &req.model))
     }
 
@@ -1617,6 +1750,16 @@ mod tests {
         assert_eq!(Brand::for_kind("glm").unwrap().name, "zai");
         assert_eq!(Brand::for_kind("kimi").unwrap().name, "moonshot");
         assert_eq!(Brand::for_kind("kimi-k2").unwrap().name, "moonshot");
+        assert_eq!(Brand::for_kind("glm-coding").unwrap().name, "zai-coding");
+        assert_eq!(
+            Brand::for_kind("kimi-for-coding").unwrap().name,
+            "kimi-coding"
+        );
+        assert_eq!(Brand::for_kind("minimax-coding").unwrap().name, "minimax");
+        assert_eq!(
+            Brand::for_kind("minimax-token-plan").unwrap().name,
+            "minimax"
+        );
     }
 
     #[test]
@@ -1640,6 +1783,100 @@ mod tests {
             OpenAiCompatProvider::for_kind("zai", &crate::transport::Transports::fake()).unwrap();
         let url = p.build_url(&ProviderCx::default(), "glm-4.6");
         assert_eq!(url, "https://api.z.ai/api/paas/v4/chat/completions");
+    }
+
+    #[test]
+    fn zai_coding_plan_serves_from_its_dedicated_base() {
+        // The GLM Coding Plan subscription is its own kind because the endpoint is the difference:
+        // coding-plan keys serve ONLY at /api/coding/paas/v4. Everything else matches `zai`.
+        let p = OpenAiCompatProvider::for_kind("zai-coding", &crate::transport::Transports::fake())
+            .unwrap();
+        let url = p.build_url(&ProviderCx::default(), "glm-4.6");
+        assert_eq!(url, "https://api.z.ai/api/coding/paas/v4/chat/completions");
+        let brand = Brand::for_kind("zai-coding").unwrap();
+        assert_eq!(brand.max_tokens_field, "max_tokens");
+        assert!(!brand.models_api);
+    }
+
+    #[test]
+    fn kimi_coding_subscription_serves_from_kimi_com() {
+        // "Kimi for Coding" keys come from kimi.com/code/console and serve only on api.kimi.com's
+        // /coding/v1 base — a different host than pay-as-you-go `moonshot`. Same reasoning-era
+        // max_completion_tokens field; no documented models/batch surface on this host.
+        let p =
+            OpenAiCompatProvider::for_kind("kimi-coding", &crate::transport::Transports::fake())
+                .unwrap();
+        let url = p.build_url(&ProviderCx::default(), "kimi-for-coding");
+        assert_eq!(url, "https://api.kimi.com/coding/v1/chat/completions");
+        let brand = Brand::for_kind("kimi-coding").unwrap();
+        assert_eq!(brand.max_tokens_field, "max_completion_tokens");
+        assert!(!brand.models_api);
+        assert_eq!(brand.batch_flavor, BatchFlavor::Unsupported);
+    }
+
+    #[test]
+    fn minimax_token_plan_kinds_share_the_standard_endpoint() {
+        // MiniMax's Token Plan (né Coding Plan) rides the same host and paths as pay-as-you-go —
+        // only the key differs — so every subscription kind resolves to the identical brand row
+        // rather than implying an endpoint difference that does not exist.
+        for kind in ["minimax", "minimax-coding", "minimax-token-plan"] {
+            let brand = Brand::for_kind(kind).unwrap();
+            assert_eq!(brand.name, "minimax", "{kind}");
+            assert_eq!(
+                brand.default_endpoint, "https://api.minimax.io/v1",
+                "{kind}"
+            );
+            assert!(brand.base_resp_envelope, "{kind}");
+            assert_eq!(brand.max_tokens_field, "max_completion_tokens", "{kind}");
+            // No public `GET /models` (404) — the catalog stays non-enumerable, never guessed.
+            assert!(!brand.models_api, "{kind}");
+        }
+        let p = OpenAiCompatProvider::for_kind("minimax", &crate::transport::Transports::fake())
+            .unwrap();
+        let url = p.build_url(&ProviderCx::default(), "MiniMax-M3");
+        assert_eq!(url, "https://api.minimax.io/v1/chat/completions");
+    }
+
+    #[test]
+    fn only_minimax_carries_the_base_resp_envelope() {
+        assert!(Brand::for_kind("minimax").unwrap().base_resp_envelope);
+        for kind in ["openai", "zai", "zai-coding", "moonshot", "kimi-coding"] {
+            assert!(
+                !Brand::for_kind(kind).unwrap().base_resp_envelope,
+                "{kind} must not pay the envelope check"
+            );
+        }
+    }
+
+    #[test]
+    fn base_resp_codes_map_to_the_http_status_they_stand_for() {
+        let err = |code: i64| {
+            base_resp_error(&json!({
+                "base_resp": { "status_code": code, "status_msg": "msg" }
+            }))
+        };
+        let status = |code: i64| match err(code) {
+            Some(ModelError::Upstream { status, .. }) => status,
+            other => panic!("code {code} should classify as Upstream, got {other:?}"),
+        };
+        assert_eq!(status(1004), 401); // auth failure
+        assert_eq!(status(2049), 401); // invalid API key
+        assert_eq!(status(1008), 402); // insufficient balance
+        assert_eq!(status(1002), 429); // rate limit
+        assert_eq!(status(2056), 429); // quota exhausted
+        assert_eq!(status(2013), 400); // invalid params
+        assert_eq!(status(1001), 504); // timeout
+        assert_eq!(status(1013), 500); // internal service error
+                                       // The message carries the business code + upstream text for the event stream.
+        match err(1002) {
+            Some(ModelError::Upstream { message, .. }) => {
+                assert_eq!(message, "minimax base_resp 1002: msg");
+            }
+            other => panic!("expected Upstream, got {other:?}"),
+        }
+        // `status_code: 0` (and an envelope-free body) is success, not an error.
+        assert!(err(0).is_none());
+        assert!(base_resp_error(&json!({ "choices": [] })).is_none());
     }
 
     #[test]

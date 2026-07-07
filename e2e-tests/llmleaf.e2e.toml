@@ -96,6 +96,24 @@ name = "moonshot"
 kind = "moonshot"
 credential = "env:MOONSHOT_API_KEY"
 
+[[providers]]
+name = "minimax"
+kind = "minimax"
+credential = "env:MINIMAX_API_KEY"
+
+# Subscription-plan kinds (probed only when their plan-bound keys are set): the GLM Coding Plan
+# serves on its dedicated /api/coding/paas/v4 base; Kimi for Coding on api.kimi.com/coding/v1
+# (its upstream serves exactly one model id, `kimi-for-coding`).
+[[providers]]
+name = "zai-coding"
+kind = "zai-coding"
+credential = "env:ZAI_CODING_API_KEY"
+
+[[providers]]
+name = "kimi-coding"
+kind = "kimi-coding"
+credential = "env:KIMI_CODING_API_KEY"
+
 # Local backends — no key, but they need a reachable endpoint. Left commented so the
 # default stack is cloud-only; uncomment and set `endpoint` to probe a local runtime.
 # These are first-class NATIVE providers (Ollama's `/api/*`, LM Studio's `/api/v0/*`) — the
@@ -179,6 +197,19 @@ targets = [{ provider = "zai", model = "glm-4-flash" }]
 [[routes]]
 model = "moonshot-chat"
 targets = [{ provider = "moonshot", model = "moonshot-v1-8k" }]
+
+[[routes]]
+model = "minimax-chat"
+targets = [{ provider = "minimax", model = "MiniMax-M2.1" }]
+
+[[routes]]
+model = "zai-coding-chat"
+targets = [{ provider = "zai-coding", model = "glm-4.6" }]
+
+# Kimi for Coding serves exactly one upstream model id.
+[[routes]]
+model = "kimi-coding-chat"
+targets = [{ provider = "kimi-coding", model = "kimi-for-coding" }]
 
 # --- chat only (Perplexity has no general tool-calling surface) ---
 [[routes]]

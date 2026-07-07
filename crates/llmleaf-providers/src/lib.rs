@@ -9,7 +9,8 @@
 //! Two shapes of provider live here:
 //!   - the **OpenAI-compatible family** ([`compat`]) — one config-driven provider over a quirk table,
 //!     covering OpenAI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Perplexity,
-//!     Cerebras, Z.AI (GLM), Moonshot (Kimi), and Azure OpenAI;
+//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), Moonshot (Kimi, incl. Kimi for Coding), MiniMax
+//!     (incl. the Token Plan), and Azure OpenAI;
 //!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Ollama (its
 //!     native `/api/*` surface), and LM Studio (its native `/api/v0/*` surface) — each a native mapping
 //!     module because its wire format is its own thing. (Vertex reuses Gemini's body mapping but owns its

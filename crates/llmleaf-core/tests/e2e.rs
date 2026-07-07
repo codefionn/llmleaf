@@ -1017,7 +1017,8 @@ async fn models_passthrough_openrouter_shape() {
     let v = body_json(app.oneshot(models_request("", None)).await.unwrap()).await;
     let m = find_model(&v, "m/alpha").expect("m/alpha");
     assert!(m.get("object").is_none());
-    assert_eq!(m["name"], "Alpha");
+    // Prefix passthroughs tag the display name with the namespace: `[<prefix>] <name>`.
+    assert_eq!(m["name"], "[m] Alpha");
     assert_eq!(m["created"], 0);
     assert_eq!(m["context_length"], 64000);
     assert_eq!(m["architecture"]["modality"], "text->text");

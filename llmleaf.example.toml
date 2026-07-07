@@ -29,7 +29,15 @@ rate_limit_max_wait_ms = 5000
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
 #   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
-#                       moonshot (kimi, kimi-k2), azure-openai (azure)
+#                       moonshot (kimi, kimi-k2), minimax (minimax-coding, minimax-token-plan),
+#                       azure-openai (azure)
+#   subscription plans: zai-coding (glm-coding; the GLM Coding Plan — same wire as zai on its
+#                       dedicated /api/coding/paas/v4 base, plan-bound keys),
+#                       kimi-coding (kimi-for-coding; the "Kimi for Coding" subscription at
+#                       api.kimi.com/coding/v1 — keys from kimi.com/code/console, upstream model id
+#                       is always `kimi-for-coding`). MiniMax's Token Plan needs no separate
+#                       endpoint — the minimax-* aliases exist so configs read clearly; only the
+#                       key differs (plan-bound `sk-cp…`).
 #   local/testing     : echo
 # The `endpoint` is optional for most kinds — each has a sensible default (the OpenAI-wire vendors'
 # public hosts; localhost for the ollama/lmstudio local runtimes).

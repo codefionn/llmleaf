@@ -37,7 +37,7 @@ The suite (`probe-suite.sh`) only probes a provider when its key is set in `.env
 
 | Group            | Providers (key-gated)                                                                 | Capabilities   |
 | ---------------- | ------------------------------------------------------------------------------------ | -------------- |
-| chat + tools     | openai, anthropic, gemini, cohere, groq, openrouter, requesty, deepseek, xai, mistral, together, fireworks, cerebras, zai, moonshot | `chat`, `tools` |
+| chat + tools     | openai, anthropic, gemini, cohere, groq, openrouter, requesty, deepseek, xai, mistral, together, fireworks, cerebras, zai, moonshot, minimax, zai-coding, kimi-coding | `chat`, `tools` |
 | chat only        | perplexity                                                                            | `chat`         |
 | audio (tts→stt)  | openai, groq, mistral                                                                 | `tts`, `stt`   |
 
