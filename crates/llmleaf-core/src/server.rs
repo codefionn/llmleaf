@@ -1328,48 +1328,6 @@ fn architecture_json(modality: Option<Modality>) -> Value {
     })
 }
 
-#[cfg(test)]
-mod architecture_tests {
-    use super::{architecture_value, Modality, ModelInfo};
-    use serde_json::json;
-
-    #[test]
-    fn upstream_architecture_with_modalities_passes_through() {
-        // An OpenRouter vision model reports its real modality arrays; the internal `ModelInfo`
-        // preserves that block verbatim in `extra`. It must survive to the rendered `architecture`
-        // (our coarse `Modality::Llm` alone would have flattened it to `["text"]`, hiding `image`).
-        let mut info = ModelInfo::new("moonshotai/kimi-k2-vision");
-        info.extra.insert(
-            "architecture".into(),
-            json!({
-                "input_modalities": ["text", "image"],
-                "output_modalities": ["text"],
-                "modality": "text+image->text",
-                "tokenizer": "Other",
-            }),
-        );
-        let arch = architecture_value(Some(&info), Some(Modality::Llm));
-        assert_eq!(arch["input_modalities"], json!(["text", "image"]));
-        assert_eq!(arch["output_modalities"], json!(["text"]));
-    }
-
-    #[test]
-    fn missing_or_stub_architecture_falls_back_to_coarse() {
-        // No architecture in `extra` → derive the coarse block from the modality.
-        let bare = ModelInfo::new("acme/plain-llm");
-        let arch = architecture_value(Some(&bare), Some(Modality::Llm));
-        assert_eq!(arch["input_modalities"], json!(["text"]));
-
-        // A stub architecture with no modality arrays (some brands publish just `{modality, tokenizer}`)
-        // is NOT richer than the derivation, so we still fall back rather than emit empty arrays.
-        let mut stub = ModelInfo::new("acme/stub");
-        stub.extra
-            .insert("architecture".into(), json!({ "modality": "text", "tokenizer": "GPT" }));
-        let arch = architecture_value(Some(&stub), Some(Modality::Llm));
-        assert_eq!(arch["input_modalities"], json!(["text"]));
-    }
-}
-
 /// The OpenRouter `pricing` block: per-TOKEN decimal strings. `null` when the model is not token-priced
 /// (rate-less audio, or an upstream that reports no price) — never a misleading `"0"` object. A
 /// present-but-zero rate (embeddings) renders `"0"`.
@@ -1944,4 +1902,48 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod architecture_tests {
+    use super::{architecture_value, Modality, ModelInfo};
+    use serde_json::json;
+
+    #[test]
+    fn upstream_architecture_with_modalities_passes_through() {
+        // An OpenRouter vision model reports its real modality arrays; the internal `ModelInfo`
+        // preserves that block verbatim in `extra`. It must survive to the rendered `architecture`
+        // (our coarse `Modality::Llm` alone would have flattened it to `["text"]`, hiding `image`).
+        let mut info = ModelInfo::new("moonshotai/kimi-k2-vision");
+        info.extra.insert(
+            "architecture".into(),
+            json!({
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "modality": "text+image->text",
+                "tokenizer": "Other",
+            }),
+        );
+        let arch = architecture_value(Some(&info), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text", "image"]));
+        assert_eq!(arch["output_modalities"], json!(["text"]));
+    }
+
+    #[test]
+    fn missing_or_stub_architecture_falls_back_to_coarse() {
+        // No architecture in `extra` → derive the coarse block from the modality.
+        let bare = ModelInfo::new("acme/plain-llm");
+        let arch = architecture_value(Some(&bare), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text"]));
+
+        // A stub architecture with no modality arrays (some brands publish just `{modality, tokenizer}`)
+        // is NOT richer than the derivation, so we still fall back rather than emit empty arrays.
+        let mut stub = ModelInfo::new("acme/stub");
+        stub.extra.insert(
+            "architecture".into(),
+            json!({ "modality": "text", "tokenizer": "GPT" }),
+        );
+        let arch = architecture_value(Some(&stub), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text"]));
+    }
 }
