@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -58,6 +58,9 @@ pub struct AppState {
     pub events: EventBus,
     /// Resolved admin token. `None` ⇒ the read-only admin surface is disabled.
     pub admin_token: Option<Arc<String>>,
+    /// Maximum inbound request body size in bytes (`[server].max_body_bytes`), applied as the router's
+    /// body limit so base64-inlined multimodal images don't 413 against axum's 2 MiB default.
+    max_body_bytes: usize,
     request_seq: Arc<AtomicU64>,
 }
 
@@ -120,6 +123,7 @@ pub fn build_state_with(
         oauth,
         events,
         admin_token,
+        max_body_bytes: config.server.max_body_bytes,
         request_seq: Arc::new(AtomicU64::new(0)),
     })
 }
@@ -148,6 +152,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/routes", get(admin_routes))
         .route("/admin/health", get(admin_health))
         .route("/admin/keys", get(admin_list_keys))
+        // Accept base64-inlined multimodal images (a data: URI easily exceeds axum's 2 MiB default,
+        // which would 413 the whole request). Sized by `[server].max_body_bytes`.
+        .layer(DefaultBodyLimit::max(state.max_body_bytes))
         .with_state(state)
 }
 

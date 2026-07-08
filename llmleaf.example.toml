@@ -22,6 +22,11 @@ fallback_cooldown_secs = 15
 # 429 immediately). This is latency you opt into knowingly (principle 1: the hot path is sacred).
 rate_limit_max_wait_ms = 5000
 
+# Maximum inbound request body size (bytes). Multimodal chat requests inline images as base64 `data:`
+# URIs, which easily exceed the framework's 2 MiB default and would otherwise 413 ("Payload Too Large").
+# Default is a generous 32 MiB; raise for larger image/audio payloads, lower to cap per-request memory.
+max_body_bytes = 33554432
+
 # --- Providers (back-end extensions). `kind` is resolved by the binary's factory, never the core. ---
 #
 # Known kinds:

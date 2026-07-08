@@ -92,6 +92,11 @@ pub struct ServerConfig {
     /// is latency the operator opts into knowingly (principle 1: the hot path is sacred — waiting is
     /// bounded and off by default-ish, never unbounded queueing).
     pub rate_limit_max_wait_ms: u64,
+    /// Maximum inbound request body size, in bytes. A multimodal chat request inlines images as
+    /// base64 `data:` URIs, which easily exceed axum's 2 MiB default and would otherwise 413
+    /// ("Payload Too Large"), so the default here is a generous 32 MiB. Raise it for larger image or
+    /// audio payloads; lower it to cap memory per request.
+    pub max_body_bytes: usize,
 }
 
 impl Default for ServerConfig {
@@ -103,6 +108,9 @@ impl Default for ServerConfig {
             include_payloads: false,
             fallback_cooldown_secs: 15,
             rate_limit_max_wait_ms: 5000,
+            // 32 MiB — comfortably fits base64-inlined images in a multimodal request (axum's 2 MiB
+            // default 413s them).
+            max_body_bytes: 32 * 1024 * 1024,
         }
     }
 }
