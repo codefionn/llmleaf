@@ -1247,7 +1247,7 @@ fn render_model(id: &str, entry: &ModelEntry, admin: bool, engine: &Engine, now:
     obj.insert("created".into(), json!(0));
     obj.insert("description".into(), json!(""));
     obj.insert("context_length".into(), opt_u32(max_context));
-    obj.insert("architecture".into(), architecture_json(modality));
+    obj.insert("architecture".into(), architecture_value(meta, modality));
     obj.insert("pricing".into(), pricing_json(meta));
     obj.insert("top_provider".into(), Value::Object(top_provider));
     obj.insert("per_request_limits".into(), Value::Null);
@@ -1284,6 +1284,31 @@ fn opt_u32(v: Option<u32>) -> Value {
     v.map(|n| json!(n)).unwrap_or(Value::Null)
 }
 
+/// The `architecture` block for a served model. When the upstream published its OWN `architecture`
+/// carrying real modality arrays — OpenRouter does, e.g. `input_modalities: ["text","image"]` for a
+/// vision model — that block is AUTHORITATIVE and passes through verbatim, so fine-grained input/output
+/// capabilities (which our coarse [`Modality`] enum cannot represent) survive to consumers. Only when no
+/// such block exists — a bare routed model, or a stub `architecture` with no modality arrays (some
+/// brands publish just `{modality, tokenizer}`) — do we fall back to [`architecture_json`], the coarse
+/// block derived from our internal modality. Preserved verbatim from `openai_wire`'s `extra` (SOUL:
+/// principle 7, no data loss).
+fn architecture_value(meta: Option<&ModelInfo>, modality: Option<Modality>) -> Value {
+    if let Some(arch) = meta
+        .and_then(|m| m.extra.get("architecture"))
+        .and_then(Value::as_object)
+    {
+        let has_modalities = ["input_modalities", "output_modalities"].iter().any(|k| {
+            arch.get(*k)
+                .and_then(Value::as_array)
+                .is_some_and(|a| !a.is_empty())
+        });
+        if has_modalities {
+            return Value::Object(arch.clone());
+        }
+    }
+    architecture_json(modality)
+}
+
 /// The OpenRouter `architecture` block derived from our internal modality. An unknown modality (a
 /// routed-but-uncatalogued model) yields empty arrays + null modality rather than a guess.
 fn architecture_json(modality: Option<Modality>) -> Value {
@@ -1301,6 +1326,48 @@ fn architecture_json(modality: Option<Modality>) -> Value {
         "tokenizer": "Other",
         "instruct_type": Value::Null,
     })
+}
+
+#[cfg(test)]
+mod architecture_tests {
+    use super::{architecture_value, Modality, ModelInfo};
+    use serde_json::json;
+
+    #[test]
+    fn upstream_architecture_with_modalities_passes_through() {
+        // An OpenRouter vision model reports its real modality arrays; the internal `ModelInfo`
+        // preserves that block verbatim in `extra`. It must survive to the rendered `architecture`
+        // (our coarse `Modality::Llm` alone would have flattened it to `["text"]`, hiding `image`).
+        let mut info = ModelInfo::new("moonshotai/kimi-k2-vision");
+        info.extra.insert(
+            "architecture".into(),
+            json!({
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["text"],
+                "modality": "text+image->text",
+                "tokenizer": "Other",
+            }),
+        );
+        let arch = architecture_value(Some(&info), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text", "image"]));
+        assert_eq!(arch["output_modalities"], json!(["text"]));
+    }
+
+    #[test]
+    fn missing_or_stub_architecture_falls_back_to_coarse() {
+        // No architecture in `extra` → derive the coarse block from the modality.
+        let bare = ModelInfo::new("acme/plain-llm");
+        let arch = architecture_value(Some(&bare), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text"]));
+
+        // A stub architecture with no modality arrays (some brands publish just `{modality, tokenizer}`)
+        // is NOT richer than the derivation, so we still fall back rather than emit empty arrays.
+        let mut stub = ModelInfo::new("acme/stub");
+        stub.extra
+            .insert("architecture".into(), json!({ "modality": "text", "tokenizer": "GPT" }));
+        let arch = architecture_value(Some(&stub), Some(Modality::Llm));
+        assert_eq!(arch["input_modalities"], json!(["text"]));
+    }
 }
 
 /// The OpenRouter `pricing` block: per-TOKEN decimal strings. `null` when the model is not token-priced
