@@ -165,12 +165,17 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Node 20 ships npm 10; OIDC trusted publishing needs >= 11.5.1.
+      # OIDC trusted publishing needs npm >= 11.5.1. Pinned to the last 11.x
+      # (not @latest, and not 12.x) so: (a) a future npm release can't bump its
+      # own `engines` requirement out from under Node 22 and break this job
+      # again without a corresponding PR here, and (b) we don't inherit npm
+      # v12's new secure-by-default install behavior (scripts/git/remote deps
+      # blocked unless allow-listed), which could silently break `npm ci`.
       - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.18.0
 
       # The protobuf-es types are committed, so no protoc/codegen step is needed. Install
       # and build with the committed (in-sync) lockfile FIRST; stamp the version only just
