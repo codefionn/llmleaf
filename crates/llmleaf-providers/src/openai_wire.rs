@@ -853,6 +853,7 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
                 .unwrap_or_default()
         };
         let has_audio = |m: &[&str]| m.iter().any(|x| *x == "audio" || *x == "speech");
+        let has_vision = |m: &[&str]| m.iter().any(|x| *x == "image" || *x == "video");
         let outs = list("output_modalities");
         let ins = list("input_modalities");
         if has_audio(&outs) {
@@ -866,8 +867,13 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
             return Some(Modality::Stt);
         }
         if outs.contains(&"text") {
-            // Text out: STT if it also takes audio in, otherwise a plain language model.
-            return Some(if has_audio(&ins) {
+            // Text out with audio in is speech-to-text ONLY when audio is the model's *distinguishing*
+            // rich input. A natively-multimodal chat LLM — Gemini (`text+image+video+file+audio->text`),
+            // GPT-4o — also accepts audio, but its image/video inputs betray a general language model;
+            // classifying it STT would hide the whole Gemini catalog from `?type=llm` (its normal home)
+            // and mis-file it under `?type=stt`. A true STT model (Voxtral/Whisper: audio[+text] in, no
+            // vision) has no such vision input, so it still resolves to STT.
+            return Some(if has_audio(&ins) && !has_vision(&ins) {
                 Modality::Stt
             } else {
                 Modality::Llm
@@ -1076,6 +1082,25 @@ mod tests {
         ]});
         let out = openai_wire_models_to_canonical(v);
         assert_eq!(out[0].modality, Some(Modality::Stt));
+        assert_eq!(out[1].modality, Some(Modality::Llm));
+    }
+
+    #[test]
+    fn models_openrouter_multimodal_llm_with_audio_input_is_llm() {
+        // Gemini-on-OpenRouter shape: a native-multimodal chat model reports audio AMONG its inputs
+        // (`text+image+video+file+audio -> text`). Audio-in must NOT flip it to STT — its image/video
+        // input marks it a language model, so it stays LLM and remains listed under `?type=llm` (the
+        // regression that hid the entire Gemini catalog from the chat model picker).
+        let v = json!({ "data": [
+            { "id": "google/gemini-2.5-pro", "architecture": {
+                "input_modalities": ["text", "image", "file", "audio", "video"],
+                "output_modalities": ["text"] } },
+            { "id": "google/gemini-3.5-flash", "architecture": {
+                "input_modalities": ["file", "image", "text", "audio", "video"],
+                "output_modalities": ["text"] } },
+        ]});
+        let out = openai_wire_models_to_canonical(v);
+        assert_eq!(out[0].modality, Some(Modality::Llm));
         assert_eq!(out[1].modality, Some(Modality::Llm));
     }
 
