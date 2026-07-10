@@ -982,10 +982,27 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
     }
     if let Some(caps) = obj.get("capabilities").and_then(Value::as_object) {
         let on = |k: &str| caps.get(k).and_then(Value::as_bool).unwrap_or(false);
+        // Mistral's `/v1/models` describes each model with a `capabilities` object (Azure reuses the
+        // shape with its own keys). These are explicit, dedicated capability flags — not id guesses
+        // (SOUL) — and they are the ONLY modality signal Mistral publishes: its `type` is always
+        // "base" and it carries no `architecture` block, so without reading them every Mistral model
+        // (chat, TTS, STT alike) collapses to `None` and vanishes from `?type=` filters.
+        //
+        // Dedicated speech synthesis (`audio_speech`) is TTS. A transcription model
+        // (`audio_transcription`/`_realtime`) is STT — but only absent `vision`: a general vision LLM
+        // that also transcribes stays LLM, mirroring the audio-in guard in the `architecture` path
+        // above (Voxtral has no vision, so it still resolves to STT). Bare `audio` is an audio *input*
+        // for multimodal chat, not a modality of its own, so it defers to `completion_chat` (→ LLM).
+        if on("audio_speech") {
+            return Some(Modality::Tts);
+        }
+        if (on("audio_transcription") || on("audio_transcription_realtime")) && !on("vision") {
+            return Some(Modality::Stt);
+        }
         if on("embeddings") {
             return Some(Modality::Embedding);
         }
-        if on("chat_completion") || on("completion") {
+        if on("completion_chat") || on("chat_completion") || on("completion") {
             return Some(Modality::Llm);
         }
     }
@@ -1215,6 +1232,43 @@ mod tests {
         assert_eq!(
             openai_wire_models_to_canonical(v)[0].modality,
             Some(Modality::Stt)
+        );
+    }
+
+    #[test]
+    fn models_mistral_capabilities_classify_audio_modalities() {
+        // Mistral's `/v1/models` publishes NO `architecture`/arrow signal and always reports
+        // `type: "base"` — modality is only knowable from its `capabilities` flags. A dedicated
+        // speech model (`audio_speech`) is TTS; a transcription model (`audio_transcription`) is STT;
+        // a chat model (`completion_chat`) — even one that also hears audio (`audio: true`) — is LLM.
+        // Without reading these, every Mistral audio model collapsed to `None` and never appeared
+        // under `?type=tts` / `?type=stt`.
+        let v = json!({ "object": "list", "data": [
+            { "id": "voxtral-mini-tts", "type": "base",
+              "capabilities": { "completion_chat": false, "audio_speech": true } },
+            { "id": "voxtral-mini-transcribe", "type": "base",
+              "capabilities": { "completion_chat": false, "audio_transcription": true } },
+            { "id": "voxtral-small-latest", "type": "base",
+              "capabilities": { "completion_chat": true, "audio": true, "vision": false } },
+            { "id": "mistral-large-latest", "type": "base",
+              "capabilities": { "completion_chat": true, "function_calling": true } },
+        ]});
+        let out = openai_wire_models_to_canonical(v);
+        assert_eq!(out[0].modality, Some(Modality::Tts)); // audio_speech → TTS
+        assert_eq!(out[1].modality, Some(Modality::Stt)); // audio_transcription → STT
+        assert_eq!(out[2].modality, Some(Modality::Llm)); // audio INPUT chat model stays LLM
+        assert_eq!(out[3].modality, Some(Modality::Llm)); // plain chat → LLM
+    }
+
+    #[test]
+    fn models_mistral_vision_llm_that_transcribes_stays_llm() {
+        // A general vision LLM that also advertises transcription must NOT be filed as STT — mirrors
+        // the audio-in guard on the `architecture` path (a model with vision is a language model).
+        let v = json!({ "data": [{ "id": "pixtral-omni", "type": "base", "capabilities": {
+            "completion_chat": true, "vision": true, "audio_transcription": true } }]});
+        assert_eq!(
+            openai_wire_models_to_canonical(v)[0].modality,
+            Some(Modality::Llm)
         );
     }
 
