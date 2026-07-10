@@ -638,10 +638,7 @@ pub fn openai_to_rerank(value: Value, fallback_model: &str) -> RerankResponse {
                 .unwrap_or(0.0);
             // Echoed back only when the consumer asked (`return_documents`); carried verbatim so a
             // structured/multimodal document round-trips unchanged.
-            let document = item
-                .get("document")
-                .filter(|v| !v.is_null())
-                .cloned();
+            let document = item.get("document").filter(|v| !v.is_null()).cloned();
             results.push(RerankResult {
                 index,
                 relevance_score,

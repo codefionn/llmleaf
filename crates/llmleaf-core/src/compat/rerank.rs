@@ -63,9 +63,7 @@ fn parse_documents(value: Option<Value>) -> Result<Vec<RerankDocument>, ModelErr
             .map(|v| match v {
                 Value::String(s) => Ok(RerankDocument::Text(s)),
                 Value::Object(obj) => Ok(RerankDocument::Rich(obj)),
-                _ => Err(mapping(
-                    "`documents` items must be strings or objects",
-                )),
+                _ => Err(mapping("`documents` items must be strings or objects")),
             })
             .collect(),
         _ => Err(mapping(
@@ -185,10 +183,10 @@ mod tests {
         assert!(
             parse_rerank_request(json!({ "model": "m", "query": "q", "documents": [] })).is_err()
         );
-        assert!(parse_rerank_request(
-            json!({ "model": "m", "query": "q", "documents": [1, 2] })
-        )
-        .is_err());
+        assert!(
+            parse_rerank_request(json!({ "model": "m", "query": "q", "documents": [1, 2] }))
+                .is_err()
+        );
     }
 
     #[test]

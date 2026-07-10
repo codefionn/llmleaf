@@ -30,8 +30,8 @@ use crate::openai_wire::{
     mistral_voices_to_canonical, openai_speech_model, openai_sse_to_stream,
     openai_sse_to_stream_checked, openai_to_chunks, openai_to_embeddings, openai_to_rerank,
     openai_to_transcription, openai_voices, openai_wire_models_to_canonical,
-    openrouter_to_transcription, rerank_request_to_openai, request_to_openai, speech_request_to_openai,
-    transcription_request_to_openrouter,
+    openrouter_to_transcription, request_to_openai, rerank_request_to_openai,
+    speech_request_to_openai, transcription_request_to_openrouter,
 };
 use crate::transport::{HttpRequest, HttpTransport, MultipartForm, RealtimeTransport, Transports};
 
