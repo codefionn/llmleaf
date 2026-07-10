@@ -11,6 +11,8 @@ import eu.codefionn.llmleaf.client.model.EmbeddingResponse
 import eu.codefionn.llmleaf.client.model.ErrorResponse
 import eu.codefionn.llmleaf.client.model.ListModelsResponse
 import eu.codefionn.llmleaf.client.model.ModelType
+import eu.codefionn.llmleaf.client.model.RerankRequest
+import eu.codefionn.llmleaf.client.model.RerankResponse
 import eu.codefionn.llmleaf.client.model.ResponsesRequest
 import eu.codefionn.llmleaf.client.model.ResponsesResponse
 import eu.codefionn.llmleaf.client.model.ResponsesStreamEvent
@@ -228,6 +230,22 @@ public class LlmleafClient private constructor(
         }.execute { resp ->
             ensureSuccess(resp)
             decode(resp.bodyAsText(), EmbeddingResponse.serializer())
+        }
+
+    // --- Rerank ------------------------------------------------------------
+
+    /**
+     * Reranks [RerankRequest.documents] against [RerankRequest.query], returning them in
+     * descending relevance order (`POST /v1/rerank`).
+     */
+    public suspend fun rerank(request: RerankRequest): RerankResponse =
+        http.prepareRequest {
+            method = HttpMethod.Post
+            url("$base/v1/rerank")
+            jsonBody(request, RerankRequest.serializer())
+        }.execute { resp ->
+            ensureSuccess(resp)
+            decode(resp.bodyAsText(), RerankResponse.serializer())
         }
 
     // --- Models ------------------------------------------------------------

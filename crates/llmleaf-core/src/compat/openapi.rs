@@ -107,6 +107,7 @@ fn build() -> Value {
         "tags": [
             { "name": "chat", "description": "Chat completions" },
             { "name": "embeddings", "description": "Vector embeddings" },
+            { "name": "rerank", "description": "Document reranking" },
             { "name": "audio", "description": "Text-to-speech, speech-to-text, and voices" },
             { "name": "models", "description": "Model discovery" },
             { "name": "batches", "description": "Asynchronous batch jobs" },
@@ -273,6 +274,21 @@ fn paths() -> Value {
                 })),
             }
         },
+        "/v1/rerank": {
+            "post": {
+                "tags": ["rerank"],
+                "operationId": "createRerank",
+                "summary": "Rerank documents by relevance to a query",
+                "description": "The Cohere/Jina/OpenRouter rerank dialect: a query plus candidate \
+                    documents in, a relevance-ordered `results` list out. Documents may be plain \
+                    strings or structured `{ text?, image? }` objects (multimodal rerankers).",
+                "requestBody": json_body("RerankRequest"),
+                "responses": error_responses(json!({
+                    "200": json_ok("The ranked results", "RerankResponse"),
+                    "404": json_err("No route for the requested model"),
+                })),
+            }
+        },
         "/v1/audio/speech": {
             "post": {
                 "tags": ["audio"],
@@ -350,7 +366,7 @@ fn paths() -> Value {
                         "name": "type",
                         "in": "query",
                         "required": false,
-                        "schema": { "type": "string", "enum": ["all", "llm", "tts", "stt", "embedding"] },
+                        "schema": { "type": "string", "enum": ["all", "llm", "tts", "stt", "embedding", "rerank"] },
                         "description": "Modality filter (llmleaf extension). An unknown value is a 400.",
                     },
                     {
@@ -819,6 +835,60 @@ fn components() -> Value {
                                     ],
                                 },
                             },
+                        },
+                    },
+                    "usage": schema_ref("Usage"),
+                },
+            },
+            "RerankRequest": {
+                "type": "object",
+                "properties": {
+                    "model": { "type": "string" },
+                    "query": { "type": "string", "description": "The query documents are ranked against." },
+                    "documents": {
+                        "type": "array",
+                        "description": "Candidate documents: plain strings, or `{ text?, image? }` \
+                            objects for multimodal rerankers.",
+                        "items": {
+                            "oneOf": [
+                                { "type": "string" },
+                                { "type": "object", "additionalProperties": true },
+                            ],
+                        },
+                    },
+                    "top_n": { "type": "integer", "description": "Return only the top N results." },
+                    "return_documents": {
+                        "type": "boolean",
+                        "description": "Echo each ranked document back in the results.",
+                    },
+                },
+                "required": ["model", "query", "documents"],
+                "additionalProperties": true,
+            },
+            "RerankResponse": {
+                "type": "object",
+                "properties": {
+                    "object": { "type": "string", "const": "list" },
+                    "model": { "type": "string" },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": {
+                                    "type": "integer",
+                                    "description": "Position of the document in the request list.",
+                                },
+                                "relevance_score": {
+                                    "type": "number",
+                                    "description": "Relevance score; higher is more relevant.",
+                                },
+                                "document": {
+                                    "description": "The ranked document, present when \
+                                        `return_documents` was set (string or object).",
+                                },
+                            },
+                            "required": ["index", "relevance_score"],
                         },
                     },
                     "usage": schema_ref("Usage"),

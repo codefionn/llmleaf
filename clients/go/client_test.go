@@ -491,6 +491,73 @@ func TestEmbeddingsBase64Decode(t *testing.T) {
 	}
 }
 
+func TestCreateRerank(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/rerank" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		body := readBody(t, r)
+		if body["model"] != "rr" {
+			t.Errorf("model = %v", body["model"])
+		}
+		if body["query"] != "what is the capital of france?" {
+			t.Errorf("query = %v", body["query"])
+		}
+		docs, ok := body["documents"].([]any)
+		if !ok || len(docs) != 3 {
+			t.Fatalf("documents = %v (want 3-element array)", body["documents"])
+		}
+		if body["top_n"].(float64) != 2 {
+			t.Errorf("top_n = %v", body["top_n"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Results are returned pre-sorted by descending relevance_score.
+		io.WriteString(w, `{"object":"list","model":"rr","results":[
+		  {"index":2,"relevance_score":0.98,"document":"Paris is the capital of France."},
+		  {"index":0,"relevance_score":0.11}],
+		  "usage":{"total_tokens":7,"cost_usd":0.0003}}`)
+	})
+	defer srv.Close()
+
+	resp, err := client.CreateRerank(context.Background(), RerankRequest{
+		Model:     "rr",
+		Query:     "what is the capital of france?",
+		Documents: []string{"The Eiffel Tower is tall.", "Berlin is in Germany.", "Paris is the capital of France."},
+		TopN:      ptr(2),
+	})
+	if err != nil {
+		t.Fatalf("CreateRerank: %v", err)
+	}
+	if resp.Object != "list" || resp.Model != "rr" {
+		t.Errorf("object/model = %q/%q", resp.Object, resp.Model)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(resp.Results))
+	}
+	// Ordering: highest relevance first.
+	if resp.Results[0].RelevanceScore < resp.Results[1].RelevanceScore {
+		t.Errorf("results not sorted by descending relevance_score: %v", resp.Results)
+	}
+	if resp.Results[0].Index != 2 || resp.Results[0].RelevanceScore != 0.98 {
+		t.Errorf("result[0] = {index:%d, score:%v}", resp.Results[0].Index, resp.Results[0].RelevanceScore)
+	}
+	if string(resp.Results[0].Document) != `"Paris is the capital of France."` {
+		t.Errorf("result[0].Document = %s", resp.Results[0].Document)
+	}
+	if resp.Results[1].Index != 0 || resp.Results[1].RelevanceScore != 0.11 {
+		t.Errorf("result[1] = {index:%d, score:%v}", resp.Results[1].Index, resp.Results[1].RelevanceScore)
+	}
+	if len(resp.Results[1].Document) != 0 {
+		t.Errorf("result[1].Document should be absent, got %s", resp.Results[1].Document)
+	}
+	if resp.Usage.GetTotalTokens() != 7 {
+		t.Errorf("usage.total_tokens = %d", resp.Usage.GetTotalTokens())
+	}
+	if resp.Usage.GetCostUsd() != 0.0003 {
+		t.Errorf("usage.cost_usd = %v", resp.Usage.GetCostUsd())
+	}
+}
+
 func TestApiErrorEnvelope(t *testing.T) {
 	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

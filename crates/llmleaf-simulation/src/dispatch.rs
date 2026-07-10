@@ -23,8 +23,9 @@ use llmleaf_core::config::{Config, ProviderConfig, RouteConfig, ServerConfig, Ta
 use llmleaf_core::{build_state, EngineError, Event};
 use llmleaf_model::{
     AudioChunk, AudioStream, ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse,
-    FinishReason, Message, ModelError, ResponseStream, Role, SpeechRequest, StreamChunk,
-    TranscriptionRequest, TranscriptionResponse, Usage,
+    FinishReason, Message, ModelError, RerankDocument, RerankRequest, RerankResponse, RerankResult,
+    ResponseStream, Role, SpeechRequest, StreamChunk, TranscriptionRequest, TranscriptionResponse,
+    Usage,
 };
 use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry};
 
@@ -39,15 +40,17 @@ enum Modality {
     Embed,
     Speech,
     Transcribe,
+    Rerank,
 }
 
 /// A stable, generation-ordered list of all modalities. Used wherever the RNG picks a modality so the
 /// choice never depends on HashMap/HashSet iteration order (determinism is load-bearing).
-const ALL_MODALITIES: [Modality; 4] = [
+const ALL_MODALITIES: [Modality; 5] = [
     Modality::Chat,
     Modality::Embed,
     Modality::Speech,
     Modality::Transcribe,
+    Modality::Rerank,
 ];
 
 /// A provider with a per-modality capability set plus a shared fault flag the scenario toggles. For a
@@ -191,6 +194,32 @@ impl Provider for SimProvider {
             },
         })
     }
+
+    async fn rerank(
+        &self,
+        req: RerankRequest,
+        _cx: &ProviderCx,
+    ) -> Result<RerankResponse, ModelError> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(self.fault());
+        }
+        if !self.caps.contains(&Modality::Rerank) {
+            return Err(self.unsupported("rerank"));
+        }
+        Ok(RerankResponse {
+            model: req.model,
+            results: vec![RerankResult {
+                index: 0,
+                relevance_score: 1.0,
+                document: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 7,
+                total_tokens: 7,
+                ..Default::default()
+            },
+        })
+    }
 }
 
 /// A routing target as generated for a scenario (mirrors [`Target`] but owned for the reference model).
@@ -248,6 +277,9 @@ fn generate_topology(rng: &mut Rng) -> Topology {
             }
             if rng.bool() {
                 set.insert(Modality::Transcribe);
+            }
+            if rng.bool() {
+                set.insert(Modality::Rerank);
             }
             (name.clone(), set)
         })
@@ -383,6 +415,8 @@ fn modality_profile(modality: Modality) -> ((u64, u64, u64), &'static str) {
         Modality::Embed => ((7, 0, 7), "None"),
         Modality::Speech => ((2, 0, 2), "None"),
         Modality::Transcribe => ((6, 0, 6), "None"),
+        // Rerank is a batch modality with no completion side (like Embed): prompt == total, no stream.
+        Modality::Rerank => ((7, 0, 7), "None"),
     }
 }
 
@@ -595,6 +629,23 @@ async fn drive(
                 Err(e) => Ok(engine_err_outcome(e, model)),
             }
         }
+        Modality::Rerank => {
+            let req = RerankRequest {
+                model: model.to_string(),
+                query: "ping".to_string(),
+                documents: vec![RerankDocument::Text("doc".to_string())],
+                top_n: None,
+                return_documents: None,
+                extra: Default::default(),
+            };
+            match engine.rerank(req, key, request_id, now).await {
+                Ok(resp) => Ok(Outcome::Served {
+                    provider: String::new(),
+                    upstream: resp.model,
+                }),
+                Err(e) => Ok(engine_err_outcome(e, model)),
+            }
+        }
     }
 }
 
@@ -683,7 +734,7 @@ pub async fn run_scenario(seed: u64) -> Result<(), String> {
             ) => {
                 let body_carries_upstream = matches!(
                     modality,
-                    Modality::Chat | Modality::Embed | Modality::Transcribe
+                    Modality::Chat | Modality::Embed | Modality::Transcribe | Modality::Rerank
                 );
                 if body_carries_upstream {
                     ensure!(

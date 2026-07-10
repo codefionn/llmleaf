@@ -365,6 +365,29 @@ pub const Client = struct {
     }
 
     // =======================================================================
+    // POST /v1/rerank
+    // =======================================================================
+
+    pub fn rerank(self: *Client, req: gen.RerankRequest, out_err: ?*?ApiError) !Owned(gen.RerankResponse) {
+        const body = try wire.encodeRerankRequest(self.gpa, req);
+        defer self.gpa.free(body);
+
+        const u = try self.url("/v1/rerank", .{});
+        defer self.gpa.free(u);
+
+        var hbuf: [4]transport.Header = undefined;
+        var result = try self.tp.request(.{
+            .method = .POST,
+            .url = u,
+            .body = body,
+            .headers = self.stdHeaders(&hbuf, &.{}),
+        });
+        if (result.status < 200 or result.status >= 300) return self.fail(&result, out_err);
+        defer result.deinit(self.gpa);
+        return self.decodeOwned(gen.RerankResponse, result.body, wire.decodeRerankResponse);
+    }
+
+    // =======================================================================
     // GET /v1/models
     // =======================================================================
 

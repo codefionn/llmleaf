@@ -20,7 +20,8 @@
 //!      everywhere it appears.
 //!
 //! Free-form JSON fields (`ChatRequest.extra`, `FunctionDef.parameters`,
-//! `ResponseFormat.json_schema`, `EmbeddingRequest.extra`, `SpeechRequest.extra`,
+//! `ResponseFormat.json_schema`, `EmbeddingRequest.extra`, `RerankRequest.extra`,
+//! `SpeechRequest.extra`,
 //! `ModelEntry.default_parameters`) are carried as raw-JSON `[]const u8` strings
 //! and spliced verbatim into / captured back from the body.
 //!
@@ -572,6 +573,38 @@ pub const EmbeddingResponse = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Rerank  (POST /v1/rerank)
+// ---------------------------------------------------------------------------
+
+pub const RerankRequest = struct {
+    model: []const u8,
+    query: []const u8,
+    /// Documents to score against `query`. Modelled as plain strings (the common
+    /// case); structured/multimodal document objects (`{text?, image?}`) are a
+    /// JSON-only extension not represented here — same shape choice as
+    /// `EmbeddingRequest.input`.
+    documents: []const []const u8,
+    top_n: ?u32 = null,
+    return_documents: ?bool = null,
+    extra: ?[]const u8 = null, // raw JSON object passthrough
+};
+
+pub const RerankResult = struct {
+    index: u32 = 0,
+    relevance_score: f32 = 0,
+    /// The scored document, echoed only when `return_documents` was set. Carries
+    /// the string form only; a structured document on the wire decodes to `null`.
+    document: ?[]const u8 = null,
+};
+
+pub const RerankResponse = struct {
+    object: []const u8, // "list"
+    model: []const u8,
+    results: []const RerankResult,
+    usage: ?Usage = null,
+};
+
+// ---------------------------------------------------------------------------
 // Audio — text to speech / voices
 // ---------------------------------------------------------------------------
 
@@ -681,6 +714,7 @@ pub const ModelType = enum {
     tts,
     stt,
     embedding,
+    rerank,
 };
 
 // ---------------------------------------------------------------------------

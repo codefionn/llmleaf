@@ -207,6 +207,18 @@ targets = [
   { provider = "openrouter", model = "openai/text-embedding-3-small" },
 ]
 
+# Rerank (POST /v1/rerank), Cohere/Jina/OpenRouter dialect. Cohere serves it natively (/v2/rerank);
+# Together and OpenRouter serve /v1/rerank; a self-hosted OpenAI-wire reranker (vLLM/Infinity/TEI)
+# opts in with `settings.rerank_api = true` on its provider block. No `cohere` provider instance is
+# declared above, so the native target is left commented — add a `[[providers]] kind = "cohere"` block
+# to enable it; meanwhile the request routes through the `openrouter` instance that IS declared.
+[[routes]]
+model = "rerank-v3.5"
+targets = [
+  # { provider = "cohere", model = "rerank-v3.5" },   # native path — needs a `cohere` provider block
+  { provider = "openrouter", model = "cohere/rerank-v3.5" },
+]
+
 # Text-to-speech (POST /v1/audio/speech) — returns raw audio bytes.
 [[routes]]
 model = "tts-1"

@@ -22,7 +22,9 @@
 //! fault (no shared mutable responder state), and every canned body is a fixed `json!`/string literal,
 //! so a seed replays the identical scenario forever.
 
-use llmleaf_model::{ChatRequest, EmbeddingRequest, Message, ModelError, Role, Usage};
+use llmleaf_model::{
+    ChatRequest, EmbeddingRequest, Message, ModelError, RerankDocument, RerankRequest, Role, Usage,
+};
 use llmleaf_provider::{Provider, ProviderCx};
 use llmleaf_providers::fake::FakeHttpTransport;
 use llmleaf_providers::transport::Transports;
@@ -56,16 +58,17 @@ const ALL_FAULTS: [Fault; 5] = [
     Fault::MalformedJson,
 ];
 
-/// The two modalities this family drives the real provider through. Chat takes the brand's *streaming*
-/// path (the `openai` brand serves real SSE), so a healthy chat body is canned SSE; embeddings take the
-/// collect-then-parse `post_json` path, so a healthy embeddings body is canned JSON.
+/// The three modalities this family drives the real provider through. Chat takes the brand's *streaming*
+/// path (the `openai` brand serves real SSE), so a healthy chat body is canned SSE; embeddings and
+/// rerank take the collect-then-parse `post_json` path, so their healthy bodies are canned JSON.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Op {
     Chat,
     Embed,
+    Rerank,
 }
 
-const ALL_OPS: [Op; 2] = [Op::Chat, Op::Embed];
+const ALL_OPS: [Op; 3] = [Op::Chat, Op::Embed, Op::Rerank];
 
 /// Which chat wire the provider is pinned to for one op. The `openai` brand serves two chat dialects —
 /// the classic `/chat/completions` SSE and the Responses API's typed-event SSE — and both must survive
@@ -102,6 +105,24 @@ const EMBED_USAGE: Usage = Usage {
     prompt_tokens: 4,
     completion_tokens: 0,
     total_tokens: 4,
+    cost_usd: None,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+};
+
+/// The canonical model + ranked result + usage a healthy rerank response carries (the source of truth
+/// for both the canned JSON and the reference assertion). Jina/OpenRouter report `usage.total_tokens`,
+/// which `openai_to_rerank` relays into *both* `prompt_tokens` and `total_tokens` (the billed count —
+/// principle 5: relayed, never computed), so `RERANK_USAGE` mirrors that below. The score is chosen
+/// exactly representable in `f32` so it round-trips through the canned JSON for the equality check.
+const RERANK_MODEL: &str = "sim-rerank-model";
+const RERANK_INDEX: u32 = 0;
+const RERANK_SCORE: f32 = 0.5;
+const RERANK_DOCUMENT: &str = "the ranked document";
+const RERANK_USAGE: Usage = Usage {
+    prompt_tokens: 6,
+    completion_tokens: 0,
+    total_tokens: 6,
     cost_usd: None,
     cache_read_tokens: 0,
     cache_creation_tokens: 0,
@@ -179,6 +200,21 @@ fn healthy_embed_json() -> serde_json::Value {
     })
 }
 
+/// A canned, well-formed Jina/OpenRouter-wire rerank response (one ranked result with its echoed
+/// document + usage), parsed by the real provider's
+/// [`llmleaf_providers::openai_wire::openai_to_rerank`] exactly like a live upstream's JSON.
+fn healthy_rerank_json() -> serde_json::Value {
+    serde_json::json!({
+        "model": RERANK_MODEL,
+        "results": [{
+            "index": RERANK_INDEX,
+            "relevance_score": RERANK_SCORE,
+            "document": RERANK_DOCUMENT,
+        }],
+        "usage": { "total_tokens": RERANK_USAGE.total_tokens },
+    })
+}
+
 /// Build a fresh [`FakeHttpTransport`] scripted for exactly `fault` on `op` over `wire`. A fresh
 /// transport per op (no shared mutable responder) keeps behaviour a pure function of the seed.
 fn transport_for(op: Op, wire: Wire, fault: Fault) -> FakeHttpTransport {
@@ -189,6 +225,7 @@ fn transport_for(op: Op, wire: Wire, fault: Fault) -> FakeHttpTransport {
                 Wire::Responses => FakeHttpTransport::sse(healthy_responses_sse()),
             },
             Op::Embed => FakeHttpTransport::json(healthy_embed_json()),
+            Op::Rerank => FakeHttpTransport::json(healthy_rerank_json()),
         },
         Fault::TransportFail => {
             FakeHttpTransport::error(ModelError::Unavailable("connection refused".into()))
@@ -207,7 +244,9 @@ fn transport_for(op: Op, wire: Wire, fault: Fault) -> FakeHttpTransport {
             Op::Chat => {
                 FakeHttpTransport::sse("data: this is not json at all\n\n".as_bytes().to_vec())
             }
-            Op::Embed => FakeHttpTransport::status(200, b"this is not json at all".to_vec()),
+            Op::Embed | Op::Rerank => {
+                FakeHttpTransport::status(200, b"this is not json at all".to_vec())
+            }
         },
     }
 }
@@ -221,6 +260,7 @@ fn transport_for(op: Op, wire: Wire, fault: Fault) -> FakeHttpTransport {
 enum Expect {
     OkChat,
     OkEmbed,
+    OkRerank,
     Unavailable,
     Upstream(u16),
     Mapping,
@@ -232,6 +272,7 @@ fn expect(op: Op, fault: Fault) -> Expect {
         Fault::Healthy => match op {
             Op::Chat => Expect::OkChat,
             Op::Embed => Expect::OkEmbed,
+            Op::Rerank => Expect::OkRerank,
         },
         Fault::TransportFail => Expect::Unavailable,
         Fault::Http429 => Expect::Upstream(429),
@@ -250,6 +291,9 @@ fn cx(wire: Wire) -> ProviderCx {
     };
     let mut settings = serde_json::Map::new();
     settings.insert("chat_api".into(), serde_json::json!(chat_api));
+    // The `openai` brand does not serve rerank by default; opt this instance in so the healthy rerank
+    // op reaches the real `post_json` parse path (chat/embed ignore this setting).
+    settings.insert("rerank_api".into(), serde_json::json!(true));
     ProviderCx {
         credential: Some("k".into()),
         endpoint: Some("https://example.test".into()),
@@ -339,6 +383,40 @@ async fn drive(
                         resp.usage
                     );
                     Ok(Expect::OkEmbed)
+                }
+                Err(e) => Ok(classify(e)),
+            }
+        }
+        Op::Rerank => {
+            let req = RerankRequest {
+                model: "logical-model".into(),
+                query: "ping".into(),
+                documents: vec![RerankDocument::Text("doc".into())],
+                top_n: None,
+                return_documents: None,
+                extra: Default::default(),
+            };
+            match provider.rerank(req, &cx(wire)).await {
+                Ok(resp) => {
+                    ensure!(
+                        resp.model == RERANK_MODEL,
+                        "seed={seed} step={step}: healthy rerank model mismatch: got {:?}",
+                        resp.model
+                    );
+                    ensure!(
+                        resp.results.len() == 1
+                            && resp.results[0].index == RERANK_INDEX
+                            && resp.results[0].relevance_score == RERANK_SCORE
+                            && resp.results[0].document == Some(serde_json::json!(RERANK_DOCUMENT)),
+                        "seed={seed} step={step}: healthy rerank results mismatch: got {:?}",
+                        resp.results
+                    );
+                    ensure!(
+                        resp.usage == RERANK_USAGE,
+                        "seed={seed} step={step}: healthy rerank usage mismatch: got {:?}, want {RERANK_USAGE:?}",
+                        resp.usage
+                    );
+                    Ok(Expect::OkRerank)
                 }
                 Err(e) => Ok(classify(e)),
             }

@@ -9,9 +9,9 @@ use base64::Engine as _;
 use futures::StreamExt;
 use llmleaf_model::{
     ChatRequest, ContentPart, Embedding, EmbeddingRequest, EmbeddingResponse, FinishReason,
-    Message, Modality, ModelError, ModelInfo, ResponseStream, Role, SpeechRequest, StreamChunk,
-    Thinking, ToolCallDelta, ToolChoice, TranscriptionRequest, TranscriptionResponse, Usage,
-    VoiceInfo,
+    Message, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse, RerankResult,
+    ResponseStream, Role, SpeechRequest, StreamChunk, Thinking, ToolCallDelta, ToolChoice,
+    TranscriptionRequest, TranscriptionResponse, Usage, VoiceInfo,
 };
 use serde_json::{json, Map, Value};
 
@@ -586,6 +586,105 @@ pub fn openai_to_embeddings(value: Value, fallback_model: &str) -> EmbeddingResp
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rerank (`/rerank`)
+// ---------------------------------------------------------------------------------------------
+
+/// Canonical rerank request → the Jina/Cohere-compatible `/v1/rerank` JSON that Together, OpenRouter,
+/// Jina, Voyage, SiliconFlow and self-hosted vLLM/Infinity/TEI all accept: `{ model, query, documents,
+/// top_n?, return_documents? }`. Each document rides out verbatim — a plain string or the structured
+/// object the consumer sent (multimodal `{ text?, image? }`) — and dialect-specific `extra` fields
+/// (`max_tokens_per_doc`, `truncation`, …) merge back in (principle 7).
+pub fn rerank_request_to_openai(req: &RerankRequest) -> Value {
+    let mut obj = Map::new();
+    obj.insert("model".into(), json!(req.model));
+    obj.insert("query".into(), json!(req.query));
+    obj.insert("documents".into(), json!(req.documents));
+    if let Some(n) = req.top_n {
+        obj.insert("top_n".into(), json!(n));
+    }
+    if let Some(rd) = req.return_documents {
+        obj.insert("return_documents".into(), json!(rd));
+    }
+    for (k, v) in &req.extra {
+        obj.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    Value::Object(obj)
+}
+
+/// Jina/Cohere-compatible `/v1/rerank` response → canonical [`RerankResponse`]. Reads `results[]`
+/// (`index`, `relevance_score`, optional echoed `document`) and relays the billed usage: token-billed
+/// upstreams (Jina/Voyage/OpenRouter) report `usage.total_tokens`, a Cohere-compatible one (Together)
+/// reports `meta.billed_units.search_units` — carried into `total_tokens` as its billed count (the core
+/// relays, never computes — principle 5).
+pub fn openai_to_rerank(value: Value, fallback_model: &str) -> RerankResponse {
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_model)
+        .to_string();
+
+    let mut results = Vec::new();
+    if let Some(items) = value.get("results").and_then(Value::as_array) {
+        for (i, item) in items.iter().enumerate() {
+            let index = item
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32)
+                .unwrap_or(i as u32);
+            let relevance_score = item
+                .get("relevance_score")
+                .and_then(Value::as_f64)
+                .map(|f| f as f32)
+                .unwrap_or(0.0);
+            // Echoed back only when the consumer asked (`return_documents`); carried verbatim so a
+            // structured/multimodal document round-trips unchanged.
+            let document = item
+                .get("document")
+                .filter(|v| !v.is_null())
+                .cloned();
+            results.push(RerankResult {
+                index,
+                relevance_score,
+                document,
+            });
+        }
+    }
+
+    RerankResponse {
+        model,
+        results,
+        usage: rerank_usage(&value),
+    }
+}
+
+/// Relay a rerank response's billed usage. Prefers a token-billed `usage.total_tokens`; falls back to a
+/// Cohere-compatible `meta.billed_units.{search_units,total_tokens,input_tokens}`. Zero when neither is
+/// present (never fabricated).
+fn rerank_usage(value: &Value) -> Usage {
+    let total = value
+        .get("usage")
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let billed = value.get("meta").and_then(|m| m.get("billed_units"))?;
+            billed
+                .get("search_units")
+                .and_then(Value::as_u64)
+                .or_else(|| billed.get("total_tokens").and_then(Value::as_u64))
+                .or_else(|| billed.get("input_tokens").and_then(Value::as_u64))
+        })
+        .unwrap_or(0);
+    Usage {
+        prompt_tokens: total,
+        completion_tokens: 0,
+        total_tokens: total,
+        cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Speech (`/audio/speech`) and transcription (`/audio/transcriptions`)
 // ---------------------------------------------------------------------------------------------
 
@@ -838,7 +937,8 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
         match t.to_ascii_lowercase().as_str() {
             "chat" | "language" | "code" | "llm" | "vlm" => return Some(Modality::Llm),
             "embedding" | "embeddings" | "embed" => return Some(Modality::Embedding),
-            _ => {} // image / moderation / rerank / … → no canonical modality
+            "rerank" | "reranker" | "rank" => return Some(Modality::Rerank),
+            _ => {} // image / moderation / … → no canonical modality
         }
     }
     // OpenRouter (and look-alikes) describe a model by the modalities it accepts and emits. Decide from

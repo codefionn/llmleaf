@@ -377,6 +377,51 @@ public sealed class WireTests
         Assert.Equal([0.5f, -0.25f], resp.Data[0].Vector);
     }
 
+    // ---- rerank --------------------------------------------------------
+
+    [Fact]
+    public async Task Rerank_EncodesRequestAndDecodesResultsAndUsage()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """
+            {"object":"list","model":"rerank-1",
+             "results":[
+               {"index":2,"relevance_score":0.98,"document":"the third doc"},
+               {"index":0,"relevance_score":0.12}],
+             "usage":{"total_tokens":15,"cost_usd":0.0002}}
+            """));
+        using var client = Client(server);
+
+        var resp = await client.CreateRerankAsync(new RerankRequest
+        {
+            Model = "rerank-1",
+            Query = "find it",
+            Documents = ["a", "b", "the third doc"],
+            TopN = 2,
+            ReturnDocuments = true,
+        });
+
+        // Request: flat query + always-array documents + the optional flags (no vector encoding).
+        var body = Parse(server.LastRequest!.Body);
+        Assert.Equal("/v1/rerank", server.LastRequest.Path);
+        Assert.Equal("rerank-1", body.GetProperty("model").GetString());
+        Assert.Equal("find it", body.GetProperty("query").GetString());
+        Assert.Equal(JsonValueKind.Array, body.GetProperty("documents").ValueKind);
+        Assert.Equal("the third doc", body.GetProperty("documents")[2].GetString());
+        Assert.Equal(2u, body.GetProperty("top_n").GetUInt32());
+        Assert.True(body.GetProperty("return_documents").GetBoolean());
+
+        // Response: results in returned order, with the echoed document (string) and usage.
+        Assert.Equal("rerank-1", resp.Model);
+        Assert.Equal(2, resp.Results.Count);
+        Assert.Equal(2u, resp.Results[0].Index);
+        Assert.Equal(0.98f, resp.Results[0].RelevanceScore);
+        Assert.Equal("the third doc", resp.Results[0].Document!.Value.GetString());
+        Assert.Null(resp.Results[1].Document); // absent when not echoed
+        Assert.Equal(15u, resp.Usage!.TotalTokens);
+        Assert.Equal(0.0002, resp.Usage.CostUsd!.Value, 6);
+    }
+
     // ---- models --------------------------------------------------------
 
     [Fact]

@@ -16,6 +16,8 @@ import {
   isTerminalResponsesEvent,
   encodeEmbeddingRequest,
   decodeEmbeddingResponse,
+  encodeRerankRequest,
+  decodeRerankResponse,
   encodeSpeechRequest,
   decodeVoicesResponse,
   decodeTranscriptionResponse,
@@ -33,6 +35,8 @@ import type {
   ResponsesStreamEvent,
   EmbeddingRequest,
   EmbeddingResponse,
+  RerankRequest,
+  RerankResponse,
   SpeechRequest,
   SpeechResult,
   VoicesResponse,
@@ -246,6 +250,17 @@ export class LlmleafClient {
     const body = encodeEmbeddingRequest(req);
     const json = await this.sendJson(this.url("/v1/embeddings"), body);
     return decodeEmbeddingResponse(json);
+  }
+
+  // -------------------------------------------------------------------------
+  // Rerank
+  // -------------------------------------------------------------------------
+
+  /** POST /v1/rerank. Scores each document against the query; results come back by relevance. */
+  async rerank(req: RerankRequest): Promise<RerankResponse> {
+    const body = encodeRerankRequest(req);
+    const json = await this.sendJson(this.url("/v1/rerank"), body);
+    return decodeRerankResponse(json);
   }
 
   // -------------------------------------------------------------------------

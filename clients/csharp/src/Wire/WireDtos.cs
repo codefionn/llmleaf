@@ -425,6 +425,37 @@ internal sealed class WireEmbeddingResponse
     [JsonPropertyName("usage")] public WireUsage? Usage { get; set; }
 }
 
+// ---- rerank --------------------------------------------------------------
+
+internal sealed class WireRerankRequest
+{
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("query")] public string Query { get; set; } = "";
+
+    // Always an array on the wire (structured/multimodal documents are a JSON-only extension).
+    [JsonPropertyName("documents")] public List<string> Documents { get; set; } = [];
+
+    [JsonPropertyName("top_n")] public uint? TopN { get; set; }
+    [JsonPropertyName("return_documents")] public bool? ReturnDocuments { get; set; }
+}
+
+internal sealed class WireRerankResult
+{
+    [JsonPropertyName("index")] public uint Index { get; set; }
+    [JsonPropertyName("relevance_score")] public float RelevanceScore { get; set; }
+
+    // Present only when return_documents was set: a string or an object, surfaced verbatim.
+    [JsonPropertyName("document")] public System.Text.Json.JsonElement? Document { get; set; }
+}
+
+internal sealed class WireRerankResponse
+{
+    [JsonPropertyName("object")] public string Object { get; set; } = "";
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("results")] public List<WireRerankResult> Results { get; set; } = [];
+    [JsonPropertyName("usage")] public WireUsage? Usage { get; set; }
+}
+
 // ---- speech / voices -----------------------------------------------------
 
 internal sealed class WireSpeechRequest

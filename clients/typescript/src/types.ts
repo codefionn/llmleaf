@@ -298,6 +298,44 @@ export interface EmbeddingResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Rerank
+// ---------------------------------------------------------------------------
+
+export interface RerankRequest {
+  model: string;
+  query: string;
+  /**
+   * Documents to score against {@link query}. Usually plain strings; a structured
+   * multimodal object (`{text?, image?}`) is accepted as a JSON-only extension.
+   */
+  documents: Array<string | Record<string, unknown>>;
+  /** cap the number of returned results (defaults to all). */
+  topN?: number;
+  /** echo each scored document back on its {@link RerankResult}. */
+  returnDocuments?: boolean;
+  /** raw JSON object passthrough as a JSON string. */
+  extra?: string;
+}
+
+export interface RerankResult {
+  index: number;
+  relevanceScore: number;
+  /**
+   * The scored document, present only when {@link RerankRequest.returnDocuments} was set;
+   * mirrors the string-or-object shape of the input.
+   */
+  document?: string | Record<string, unknown>;
+}
+
+export interface RerankResponse {
+  /** "list" */
+  object: string;
+  model: string;
+  results: RerankResult[];
+  usage?: Usage;
+}
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
 
@@ -410,7 +448,7 @@ export interface ListModelsResponse {
 }
 
 /** Filter for {@link "./client".LlmleafClient.listModels}. */
-export type ModelType = "all" | "llm" | "tts" | "stt" | "embedding";
+export type ModelType = "all" | "llm" | "tts" | "stt" | "embedding" | "rerank";
 
 export interface ListModelsOptions {
   type?: ModelType;

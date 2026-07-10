@@ -87,6 +87,7 @@ wins over `WithTimeout`; for long-lived streams prefer a client with `Timeout: 0
 | `CreateChatCompletion` / `CreateChatCompletionStream` | `POST /v1/chat/completions` |
 | `CreateResponse` / `CreateResponseStream` | `POST /v1/responses` (typed SSE, no `[DONE]`) |
 | `CreateEmbeddings` | `POST /v1/embeddings` (decodes base64 vectors) |
+| `CreateRerank` | `POST /v1/rerank` → `RerankResponse{Results, Usage}` |
 | `ListModels` | `GET /v1/models` |
 | `CreateSpeech` | `POST /v1/audio/speech` → `SpeechResult{Audio, ContentType}` |
 | `ListVoices` | `GET /v1/audio/voices` |

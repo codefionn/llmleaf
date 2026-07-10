@@ -18,7 +18,7 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty dif
 - One stable endpoint in front of every provider — consumers speak OpenAI, OpenRouter, or
   Anthropic dialects; llmleaf maps them to one internal model and back.
 - Streaming-first (SSE); a non-streaming response is just a collected stream.
-- Modalities: chat, embeddings, text-to-speech, speech-to-text, realtime (WebSocket), batch jobs.
+- Modalities: chat, embeddings, rerank, text-to-speech, speech-to-text, realtime (WebSocket), batch jobs.
 - Per-model fallback chains with node-local, health-aware switchover — no consensus or shared
   state, so N nodes run behind a plain load balancer.
 - Opt-in per request/provider: Anthropic prompt caching, a unified thinking/reasoning-effort ladder.
@@ -78,6 +78,7 @@ Consumer endpoints (OpenAI-compatible unless noted):
 | `POST /v1/messages` | Anthropic Messages dialect |
 | `POST /v1/responses` | OpenAI Responses dialect (stateless; `store` always `false`, `GET /v1/responses/{id}` is a 404-by-design stub) |
 | `POST /v1/embeddings` | Embeddings |
+| `POST /v1/rerank` | Rerank (Cohere/Jina/OpenRouter dialect) |
 | `POST /v1/audio/speech`, `GET /v1/audio/voices` | Text-to-speech |
 | `POST /v1/audio/transcriptions` | Speech-to-text |
 | `GET /v1/realtime` | OpenAI Realtime (WebSocket) |

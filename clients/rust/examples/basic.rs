@@ -1,5 +1,5 @@
-//! Runnable example: listing models, non-streaming + streaming chat, and the OpenAI
-//! Responses dialect (non-streaming + streaming).
+//! Runnable example: listing models, non-streaming + streaming chat, the OpenAI
+//! Responses dialect (non-streaming + streaming), and a rerank call.
 //!
 //! Configure with environment variables and run against a live gateway:
 //!
@@ -8,11 +8,15 @@
 //! export LLMLEAF_API_KEY="sk-..."
 //! # optional: which model to hit (defaults to gpt-4o-mini)
 //! export LLMLEAF_MODEL="gpt-4o-mini"
+//! # optional: a rerank model to exercise POST /v1/rerank
+//! export LLMLEAF_RERANK_MODEL="rerank-english-v3.0"
 //! cargo run --example basic
 //! ```
 
 use futures::StreamExt;
-use llmleaf_client::{ChatMessage, ChatRequest, Client, Error, ModelType, ResponsesRequest};
+use llmleaf_client::{
+    ChatMessage, ChatRequest, Client, Error, ModelType, RerankRequest, ResponsesRequest,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -111,6 +115,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!();
+
+    // 6. Rerank — score documents against a query (needs a rerank-capable model).
+    if let Ok(rerank_model) = std::env::var("LLMLEAF_RERANK_MODEL") {
+        println!("\n== rerank ==");
+        let mut request = RerankRequest::new(
+            &rerank_model,
+            "What is the capital of France?",
+            vec![
+                "Paris is the capital of France.",
+                "Berlin is the capital of Germany.",
+                "The Eiffel Tower is in Paris.",
+            ],
+        );
+        request.top_n = Some(2);
+        match client.rerank(request).await {
+            Ok(resp) => {
+                for r in &resp.results {
+                    println!("  index={} score={:.4}", r.index, r.relevance_score);
+                }
+            }
+            Err(Error::Api { status, message }) => {
+                println!("  api error {status}: {message}");
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     Ok(())
 }

@@ -11,8 +11,8 @@ use futures::{stream, StreamExt};
 use llmleaf_model::{
     collect_chunks, AudioChunk, AudioStream, BatchCounts, BatchHandle, BatchItem, BatchOutcome,
     BatchResult, BatchResultStream, BatchSpec, BatchStatus, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, ModelError, ModelInfo, ResponseStream, SpeechRequest, TranscriptionRequest,
-    TranscriptionResponse, VoiceInfo,
+    EmbeddingResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
+    SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, RealtimeParams, RealtimePeer};
 use serde_json::{json, Map, Value};
@@ -28,9 +28,10 @@ use crate::openai_responses_wire::{
 use crate::openai_wire::{
     audio_content_type, decode_speech_envelope, embedding_request_to_openai,
     mistral_voices_to_canonical, openai_speech_model, openai_sse_to_stream,
-    openai_sse_to_stream_checked, openai_to_chunks, openai_to_embeddings, openai_to_transcription,
-    openai_voices, openai_wire_models_to_canonical, openrouter_to_transcription, request_to_openai,
-    speech_request_to_openai, transcription_request_to_openrouter,
+    openai_sse_to_stream_checked, openai_to_chunks, openai_to_embeddings, openai_to_rerank,
+    openai_to_transcription, openai_voices, openai_wire_models_to_canonical,
+    openrouter_to_transcription, rerank_request_to_openai, request_to_openai, speech_request_to_openai,
+    transcription_request_to_openrouter,
 };
 use crate::transport::{HttpRequest, HttpTransport, MultipartForm, RealtimeTransport, Transports};
 
@@ -163,6 +164,12 @@ pub struct Brand {
     /// response or a `Mapping` error. `false` (the default) adds no check — no other brand ships the
     /// envelope, and the shared parsers stay quirk-free (the drop happens at this provider edge).
     pub base_resp_envelope: bool,
+    /// Whether this brand's upstream serves a Jina/Cohere-compatible `/v1/rerank` endpoint. `true` for
+    /// Together and OpenRouter (both document one); `false` (the default) leaves [`Provider::rerank`]
+    /// returning `Unsupported` — which routing falls past *without* a health penalty — unless an operator
+    /// opts a self-hosted OpenAI-wire base (vLLM/Infinity/TEI/…) in with `settings.rerank_api = true`.
+    /// The quirk stays at this edge; the shared rerank wire mapping in [`crate::openai_wire`] is uniform.
+    pub rerank_api: bool,
     /// Which batch dialect this brand speaks (default [`BatchFlavor::Unsupported`]).
     pub batch_flavor: BatchFlavor,
     /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for all but OpenAI and
@@ -196,6 +203,7 @@ impl Brand {
             models_query: "",
             filter_inactive_models: false,
             base_resp_envelope: false,
+            rerank_api: false,
             batch_flavor: BatchFlavor::Unsupported,
             chat_api: ChatApi::Completions,
             responses_flavor: ResponsesFlavor::OpenAi,
@@ -216,6 +224,7 @@ impl Brand {
             models_query: "",
             filter_inactive_models: false,
             base_resp_envelope: false,
+            rerank_api: false,
             batch_flavor: BatchFlavor::Unsupported,
             chat_api: ChatApi::Completions,
             responses_flavor: ResponsesFlavor::OpenAi,
@@ -236,6 +245,9 @@ impl Brand {
             "openrouter" => Brand {
                 transcription_json_base64: true,
                 models_api: true,
+                // OpenRouter serves `POST /api/v1/rerank` (Cohere/Jina-shaped, documents may be
+                // multimodal objects) — routed to the shared rerank wire.
+                rerank_api: true,
                 // OpenRouter's `/models` defaults to `output_modalities=text`; without `=all` the
                 // catalog omits TTS models (audio output), so a speech model could never be listed.
                 models_query: "output_modalities=all",
@@ -296,6 +308,8 @@ impl Brand {
             // api.together.ai is canonical; api.together.xyz is the SDK-default alias (same API).
             "together" => Brand {
                 models_api: true,
+                // Together serves `POST /v1/rerank`, Cohere-compatible.
+                rerank_api: true,
                 batch_flavor: BatchFlavor::Together,
                 ..b("together", "https://api.together.ai/v1", AuthStyle::Bearer)
             },
@@ -383,6 +397,8 @@ impl Brand {
                 // Azure's listing carries no `active` flag — nothing to filter.
                 filter_inactive_models: false,
                 base_resp_envelope: false,
+                // Azure OpenAI has no documented rerank endpoint.
+                rerank_api: false,
                 // Azure batch is resource-scoped (`/openai/batches?api-version=`), not under the
                 // deployment URL its chat uses — handled by the AzureOpenAi batch flavor.
                 batch_flavor: BatchFlavor::AzureOpenAi,
@@ -519,6 +535,19 @@ impl OpenAiCompatProvider {
             api = ChatApi::Completions;
         }
         api
+    }
+
+    /// Whether this instance serves rerank: the brand default ([`Brand::rerank_api`], true for Together
+    /// and OpenRouter), or an operator opting a self-hosted OpenAI-wire base (vLLM/Infinity/TEI) in with
+    /// `settings.rerank_api = true`. A `false`/absent setting keeps the brand default; only an explicit
+    /// `true` enables it where the brand does not (an operator typo must never silently change behavior).
+    fn rerank_enabled(&self, cx: &ProviderCx) -> bool {
+        self.brand.rerank_api
+            || cx
+                .settings
+                .get("rerank_api")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
     }
 
     /// The classic `/chat/completions` chat path — the original two branches: a brand that doesn't stream
@@ -1106,6 +1135,30 @@ impl Provider for OpenAiCompatProvider {
             return Err(err);
         }
         Ok(openai_to_embeddings(value, &req.model))
+    }
+
+    async fn rerank(
+        &self,
+        req: RerankRequest,
+        cx: &ProviderCx,
+    ) -> Result<RerankResponse, ModelError> {
+        // Opt-in per brand (Together/OpenRouter) or per instance (`settings.rerank_api`). A brand
+        // without it returns `Unsupported`, which routing falls past *without* a health penalty — the
+        // same fall-through the other optional modalities use.
+        if !self.rerank_enabled(cx) {
+            return Err(ModelError::Unsupported(format!(
+                "provider '{}' does not support rerank",
+                self.brand.name
+            )));
+        }
+        let url = self.url_for(cx, &req.model, "rerank");
+        let body = rerank_request_to_openai(&req);
+        let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
+        let value = post_json(&*self.http, http_req).await?;
+        if let Some(err) = self.envelope_error(&value) {
+            return Err(err);
+        }
+        Ok(openai_to_rerank(value, &req.model))
     }
 
     async fn speech(&self, req: SpeechRequest, cx: &ProviderCx) -> Result<AudioStream, ModelError> {

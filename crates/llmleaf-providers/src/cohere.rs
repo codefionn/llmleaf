@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use futures::stream;
 use llmleaf_model::{
     ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse, FinishReason, Message, Modality,
-    ModelError, ModelInfo, ResponseStream, Role, StreamChunk, ToolCallDelta, ToolChoice, Usage,
+    ModelError, ModelInfo, RerankDocument, RerankRequest, RerankResponse, RerankResult,
+    ResponseStream, Role, StreamChunk, ToolCallDelta, ToolChoice, Usage,
 };
 use llmleaf_provider::{Provider, ProviderCx};
 use serde_json::{json, Map, Value};
@@ -118,6 +119,117 @@ impl Provider for CohereProvider {
         let value = post_json(&*self.http, http_req).await?;
         Ok(cohere_to_embeddings(value, &req.model))
     }
+
+    /// Rerank via Cohere's `POST /v2/rerank` (Bearer auth). Cohere v2 returns only `index` +
+    /// `relevance_score` per result (no document echo, no `return_documents` knob) and bills in
+    /// *search units* under `meta.billed_units.search_units`.
+    async fn rerank(
+        &self,
+        req: RerankRequest,
+        cx: &ProviderCx,
+    ) -> Result<RerankResponse, ModelError> {
+        let endpoint = cx
+            .endpoint
+            .as_deref()
+            .unwrap_or(DEFAULT_ENDPOINT)
+            .trim_end_matches('/');
+        let url = format!("{endpoint}/v2/rerank");
+        let body = rerank_request_to_cohere(&req);
+
+        let mut http_req = HttpRequest::post(&url)
+            .header("Accept", "application/json")
+            .json(body);
+        if let Some(cred) = &cx.credential {
+            http_req = http_req.bearer(cred);
+        }
+
+        let value = post_json(&*self.http, http_req).await?;
+        Ok(cohere_to_rerank(value, &req.model))
+    }
+}
+
+/// Canonical rerank request → Cohere `/v2/rerank` JSON. Cohere v2 takes string documents, so each
+/// canonical document is rendered to text: a plain string as-is, a structured document by its `text`
+/// field (Cohere v2 has no multimodal document input — its compact JSON is the honest fallback rather
+/// than dropping it). `return_documents` is not a v2 field and is omitted; other knobs
+/// (`max_tokens_per_doc`) ride through `extra`.
+fn rerank_request_to_cohere(req: &RerankRequest) -> Value {
+    let documents: Vec<Value> = req
+        .documents
+        .iter()
+        .map(|d| match d.as_text() {
+            Some(s) => json!(s),
+            None => match d {
+                RerankDocument::Rich(obj) => json!(Value::Object(obj.clone()).to_string()),
+                RerankDocument::Text(s) => json!(s),
+            },
+        })
+        .collect();
+
+    let mut obj = Map::new();
+    obj.insert("model".into(), json!(req.model));
+    obj.insert("query".into(), json!(req.query));
+    obj.insert("documents".into(), Value::Array(documents));
+    if let Some(n) = req.top_n {
+        obj.insert("top_n".into(), json!(n));
+    }
+    for (k, v) in &req.extra {
+        obj.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    Value::Object(obj)
+}
+
+fn cohere_to_rerank(value: Value, model: &str) -> RerankResponse {
+    let results = value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let index = item
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as u32)
+                        .unwrap_or(i as u32);
+                    let relevance_score = item
+                        .get("relevance_score")
+                        .and_then(Value::as_f64)
+                        .map(|f| f as f32)
+                        .unwrap_or(0.0);
+                    RerankResult {
+                        index,
+                        relevance_score,
+                        // Cohere v2 rerank never echoes documents back.
+                        document: None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Cohere bills rerank in *search units* under `meta.billed_units.search_units` — relayed as the
+    // billed total (the core relays, never computes — principle 5). There are no token counts.
+    let search_units = value
+        .get("meta")
+        .and_then(|m| m.get("billed_units"))
+        .and_then(|b| b.get("search_units"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let usage = Usage {
+        prompt_tokens: search_units,
+        completion_tokens: 0,
+        total_tokens: search_units,
+        cost_usd: None,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    };
+
+    RerankResponse {
+        model: model.to_string(),
+        results,
+        usage,
+    }
 }
 
 fn embedding_request_to_cohere(req: &EmbeddingRequest, input_type: &str) -> Value {
@@ -138,8 +250,8 @@ fn embedding_request_to_cohere(req: &EmbeddingRequest, input_type: &str) -> Valu
 fn cohere_model_to_info(m: &Value) -> Option<ModelInfo> {
     let id = m.get("name").and_then(Value::as_str)?;
     let mut info = ModelInfo::new(id);
-    // Modality from `endpoints[]`: chat/generate → Llm (wins), embed → Embedding; rerank/classify/
-    // summarize/rate have no canonical modality → None.
+    // Modality from `endpoints[]`: chat/generate → Llm (wins), embed → Embedding, rerank → Rerank;
+    // classify/summarize/rate have no canonical modality → None.
     let endpoints: Vec<&str> = m
         .get("endpoints")
         .and_then(Value::as_array)
@@ -149,6 +261,8 @@ fn cohere_model_to_info(m: &Value) -> Option<ModelInfo> {
         Some(Modality::Llm)
     } else if endpoints.contains(&"embed") {
         Some(Modality::Embedding)
+    } else if endpoints.contains(&"rerank") {
+        Some(Modality::Rerank)
     } else {
         None
     };
@@ -528,5 +642,46 @@ mod tests {
         assert_eq!(out.usage.prompt_tokens, 11);
         assert_eq!(out.usage.completion_tokens, 0);
         assert_eq!(out.usage.total_tokens, 11);
+    }
+
+    #[test]
+    fn builds_rerank_request_with_string_documents() {
+        let req = RerankRequest {
+            model: "rerank-v3.5".into(),
+            query: "capital of france".into(),
+            documents: vec![
+                RerankDocument::Text("paris".into()),
+                RerankDocument::Text("berlin".into()),
+            ],
+            top_n: Some(1),
+            return_documents: Some(true),
+            extra: Default::default(),
+        };
+        let wire = rerank_request_to_cohere(&req);
+        assert_eq!(wire["model"], "rerank-v3.5");
+        assert_eq!(wire["query"], "capital of france");
+        assert_eq!(wire["documents"][0], "paris");
+        assert_eq!(wire["top_n"], 1);
+        // `return_documents` is not a Cohere v2 field — it must not leak onto the wire.
+        assert!(wire.get("return_documents").is_none());
+    }
+
+    #[test]
+    fn parses_rerank_results_and_search_units() {
+        let resp = json!({
+            "id": "r1",
+            "results": [
+                { "index": 1, "relevance_score": 0.98 },
+                { "index": 0, "relevance_score": 0.11 },
+            ],
+            "meta": { "billed_units": { "search_units": 1 } }
+        });
+        let out = cohere_to_rerank(resp, "rerank-v3.5");
+        assert_eq!(out.results.len(), 2);
+        assert_eq!(out.results[0].index, 1);
+        assert!((out.results[0].relevance_score - 0.98).abs() < 1e-6);
+        assert!(out.results[0].document.is_none());
+        // Search units are relayed into the billed total (no token counts for rerank).
+        assert_eq!(out.usage.total_tokens, 1);
     }
 }

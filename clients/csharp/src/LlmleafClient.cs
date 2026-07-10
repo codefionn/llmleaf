@@ -216,6 +216,22 @@ public sealed class LlmleafClient : IDisposable
         return Mapper.EmbeddingResponseFromWire(wire);
     }
 
+    // ---- rerank ---------------------------------------------------------
+
+    /// <summary>
+    /// Rerank documents against a query (POST /v1/rerank). Returns the documents scored and ordered
+    /// by descending relevance; when <see cref="RerankRequest.ReturnDocuments"/> is set, each result
+    /// echoes its source <c>document</c>. Unlike embeddings there is no vector decode — the response
+    /// is plain JSON.
+    /// </summary>
+    public async Task<RerankResponse> CreateRerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = Mapper.EncodeRerankRequest(request);
+        var wire = await SendJsonForJsonAsync<WireRerankResponse>(HttpMethod.Post, "v1/rerank", body, cancellationToken).ConfigureAwait(false);
+        return Mapper.RerankResponseFromWire(wire);
+    }
+
     // ---- models ---------------------------------------------------------
 
     /// <summary>List the model catalog (GET /v1/models).</summary>

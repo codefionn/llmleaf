@@ -65,4 +65,5 @@ public enum class ModelType(public val wire: String) {
     TTS("tts"),
     STT("stt"),
     EMBEDDING("embedding"),
+    RERANK("rerank"),
 }

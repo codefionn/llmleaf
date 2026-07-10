@@ -81,6 +81,7 @@ client.responsesStream(ResponsesRequest("gpt-4o-mini", ResponsesInput.text("Coun
 | `chat` / `chatStream` | `POST /v1/chat/completions` (stream → `Flow<ChatCompletionChunk>`) |
 | `responses` / `responsesStream` | `POST /v1/responses` (stream → `Flow<ResponsesStreamEvent>`, no `[DONE]`) |
 | `embeddings` | `POST /v1/embeddings` (decodes base64 little-endian f32) |
+| `rerank` | `POST /v1/rerank` (documents scored against a query, returned in relevance order) |
 | `listModels` | `GET /v1/models` |
 | `speech` | `POST /v1/audio/speech` → `SpeechResult` |
 | `voices` | `GET /v1/audio/voices` |

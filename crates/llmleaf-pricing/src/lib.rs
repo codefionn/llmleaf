@@ -634,6 +634,7 @@ pub mod collect {
             match t.to_ascii_lowercase().as_str() {
                 "chat" | "language" | "code" | "llm" | "vlm" => return Some(Modality::Llm),
                 "embedding" | "embeddings" | "embed" => return Some(Modality::Embedding),
+                "rerank" | "reranker" | "rank" => return Some(Modality::Rerank),
                 _ => {}
             }
         }
@@ -1482,6 +1483,7 @@ mod tests {
             (Modality::Tts, "\"tts\""),
             (Modality::Stt, "\"stt\""),
             (Modality::Embedding, "\"embedding\""),
+            (Modality::Rerank, "\"rerank\""),
         ] {
             assert_eq!(serde_json::to_string(&m).unwrap(), s);
             assert_eq!(serde_json::from_str::<Modality>(s).unwrap(), m);

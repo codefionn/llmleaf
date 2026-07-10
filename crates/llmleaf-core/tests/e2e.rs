@@ -14,8 +14,9 @@ use http_body_util::BodyExt;
 use llmleaf_core::{build_router, build_state, Config, Event, EventBus, KeyStore, Verdict};
 use llmleaf_model::{
     AudioChunk, AudioStream, ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse,
-    FinishReason, Modality, ModelError, ModelInfo, ResponseStream, SpeechRequest, StreamChunk,
-    TranscriptionRequest, TranscriptionResponse, Usage, VoiceInfo,
+    FinishReason, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse, RerankResult,
+    ResponseStream, SpeechRequest, StreamChunk, TranscriptionRequest, TranscriptionResponse, Usage,
+    VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry};
 use serde_json::{json, Value};
@@ -83,6 +84,43 @@ impl Provider for MockProvider {
         })
     }
 
+    async fn rerank(
+        &self,
+        req: RerankRequest,
+        _cx: &ProviderCx,
+    ) -> Result<RerankResponse, ModelError> {
+        // A trivial deterministic ranking (mirrors `embed`'s canned-response shape): score each
+        // document by its input position — later documents rank higher — then return them most-relevant
+        // first. For a 2-document request this yields [{index:1, 0.9}, {index:0, 0.1}], enough to assert
+        // order and score at the HTTP edge. Documents are echoed back only when the consumer asked.
+        let n = req.documents.len();
+        let echo = req.return_documents == Some(true);
+        let mut results: Vec<RerankResult> = req
+            .documents
+            .iter()
+            .enumerate()
+            .map(|(i, doc)| RerankResult {
+                index: i as u32,
+                relevance_score: if n > 1 {
+                    0.1 + 0.8 * (i as f32 / (n - 1) as f32)
+                } else {
+                    0.9
+                },
+                document: echo.then(|| serde_json::to_value(doc).unwrap()),
+            })
+            .collect();
+        // Most relevant first.
+        results.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap());
+        Ok(RerankResponse {
+            model: req.model,
+            results,
+            usage: Usage {
+                total_tokens: 4,
+                ..Default::default()
+            },
+        })
+    }
+
     async fn speech(
         &self,
         req: SpeechRequest,
@@ -135,6 +173,8 @@ impl Provider for MockProvider {
         beta.modality = Some(Modality::Embedding);
         beta.input_per_mtok = Some(0.01);
         beta.output_per_mtok = Some(0.0);
+        let mut epsilon = ModelInfo::new("beta-rerank");
+        epsilon.modality = Some(Modality::Rerank);
         let mut gamma = ModelInfo::new("gamma-tts");
         gamma.modality = Some(Modality::Tts);
         let mut delta = ModelInfo::new("delta-stt");
@@ -144,7 +184,7 @@ impl Provider for MockProvider {
         // id-only reasoning model — the dataset records the sampling params it REJECTS (a reasoning
         // model 400s on temperature) and its pinned defaults; the catalog must surface both.
         let reasoning = ModelInfo::new("gpt-5");
-        Ok(vec![alpha, beta, gamma, delta, gpt, reasoning])
+        Ok(vec![alpha, beta, epsilon, gamma, delta, gpt, reasoning])
     }
 
     async fn voices(&self, _model: &str, _cx: &ProviderCx) -> Result<Vec<VoiceInfo>, ModelError> {
@@ -818,6 +858,81 @@ async fn embeddings_base64_encoding() {
 }
 
 #[tokio::test]
+async fn rerank_round_trip() {
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/rerank")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": "demo",
+                "query": "capital of france?",
+                "documents": ["berlin is in germany", "paris is the capital"],
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+
+    assert_eq!(v["object"], "list");
+    assert_eq!(v["model"], "demo");
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    // Ranked most-relevant first: the second input document (index 1) tops the list.
+    assert_eq!(results[0]["index"], 1);
+    assert!((results[0]["relevance_score"].as_f64().unwrap() - 0.9).abs() < 1e-6);
+    assert_eq!(results[1]["index"], 0);
+    assert!((results[1]["relevance_score"].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    // Order is by descending score.
+    assert!(
+        results[0]["relevance_score"].as_f64().unwrap()
+            >= results[1]["relevance_score"].as_f64().unwrap()
+    );
+    // Documents are not echoed unless requested.
+    assert!(results[0].get("document").is_none());
+    // Usage is relayed, not computed (principle 5).
+    assert_eq!(v["usage"]["total_tokens"], 4);
+}
+
+#[tokio::test]
+async fn rerank_return_documents() {
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/rerank")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": "demo",
+                "query": "capital of france?",
+                "documents": ["berlin is in germany", "paris is the capital"],
+                "return_documents": true,
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    // With `return_documents: true`, every result echoes its document, matched to its input index.
+    for r in results {
+        assert!(r.get("document").is_some(), "document echoed: {r}");
+    }
+    assert_eq!(results[0]["index"], 1);
+    assert_eq!(results[0]["document"], "paris is the capital");
+    assert_eq!(results[1]["index"], 0);
+    assert_eq!(results[1]["document"], "berlin is in germany");
+}
+
+#[tokio::test]
 async fn speech_returns_audio_bytes() {
     let (app, _bus) = app_and_bus();
     let req = Request::builder()
@@ -930,6 +1045,44 @@ async fn non_chat_falls_through_chat_only_without_penalty() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
     assert_eq!(v["data"].as_array().unwrap().len(), 1);
+
+    // Crucially, the chat-only provider must NOT have been penalized — Unsupported is not a failure.
+    let health = Request::builder()
+        .method("GET")
+        .uri("/admin/health")
+        .header("x-admin-token", "test-admin")
+        .body(Body::empty())
+        .unwrap();
+    let hv = body_json(app.oneshot(health).await.unwrap()).await;
+    for p in hv["providers"].as_array().unwrap() {
+        assert_eq!(p["down"], false, "no provider should be penalized: {p}");
+    }
+}
+
+#[tokio::test]
+async fn rerank_falls_through_chat_only_without_penalty() {
+    let (app, _bus) = app_and_bus();
+
+    // The `fallback` route starts with a chat-only provider; a rerank request must skip it
+    // (Unsupported) and land on `mock` — no error, a real ranked result.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/rerank")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": "fallback",
+                "query": "q",
+                "documents": ["a", "b"],
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["results"].as_array().unwrap().len(), 2);
 
     // Crucially, the chat-only provider must NOT have been penalized — Unsupported is not a failure.
     let health = Request::builder()
@@ -1239,6 +1392,29 @@ async fn models_type_filter() {
     assert!(find_model(&v, "m/beta-embed").is_none());
 }
 
+#[tokio::test]
+async fn models_type_filter_rerank() {
+    let (app, _bus) = app_and_bus();
+    let v = body_json(
+        app.oneshot(models_request("?type=rerank", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // The filter keeps only the rerank model and surfaces its `text->scores` modality; the llm and
+    // embedding models are dropped.
+    let rr = find_model(&v, "m/beta-rerank").expect("m/beta-rerank");
+    assert_eq!(rr["architecture"]["modality"], "text->scores");
+    assert!(
+        find_model(&v, "m/alpha").is_none(),
+        "llm excluded by rerank filter"
+    );
+    assert!(
+        find_model(&v, "m/beta-embed").is_none(),
+        "embedding excluded by rerank filter"
+    );
+}
+
 /// A provider that reports no modality for any model does not support model types, so a `?type=` filter
 /// is ignored for it: its whole catalog passes through under every filter rather than being hidden.
 #[tokio::test]
@@ -1386,6 +1562,7 @@ async fn openapi_documents_every_served_consumer_path() {
         "/v1/responses",
         "/v1/responses/{id}",
         "/v1/embeddings",
+        "/v1/rerank",
         "/v1/audio/speech",
         "/v1/audio/voices",
         "/v1/audio/transcriptions",

@@ -20,8 +20,9 @@ use async_stream::stream;
 use futures::StreamExt;
 use llmleaf_model::{
     AudioChunk, AudioStream, BatchHandle, BatchOutcome, BatchResultStream, BatchSpec, ChatRequest,
-    EmbeddingRequest, EmbeddingResponse, FinishReason, ModelError, ModelInfo, ResponseStream,
-    SpeechRequest, StreamChunk, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
+    EmbeddingRequest, EmbeddingResponse, FinishReason, ModelError, ModelInfo, RerankRequest,
+    RerankResponse, ResponseStream, SpeechRequest, StreamChunk, TranscriptionRequest,
+    TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_pricing::Pricing;
 use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry, RealtimeParams};
@@ -385,6 +386,55 @@ impl Engine {
         resp.usage = self.pricing.price(&logical_model, resp.usage);
         // Debit the observed tokens against this provider/model's tokens/min bucket (the cost was unknown
         // at admission); then release the concurrency permit by dropping the guard.
+        self.rate.debit_tokens(
+            &provider,
+            &upstream_model,
+            resp.usage.total_tokens,
+            Instant::now(),
+        );
+        self.emit_batch_tail(&request_id, &key, &logical_model, resp.usage);
+        drop(guard);
+        Ok(resp)
+    }
+
+    /// Rerank a query's documents through the pipeline. Same route→fallback→health→events skeleton as
+    /// embeddings — a batch modality: a target that does not implement rerank ([`ModelError::Unsupported`])
+    /// is skipped without a health penalty, so the chain naturally lands on the next rerank-capable
+    /// provider.
+    pub async fn rerank(
+        &self,
+        req: RerankRequest,
+        key: String,
+        request_id: String,
+        now: u64,
+    ) -> Result<RerankResponse, EngineError> {
+        let logical_model = req.model.clone();
+        let req = self.screen_request(req, &key, &logical_model).await?;
+        let payload = self.payload(&req);
+        let dispatched = self
+            .dispatch(
+                logical_model,
+                key,
+                request_id,
+                now,
+                payload,
+                move |provider, cx, upstream| {
+                    let mut preq = req.clone();
+                    preq.model = upstream;
+                    async move { provider.rerank(preq, &cx).await }
+                },
+            )
+            .await?;
+        let Dispatched {
+            value: mut resp,
+            request_id,
+            key,
+            logical_model,
+            provider,
+            upstream_model,
+            guard,
+        } = dispatched;
+        resp.usage = self.pricing.price(&logical_model, resp.usage);
         self.rate.debit_tokens(
             &provider,
             &upstream_model,

@@ -74,6 +74,7 @@ pooling / TLS).
 | `CreateChatCompletionAsync` / `CreateChatCompletionStreamAsync` | `POST /v1/chat/completions` |
 | `CreateResponseAsync` / `CreateResponseStreamAsync` | `POST /v1/responses` (OpenAI Responses dialect; streaming is typed events with no `[DONE]`) |
 | `CreateEmbeddingAsync` | `POST /v1/embeddings` (base64 decoded to floats) |
+| `CreateRerankAsync` | `POST /v1/rerank` (plain JSON; no vector decode) |
 | `ListModelsAsync` | `GET /v1/models` |
 | `CreateSpeechAsync` | `POST /v1/audio/speech` (bytes + `Content-Type`) |
 | `ListVoicesAsync` | `GET /v1/audio/voices` |

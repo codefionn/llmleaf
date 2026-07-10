@@ -81,6 +81,8 @@ pub enum Modality {
     Stt,
     /// An embedding model (text in, vector out).
     Embedding,
+    /// A rerank / relevance-scoring model (query + documents in, ordered scores out).
+    Rerank,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -577,6 +577,33 @@ pub fn encodeEmbeddingRequest(gpa: Allocator, req: gen.EmbeddingRequest) ![]u8 {
     return aw.toOwnedSlice();
 }
 
+pub fn encodeRerankRequest(gpa: Allocator, req: gen.RerankRequest) ![]u8 {
+    var aw: Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+    var s: Stringify = .{ .writer = &aw.writer, .options = .{} };
+    try s.beginObject();
+    try s.objectField("model");
+    try s.write(req.model);
+    try s.objectField("query");
+    try s.write(req.query);
+    // Unlike `input` on embeddings, `documents` is always an array on the wire.
+    try s.objectField("documents");
+    try s.beginArray();
+    for (req.documents) |d| try s.write(d);
+    try s.endArray();
+    if (req.top_n) |v| {
+        try s.objectField("top_n");
+        try s.write(v);
+    }
+    if (req.return_documents) |v| {
+        try s.objectField("return_documents");
+        try s.write(v);
+    }
+    if (req.extra) |raw| try mergeExtra(&s, gpa, raw);
+    try s.endObject();
+    return aw.toOwnedSlice();
+}
+
 pub fn encodeSpeechRequest(gpa: Allocator, req: gen.SpeechRequest) ![]u8 {
     var aw: Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
@@ -1112,6 +1139,31 @@ pub fn decodeEmbeddingResponse(arena: Allocator, root: Value) !gen.EmbeddingResp
     };
 }
 
+/// Decode a `POST /v1/rerank` response. Unlike embeddings, rerank results are
+/// plain JSON — there is no base64 vector to decode.
+pub fn decodeRerankResponse(arena: Allocator, root: Value) !gen.RerankResponse {
+    const results_arr = switch (objGet(root, "results") orelse Value{ .null = {} }) {
+        .array => |a| a,
+        else => return error.MalformedResponse,
+    };
+    var results = try arena.alloc(gen.RerankResult, results_arr.items.len);
+    for (results_arr.items, 0..) |r, i| {
+        results[i] = .{
+            .index = getInt(u32, r, "index") orelse 0,
+            .relevance_score = if (getFloat(r, "relevance_score")) |f| @floatCast(f) else 0,
+            // `document` echoes the input only when return_documents was set; a
+            // structured (object) document isn't modelled here, so it stays null.
+            .document = getStr(r, "document"),
+        };
+    }
+    return gen.RerankResponse{
+        .object = getStr(root, "object") orelse "list",
+        .model = getStr(root, "model") orelse "",
+        .results = results,
+        .usage = parseUsage(root, "usage"),
+    };
+}
+
 /// An embedding is either a float array (`encoding_format:"float"`) or a base64
 /// string of little-endian f32 bytes (`encoding_format:"base64"`). Decode both
 /// to `[]f32`.
@@ -1388,6 +1440,48 @@ test "embedding request single input is bare string" {
     const body = try encodeEmbeddingRequest(testing.allocator, req);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"model\":\"e\",\"input\":\"hello\"}", body);
+}
+
+test "rerank request documents are always an array" {
+    const req = gen.RerankRequest{
+        .model = "r",
+        .query = "q",
+        .documents = &.{ "a", "b" },
+        .top_n = 1,
+        .return_documents = true,
+    };
+    const body = try encodeRerankRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings(
+        "{\"model\":\"r\",\"query\":\"q\",\"documents\":[\"a\",\"b\"],\"top_n\":1,\"return_documents\":true}",
+        body,
+    );
+}
+
+test "decode rerank response" {
+    // Plain JSON results — no base64 vector to decode. First result echoes its
+    // document (return_documents was set); second omits it.
+    const json =
+        \\{"object":"list","model":"r",
+        \\ "results":[{"index":2,"relevance_score":0.5,"document":"doc"},{"index":0,"relevance_score":0.25}],
+        \\ "usage":{"total_tokens":7,"cost_usd":0.002}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSlice(Value, a, json, .{});
+    const resp = try decodeRerankResponse(a, parsed.value);
+    try testing.expectEqualStrings("list", resp.object);
+    try testing.expectEqualStrings("r", resp.model);
+    try testing.expectEqual(@as(usize, 2), resp.results.len);
+    try testing.expectEqual(@as(u32, 2), resp.results[0].index);
+    try testing.expectEqual(@as(f32, 0.5), resp.results[0].relevance_score);
+    try testing.expectEqualStrings("doc", resp.results[0].document.?);
+    try testing.expectEqual(@as(u32, 0), resp.results[1].index);
+    try testing.expectEqual(@as(f32, 0.25), resp.results[1].relevance_score);
+    try testing.expect(resp.results[1].document == null);
+    try testing.expectEqual(@as(u32, 7), resp.usage.?.total_tokens);
+    try testing.expectEqual(@as(f64, 0.002), resp.usage.?.cost_usd.?);
 }
 
 test "decode chat response" {

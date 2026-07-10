@@ -10,6 +10,10 @@
 //! surface. That is what makes multi-node trivial (principle 9) — each node pulls independently, and
 //! killing the control plane leaves the proxy proxying from its last-good cache (config alone).
 
+// The single hand-built OpenAPI document (`compat::openapi`) is one large `json!{}` literal; adding the
+// rerank surface's schemas pushes it past the default macro-expansion recursion limit of 128.
+#![recursion_limit = "256"]
+
 pub mod admin;
 pub mod batch_id;
 pub mod compat;

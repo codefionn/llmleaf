@@ -123,6 +123,7 @@ while (try stream.next()) |event| {
 | `chat` / `chatStream` / `chatStreamCallback` | `POST /v1/chat/completions` |
 | `responses` / `responsesStream` / `responsesStreamCallback` | `POST /v1/responses` (typed SSE, no `[DONE]`) |
 | `embeddings` | `POST /v1/embeddings` (handles base64 vectors) |
+| `rerank` | `POST /v1/rerank` (plain JSON results) |
 | `listModels` | `GET /v1/models` |
 | `speech` | `POST /v1/audio/speech` (bytes + content-type) |
 | `voices` | `GET /v1/audio/voices` |

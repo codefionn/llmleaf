@@ -1,6 +1,6 @@
 {
   "_comment": "Bundled pricing dataset. Collected OFFLINE by the pricing crate's collector (SOUL.md: 'Collection happens offline in the pricing crate; the core only ever reads the bundled dataset'). Rates are USD per 1,000,000 tokens.",
-  "_comment_metadata": "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding) and published limits max_context/max_output/max_thinking. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.",
+  "_comment_metadata": "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank) and published limits max_context/max_output/max_thinking. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.",
   "_comment_params": "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.",
   "version": 4,
   "models": {

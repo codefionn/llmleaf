@@ -647,6 +647,27 @@ internal static class Mapper
         return vec;
     }
 
+    // ---- rerank ---------------------------------------------------------
+
+    internal static byte[] EncodeRerankRequest(RerankRequest req)
+    {
+        var w = new WireRerankRequest
+        {
+            Model = req.Model,
+            Query = req.Query,
+            Documents = req.Documents.ToList(),
+            TopN = req.TopN,
+            ReturnDocuments = req.ReturnDocuments,
+        };
+        return Json.MergeExtra(w, Json.RawValue(req.Extra));
+    }
+
+    internal static RerankResponse RerankResponseFromWire(WireRerankResponse w) => new(
+        w.Object,
+        w.Model,
+        w.Results.Select(r => new RerankResult(r.Index, r.RelevanceScore, r.Document)).ToList(),
+        UsageFromWire(w.Usage));
+
     // ---- speech / voices ------------------------------------------------
 
     internal static byte[] EncodeSpeechRequest(SpeechRequest req)

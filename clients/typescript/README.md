@@ -62,6 +62,7 @@ client.chatStream(req);              // stream:true, async iterable of chunks
 await client.responses(req);         // POST /v1/responses (OpenAI Responses dialect)
 client.responsesStream(req);         // stream:true, async iterable of typed events (no [DONE])
 await client.embeddings(req);        // base64 vectors decoded to floats
+await client.rerank(req);            // POST /v1/rerank; results by relevance (plain JSON)
 await client.listModels({ type: "llm" });
 await client.speech(req);            // -> { bytes, contentType }
 await client.voices("tts-1");

@@ -1424,6 +1424,89 @@ pub struct EmbeddingResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Rerank
+// ---------------------------------------------------------------------------
+
+/// A rerank document. Usually a plain string; the wire also accepts a structured
+/// multimodal object (`{ text?, image? }`), captured here as raw JSON. Untagged, so
+/// it round-trips either shape (mirrors how [`EmbeddingInput`] stays JSON-flexible).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RerankDocument {
+    Text(String),
+    Object(serde_json::Value),
+}
+
+impl From<String> for RerankDocument {
+    fn from(s: String) -> Self {
+        RerankDocument::Text(s)
+    }
+}
+
+impl From<&str> for RerankDocument {
+    fn from(s: &str) -> Self {
+        RerankDocument::Text(s.to_string())
+    }
+}
+
+impl From<serde_json::Value> for RerankDocument {
+    fn from(v: serde_json::Value) -> Self {
+        RerankDocument::Object(v)
+    }
+}
+
+/// `POST /v1/rerank` request body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RerankRequest {
+    pub model: String,
+    pub query: String,
+    pub documents: Vec<RerankDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_n: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_documents: Option<bool>,
+}
+
+impl RerankRequest {
+    /// Start a rerank request. `documents` accepts plain strings (`vec!["a", "b"]`) or
+    /// structured multimodal objects (via [`serde_json::Value`]).
+    pub fn new(
+        model: impl Into<String>,
+        query: impl Into<String>,
+        documents: impl IntoIterator<Item = impl Into<RerankDocument>>,
+    ) -> Self {
+        RerankRequest {
+            model: model.into(),
+            query: query.into(),
+            documents: documents.into_iter().map(Into::into).collect(),
+            top_n: None,
+            return_documents: None,
+        }
+    }
+}
+
+/// A single reranked document: its position in the request `documents` and its score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RerankResult {
+    #[serde(default)]
+    pub index: u32,
+    pub relevance_score: f32,
+    /// Present only when the request set `return_documents: true`. Echoes the original
+    /// document, which may be a plain string or a structured object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<RerankDocument>,
+}
+
+/// `POST /v1/rerank` response (`object:"list"`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RerankResponse {
+    pub model: String,
+    pub results: Vec<RerankResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+// ---------------------------------------------------------------------------
 // Audio — speech / voices
 // ---------------------------------------------------------------------------
 
@@ -1625,6 +1708,7 @@ pub enum ModelType {
     Tts,
     Stt,
     Embedding,
+    Rerank,
 }
 
 impl ModelType {
@@ -1635,6 +1719,7 @@ impl ModelType {
             ModelType::Tts => "tts",
             ModelType::Stt => "stt",
             ModelType::Embedding => "embedding",
+            ModelType::Rerank => "rerank",
         }
     }
 }

@@ -39,7 +39,9 @@ use crate::admin::{AdminAccess, Observability};
 use crate::compat::openai::{self, ChunkEncoder};
 use crate::compat::realtime::{session as rt_session, wire as rt_wire};
 use crate::compat::transcription::TranscriptionBody;
-use crate::compat::{anthropic, batch, embeddings, openapi, responses, speech, transcription};
+use crate::compat::{
+    anthropic, batch, embeddings, openapi, rerank, responses, speech, transcription,
+};
 use crate::config::Config;
 use crate::engine::{Engine, EngineError};
 use crate::events::{Event, EventBus};
@@ -140,6 +142,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses", post(responses_create))
         .route("/v1/responses/{id}", get(get_response))
         .route("/v1/embeddings", post(embeddings_handler))
+        .route("/v1/rerank", post(rerank_handler))
         .route("/v1/audio/speech", post(audio_speech))
         .route("/v1/audio/voices", get(audio_voices))
         .route("/v1/models", get(list_models))
@@ -867,6 +870,36 @@ async fn embeddings_handler(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rerank surface (`POST /v1/rerank`) — query + documents in, relevance-ordered scores out
+// ---------------------------------------------------------------------------------------------
+
+async fn rerank_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "missing bearer token");
+    };
+    let req = match rerank::parse_rerank_request(body) {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let model = req.model.clone();
+    let now = now_secs();
+    let key = match authorize_token(&state, &token, &model, now).await {
+        Ok(id) => id,
+        Err(e) => return auth_error(e),
+    };
+    let request_id = next_request_id(&state.request_seq);
+
+    match state.engine.rerank(req, key, request_id, now).await {
+        Ok(resp) => Json(rerank::response_to_wire(&resp)).into_response(),
+        Err(e) => engine_error(e),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Speech surface (`POST /v1/audio/speech`, text-to-speech) — raw audio body, not SSE
 // ---------------------------------------------------------------------------------------------
 
@@ -995,7 +1028,8 @@ async fn audio_voices(
 /// takes no query params) and are applied server-side after enrichment.
 #[derive(Debug, Default, Deserialize)]
 struct ModelsQuery {
-    /// Modality filter: absent / `all` ⇒ no filter; else `llm` | `tts` | `stt` | `embedding`.
+    /// Modality filter: absent / `all` ⇒ no filter; else `llm` | `tts` | `stt` | `embedding` |
+    /// `rerank`.
     #[serde(default, rename = "type")]
     kind: Option<String>,
     /// Case-insensitive substring over the model id.
@@ -1203,8 +1237,9 @@ fn parse_modality_filter(raw: Option<&str>) -> Result<Option<Modality>, String> 
         Some("tts") => Ok(Some(Modality::Tts)),
         Some("stt") => Ok(Some(Modality::Stt)),
         Some("embedding") => Ok(Some(Modality::Embedding)),
+        Some("rerank") => Ok(Some(Modality::Rerank)),
         Some(other) => Err(format!(
-            "unknown type '{other}' (expected all|llm|tts|stt|embedding)"
+            "unknown type '{other}' (expected all|llm|tts|stt|embedding|rerank)"
         )),
     }
 }
@@ -1317,6 +1352,7 @@ fn architecture_json(modality: Option<Modality>) -> Value {
         Some(Modality::Tts) => (&["text"], &["audio"], Some("text->audio")),
         Some(Modality::Stt) => (&["audio"], &["text"], Some("audio->text")),
         Some(Modality::Embedding) => (&["text"], &["embeddings"], Some("text->embeddings")),
+        Some(Modality::Rerank) => (&["text"], &["scores"], Some("text->scores")),
         None => (&[], &[], None),
     };
     json!({
@@ -1384,6 +1420,7 @@ fn supported_parameters(
         Some(Modality::Tts) => vec!["voice", "response_format", "speed"],
         Some(Modality::Stt) => vec!["language", "prompt", "response_format", "temperature"],
         Some(Modality::Embedding) => vec!["encoding_format", "dimensions"],
+        Some(Modality::Rerank) => vec!["query", "documents", "top_n", "return_documents"],
         None => vec![],
     };
     if has_thinking {

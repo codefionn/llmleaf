@@ -12,6 +12,7 @@
 //!   on the terminal `response.completed`/`incomplete`/`failed` event — there is no
 //!   `[DONE]` sentinel);
 //! * embeddings ([`Client::embeddings`], with base64 → float decoding);
+//! * rerank ([`Client::rerank`], scoring documents against a query);
 //! * model catalog ([`Client::list_models`]);
 //! * text-to-speech ([`Client::speech`] → `(bytes, content_type)`) and the voice catalog
 //!   ([`Client::voices`]);

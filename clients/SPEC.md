@@ -87,8 +87,18 @@ Body = `EmbeddingRequest`. Response = `EmbeddingResponse` (`object:"list"`, `dat
 If `encoding_format:"base64"`, each `data[].embedding` is a base64 string of little-endian
 f32 bytes — decode it into the float vector before returning.
 
+### POST /v1/rerank
+Body = `RerankRequest`. Scores each `documents[]` entry against `query` and returns them by
+relevance. `documents[]` is usually an array of plain **strings**; each entry may also be a
+structured multimodal **object** (`{text?, image?}`) — the proto models `documents` as
+`repeated string`, so structured documents are a JSON-only extension (SDKs should at least
+accept strings). Optional `top_n` caps the returned results; `return_documents` echoes each
+original document back on the result. Response = `RerankResponse` (`object:"list"`): a `results`
+array of `{index, relevance_score, document?}` (`document` present only when `return_documents`
+was set, and mirrors the string-or-object shape of the input) plus a `usage` block.
+
 ### GET /v1/models
-Query: `type` (`all|llm|tts|stt|embedding`), `search` (substring). Optional header
+Query: `type` (`all|llm|tts|stt|embedding|rerank`), `search` (substring). Optional header
 `x-admin-token` adds the per-model `endpoints` array. Response = `ListModelsResponse`.
 
 ### POST /v1/audio/speech
@@ -118,7 +128,7 @@ The three return a `BatchHandle`.
 1. Generated types from the proto (real codegen wired into the build — see each client README).
 2. A `Client` constructed from `(baseUrl, apiKey, opts)` with a pluggable HTTP timeout and an
    optional `x-admin-token`.
-3. The nine calls above, with streaming chat and streaming responses surfaced idiomatically
+3. The ten calls above, with streaming chat and streaming responses surfaced idiomatically
    (async iterator / channel / `Flow` / callback) — chat streaming handles the `[DONE]`
    sentinel; responses streaming stops on the terminal `response.completed` / `incomplete` /
    `failed` event instead (there is no sentinel).

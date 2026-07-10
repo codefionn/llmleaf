@@ -13,6 +13,7 @@ mod catalog;
 mod embed;
 mod error;
 mod request;
+mod rerank;
 mod response;
 mod stream;
 
@@ -30,5 +31,6 @@ pub use error::ModelError;
 pub use request::{
     ChatRequest, ContentPart, Message, Modality, Role, Thinking, ToolCall, ToolChoice, ToolDef,
 };
+pub use rerank::{RerankDocument, RerankRequest, RerankResponse, RerankResult};
 pub use response::{ChatResponse, Choice, FinishReason, StreamChunk, ToolCallDelta, Usage};
 pub use stream::{collect, collect_chunks, ResponseStream};

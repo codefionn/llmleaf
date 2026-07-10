@@ -7,7 +7,8 @@
 //! Fidelity beats convenience (decision filter): match the documented wire behavior even when awkward.
 //!
 //! One surface per modality, mostly in the OpenAI/OpenRouter dialect: [`openai`] (chat), [`embeddings`],
-//! [`speech`] (text-to-speech), [`transcription`] (speech-to-text), and [`batch`] (asynchronous jobs).
+//! [`rerank`] (query + documents → ordered scores, the Cohere/Jina/OpenRouter dialect), [`speech`]
+//! (text-to-speech), [`transcription`] (speech-to-text), and [`batch`] (asynchronous jobs).
 //! [`anthropic`] is a second chat dialect on the same canonical core — the Anthropic Messages API — and
 //! [`responses`] is a third — the OpenAI Responses API, served statelessly — both mapped at the edge
 //! exactly like the rest (principle 3: no dialect is privileged). Routing treats them uniformly — a
@@ -23,6 +24,7 @@ pub mod embeddings;
 pub mod openai;
 pub mod openapi;
 pub mod realtime;
+pub mod rerank;
 pub mod responses;
 pub mod speech;
 pub mod transcription;

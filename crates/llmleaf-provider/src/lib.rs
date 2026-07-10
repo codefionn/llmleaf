@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use llmleaf_model::{
     AudioStream, BatchHandle, BatchResultStream, BatchSpec, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, ModelError, ModelInfo, ResponseStream, SpeechRequest, TranscriptionRequest,
-    TranscriptionResponse, VoiceInfo,
+    EmbeddingResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
+    SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
@@ -42,6 +42,17 @@ pub trait Provider: Send + Sync {
         _cx: &ProviderCx,
     ) -> Result<EmbeddingResponse, ModelError> {
         Err(unsupported(self.name(), "embeddings"))
+    }
+
+    /// Rank a query's candidate documents by relevance. Opt-in: the default declares the modality
+    /// unsupported, which routing falls past *without* penalizing health (the provider is not
+    /// degraded — it simply lacks the modality).
+    async fn rerank(
+        &self,
+        _req: RerankRequest,
+        _cx: &ProviderCx,
+    ) -> Result<RerankResponse, ModelError> {
+        Err(unsupported(self.name(), "rerank"))
     }
 
     /// Synthesize speech (text-to-speech). Opt-in: the default declares the modality unsupported.

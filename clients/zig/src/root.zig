@@ -86,6 +86,10 @@ pub const ResponsesStreamEvent = gen.ResponsesStreamEvent;
 pub const EmbeddingRequest = gen.EmbeddingRequest;
 pub const Embedding = gen.Embedding;
 pub const EmbeddingResponse = gen.EmbeddingResponse;
+// Rerank
+pub const RerankRequest = gen.RerankRequest;
+pub const RerankResult = gen.RerankResult;
+pub const RerankResponse = gen.RerankResponse;
 // Audio
 pub const SpeechRequest = gen.SpeechRequest;
 pub const Speech = gen.Speech;

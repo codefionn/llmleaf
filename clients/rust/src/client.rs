@@ -223,6 +223,19 @@ impl Client {
         raw.into_public()
     }
 
+    // -- rerank ----------------------------------------------------------------
+
+    /// `POST /v1/rerank`. Scores each of `request.documents` against `request.query`
+    /// and returns the results ordered by relevance. `documents` may be plain strings or
+    /// structured multimodal objects; when `return_documents` is set the originals are
+    /// echoed back on each [`RerankResult`].
+    pub async fn rerank(&self, request: RerankRequest) -> Result<RerankResponse> {
+        let resp = self
+            .send(self.request(Method::POST, "/v1/rerank").json(&request))
+            .await?;
+        Ok(resp.json::<RerankResponse>().await?)
+    }
+
     // -- models --------------------------------------------------------------
 
     /// `GET /v1/models`. `type` filters the catalog; `search` is a substring match. The

@@ -164,6 +164,63 @@ class WireTest {
     }
 
     @Test
+    fun rerankRequestSerialisesDocumentsAsArray() = runTest {
+        val req = eu.codefionn.llmleaf.client.model.RerankRequest(
+            model = "rr",
+            query = "the query",
+            documents = listOf("only one"),
+            topN = 3,
+        )
+        val body = Json.parseToJsonElement(
+            LenientJson.encodeToString(
+                eu.codefionn.llmleaf.client.model.RerankRequest.serializer(),
+                req,
+            ),
+        ).jsonObject
+        assertEquals("rr", body["model"]!!.jsonPrimitive.content)
+        assertEquals("the query", body["query"]!!.jsonPrimitive.content)
+        // documents is always an array, even for a single element (no bare-string shortcut).
+        assertTrue(body["documents"] is JsonArray)
+        assertEquals("only one", (body["documents"] as JsonArray).single().jsonPrimitive.content)
+        assertEquals(3, body["top_n"]!!.jsonPrimitive.content.toInt())
+        // absent optionals stay off the wire.
+        assertNull(body["return_documents"])
+    }
+
+    @Test
+    fun rerankResultsDecode() = runTest {
+        val engine = MockEngine {
+            respond(
+                """{"object":"list","model":"rr","results":[{"index":2,"relevance_score":0.87,"document":"doc c"},{"index":0,"relevance_score":0.42}],"usage":{"total_tokens":5,"cost_usd":0.001}}""",
+                HttpStatusCode.OK,
+                jsonHeaders,
+            )
+        }
+        val client = LlmleafClient("https://gw.example.com", "test", engine)
+        val resp = client.rerank(
+            eu.codefionn.llmleaf.client.model.RerankRequest(
+                model = "rr",
+                query = "the query",
+                documents = listOf("doc a", "doc b", "doc c"),
+                topN = 2,
+                returnDocuments = true,
+            ),
+        )
+        assertEquals("rr", resp.model)
+        assertEquals(2, resp.results.size)
+        val top = resp.results.first()
+        assertEquals(2, top.index)
+        assertEquals(0.87, top.relevanceScore)
+        // `document` is surfaced as a raw JsonElement (here a bare string).
+        assertEquals("doc c", top.document!!.jsonPrimitive.content)
+        // absent `document` decodes to null.
+        assertNull(resp.results[1].document)
+        assertEquals(5, resp.usage!!.totalTokens)
+        assertEquals(0.001, resp.usage!!.costUsd)
+        client.close()
+    }
+
+    @Test
     fun reasoningAndCachedTokensRoundTrip() = runTest {
         // Response carries flat `reasoning`, an OPEN signed text block and a HIDDEN encrypted
         // block in `reasoning_details`, plus prompt-cache hit (`prompt_tokens_details.cached_tokens`)

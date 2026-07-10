@@ -32,6 +32,9 @@ import type {
   EmbeddingRequest,
   EmbeddingResponse,
   Embedding,
+  RerankRequest,
+  RerankResponse,
+  RerankResult,
   SpeechRequest,
   VoicesResponse,
   Voice,
@@ -498,6 +501,57 @@ export function decodeEmbeddingResponse(v: unknown): EmbeddingResponse {
     object: str(o["object"], "list"),
     data: arr(o["data"]).map(decodeEmbedding),
     model: str(o["model"]),
+    usage: decodeUsage(o["usage"]),
+  };
+}
+
+// ===========================================================================
+// Rerank
+// ===========================================================================
+
+export function encodeRerankRequest(req: RerankRequest): Json {
+  const out: Json = {
+    model: req.model,
+    query: req.query,
+    // documents are strings or structured objects — spliced verbatim (no decode).
+    documents: req.documents,
+  };
+  put(out, "top_n", req.topN);
+  put(out, "return_documents", req.returnDocuments);
+  const extra = parseRawJson("RerankRequest.extra", req.extra);
+  if (extra !== undefined) {
+    if (typeof extra !== "object" || extra === null || Array.isArray(extra)) {
+      throw new TypeError("RerankRequest.extra must be a JSON object");
+    }
+    for (const [k, v] of Object.entries(extra as Json)) out[k] = v;
+  }
+  return out;
+}
+
+// Unlike embeddings, rerank results are plain JSON — there is no base64 vector to decode.
+function decodeRerankResult(v: unknown): RerankResult {
+  const o = obj(v) ?? {};
+  const result: RerankResult = {
+    index: num(o["index"]),
+    relevanceScore: num(o["relevance_score"]),
+  };
+  // `document` echoes the input only when return_documents was set; string or object.
+  const doc = o["document"];
+  if (typeof doc === "string") {
+    result.document = doc;
+  } else {
+    const d = obj(doc);
+    if (d !== undefined) result.document = d;
+  }
+  return result;
+}
+
+export function decodeRerankResponse(v: unknown): RerankResponse {
+  const o = obj(v) ?? {};
+  return {
+    object: str(o["object"], "list"),
+    model: str(o["model"]),
+    results: arr(o["results"]).map(decodeRerankResult),
     usage: decodeUsage(o["usage"]),
   };
 }

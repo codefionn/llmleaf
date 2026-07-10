@@ -568,6 +568,44 @@ public sealed record Embedding(string Object, uint Index, IReadOnlyList<float> V
 public sealed record EmbeddingResponse(string Object, IReadOnlyList<Embedding> Data, string Model, Usage? Usage = null);
 
 // ---------------------------------------------------------------------------
+// Rerank
+// ---------------------------------------------------------------------------
+
+/// <summary>POST /v1/rerank request body.</summary>
+public sealed record RerankRequest
+{
+    public required string Model { get; init; }
+
+    /// <summary>The search query the documents are scored against.</summary>
+    public required string Query { get; init; }
+
+    /// <summary>The documents to rank, in candidate order. Modelled as plain strings — the common
+    /// case. Structured / multimodal document objects are a JSON-only extension not surfaced by this
+    /// typed field; pass them through <see cref="Extra"/> when a provider needs them.</summary>
+    public required IReadOnlyList<string> Documents { get; init; }
+
+    /// <summary>Return only the top N results; null returns every document, ranked.</summary>
+    public uint? TopN { get; init; }
+
+    /// <summary>When true, each result echoes its source <c>document</c>.</summary>
+    public bool? ReturnDocuments { get; init; }
+
+    /// <summary>Raw JSON object passthrough, merged at the top level.</summary>
+    public string? Extra { get; init; }
+}
+
+/// <summary>One ranked document. <see cref="Index"/> is its position in the request
+/// <see cref="RerankRequest.Documents"/>; <see cref="Document"/> is present only when
+/// <see cref="RerankRequest.ReturnDocuments"/> was set — a JSON string or object (structured /
+/// multimodal documents round-trip as objects), surfaced verbatim as a
+/// <see cref="System.Text.Json.JsonElement"/>.</summary>
+public sealed record RerankResult(uint Index, float RelevanceScore, System.Text.Json.JsonElement? Document = null);
+
+/// <summary>POST /v1/rerank response (<c>object:"list"</c>). <see cref="Results"/> are ordered by
+/// descending relevance.</summary>
+public sealed record RerankResponse(string Object, string Model, IReadOnlyList<RerankResult> Results, Usage? Usage = null);
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
 
@@ -681,6 +719,7 @@ public enum ModelType
     Tts,
     Stt,
     Embedding,
+    Rerank,
 }
 
 /// <summary>Options for <see cref="LlmleafClient.ListModelsAsync"/>.</summary>

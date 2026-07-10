@@ -520,6 +520,37 @@ message EmbeddingResponse {
 }
 
 // ----------------------------------------------------------------------------
+// Rerank  (POST /v1/rerank)
+// ----------------------------------------------------------------------------
+
+message RerankRequest {
+  string model = 1;
+  string query = 2;
+  repeated string documents = 3; // wire accepts a plain string or a structured object per element
+  // Documents are usually plain strings. The wire also accepts structured
+  // multimodal document objects ({text?, image?}); that is a JSON-only extension
+  // not represented in these generated types (the same way EmbeddingRequest.input
+  // stays a repeated string for a JSON-flexible field). Transports may still send
+  // plain strings; structured documents ride outside the generated shape.
+  optional uint32 top_n = 4;
+  optional bool return_documents = 5;
+}
+
+message RerankResult {
+  uint32 index = 1;
+  float relevance_score = 2;
+  optional string document = 3; // present when return_documents == true
+  // As with RerankRequest.documents, a returned document may be a structured
+  // object on the wire; this generated field carries only the string form.
+}
+
+message RerankResponse {
+  string model = 1;
+  repeated RerankResult results = 2;
+  Usage usage = 3;
+}
+
+// ----------------------------------------------------------------------------
 // Audio — text to speech  (POST /v1/audio/speech  ->  raw audio bytes)
 //         voice catalog    (GET  /v1/audio/voices)
 // ----------------------------------------------------------------------------
