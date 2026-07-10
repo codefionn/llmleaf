@@ -34,8 +34,9 @@ max_body_bytes = 33554432
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
 #   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
-#                       moonshot (kimi, kimi-k2), minimax (minimax-coding, minimax-token-plan),
-#                       azure-openai (azure)
+#                       moonshot (kimi, kimi-k2; tool JSON schemas are rewritten into the upstream's
+#                       restricted "moonshot flavored" subset — see the moonshot provider docs),
+#                       minimax (minimax-coding, minimax-token-plan), azure-openai (azure)
 #   subscription plans: zai-coding (glm-coding; the GLM Coding Plan — same wire as zai on its
 #                       dedicated /api/coding/paas/v4 base, plan-bound keys),
 #                       kimi-coding (kimi-for-coding; the "Kimi for Coding" subscription at

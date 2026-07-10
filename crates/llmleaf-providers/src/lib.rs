@@ -9,8 +9,10 @@
 //! Two shapes of provider live here:
 //!   - the **OpenAI-compatible family** ([`compat`]) — one config-driven provider over a quirk table,
 //!     covering OpenAI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Perplexity,
-//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), Moonshot (Kimi, incl. Kimi for Coding), MiniMax
-//!     (incl. the Token Plan), and Azure OpenAI;
+//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), MiniMax (incl. the Token Plan), and Azure OpenAI.
+//!     Moonshot (Kimi, incl. Kimi for Coding) rides the same table for endpoint/auth/batch but is
+//!     wrapped by [`moonshot`], which rewrites tool JSON schemas into the upstream's "flavored"
+//!     subset;
 //!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Ollama (its
 //!     native `/api/*` surface), and LM Studio (its native `/api/v0/*` surface) — each a native mapping
 //!     module because its wire format is its own thing. (Vertex reuses Gemini's body mapping but owns its
@@ -30,6 +32,7 @@ mod gemini;
 mod http;
 mod lmstudio;
 mod mock;
+mod moonshot;
 mod ollama;
 mod openai_responses_wire;
 mod openai_wire;
@@ -58,6 +61,7 @@ pub use compat::{Brand, ChatApi, OpenAiCompatProvider};
 pub use gemini::GeminiProvider;
 pub use lmstudio::LmStudioProvider;
 pub use mock::EchoProvider;
+pub use moonshot::MoonshotProvider;
 pub use ollama::OllamaProvider;
 pub use openai_responses_wire::ResponsesFlavor;
 pub use transport::{
@@ -80,9 +84,15 @@ pub fn build(kind: &str, transports: &Transports) -> Option<Arc<dyn Provider>> {
         // (NDJSON streaming, native model management) and LM Studio's `/api/v0/*` (rich catalog).
         "ollama" => Some(Arc::new(OllamaProvider::new(transports))),
         "lmstudio" | "lm-studio" => Some(Arc::new(LmStudioProvider::new(transports))),
+        // Moonshot (Kimi) kinds resolve to the compat table's brand rows *wrapped* in the Moonshot
+        // provider, which rewrites tool JSON schemas into the upstream's "flavored" subset first.
         // Everything else falls through to the OpenAI-compatible family table.
-        other => OpenAiCompatProvider::for_kind(other, transports)
-            .map(|p| Arc::new(p) as Arc<dyn Provider>),
+        other => MoonshotProvider::for_kind(other, transports)
+            .map(|p| Arc::new(p) as Arc<dyn Provider>)
+            .or_else(|| {
+                OpenAiCompatProvider::for_kind(other, transports)
+                    .map(|p| Arc::new(p) as Arc<dyn Provider>)
+            }),
     }
 }
 

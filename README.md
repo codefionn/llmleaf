@@ -36,6 +36,8 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty dif
 - **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Ollama, LM Studio.
 - **OpenAI-wire family:** OpenAI, OpenRouter, Requesty, Groq, DeepSeek, xAI (Grok), Mistral,
   Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Azure OpenAI.
+  Moonshot additionally gets a dedicated provider layer that rewrites tool JSON schemas into the
+  upstream's restricted "moonshot flavored JSON schema" (standard Pydantic/zod output otherwise 400s).
   Subscription plans ride dedicated kinds where the vendor gives them their own endpoint:
   `zai-coding` (GLM Coding Plan, `/api/coding/paas/v4`) and `kimi-coding` (Kimi for Coding,
   `api.kimi.com/coding/v1`); MiniMax's Token Plan shares the standard endpoint, so

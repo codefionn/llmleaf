@@ -348,7 +348,9 @@ impl Brand {
             ),
             // Moonshot (Kimi, incl. Kimi K2), international host. Its API deprecates max_tokens in
             // favor of max_completion_tokens. Mainland China serves the same wire at
-            // https://api.moonshot.cn/v1 (an `endpoint` override).
+            // https://api.moonshot.cn/v1 (an `endpoint` override). NOTE: the factory wraps this row
+            // (and `kimi-coding`) in [`crate::MoonshotProvider`], which rewrites tool JSON schemas
+            // into Moonshot's "flavored" subset before the shared wire mapping sends them.
             "moonshot" | "kimi" | "kimi-k2" => Brand {
                 models_api: true,
                 batch_flavor: BatchFlavor::OpenAi,
