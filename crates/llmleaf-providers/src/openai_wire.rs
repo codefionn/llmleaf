@@ -757,10 +757,13 @@ pub fn openai_speech_model<'a>(brand: &str, model: &'a str) -> Option<&'a str> {
 }
 
 /// Mistral's `GET /v1/audio/voices` reply → canonical voices. The body wraps the list in `items`
-/// (paginated: `{ "items": [ { id, name, … } ], "total", … }`); a bare array is tolerated too. `id` is
-/// required (entries without one are skipped); `name` and a string-array `languages` are lifted into the
-/// canonical fields, and every other field (e.g. `created_at`, `user_id`) rides through verbatim in
-/// `extra` (principle 7) — so the mapping does not depend on Mistral's exact, evolving schema.
+/// (paginated: `{ "items": [ { id, slug?, name, … } ], "total", … }`); a bare array is tolerated too.
+/// The canonical voice id must be what `SpeechRequest::voice` accepts: preset voices are addressed by
+/// their `slug` (`en_paul_excited`), while the raw `id` is an opaque uuid — so `slug` wins when present
+/// and `id` is the fallback (entries with neither are skipped; a displaced uuid stays in `extra` under
+/// its original `id` key). `name` and a string-array `languages` are lifted into the canonical fields,
+/// and every other field (e.g. `created_at`, `user_id`) rides through verbatim in `extra`
+/// (principle 7) — so the mapping does not depend on Mistral's exact, evolving schema.
 pub fn mistral_voices_to_canonical(value: Value) -> Vec<VoiceInfo> {
     let items = match &value {
         Value::Object(obj) => obj.get("items").and_then(Value::as_array).cloned(),
@@ -776,10 +779,22 @@ pub fn mistral_voices_to_canonical(value: Value) -> Vec<VoiceInfo> {
             let Value::Object(mut obj) = item else {
                 return None;
             };
-            let id = obj.remove("id").and_then(|v| match v {
-                Value::String(s) => Some(s),
+            let as_string = |v: Value| match v {
+                Value::String(s) if !s.is_empty() => Some(s),
                 _ => None,
-            })?;
+            };
+            let uuid = obj.remove("id").and_then(as_string);
+            let slug = obj.remove("slug").and_then(as_string);
+            let id = match (slug, uuid) {
+                (Some(slug), Some(uuid)) => {
+                    // The slug is the synthesis-time handle; the uuid still rides along verbatim.
+                    obj.insert("id".into(), Value::String(uuid));
+                    slug
+                }
+                (Some(slug), None) => slug,
+                (None, Some(uuid)) => uuid,
+                (None, None) => return None,
+            };
             let name = obj.remove("name").and_then(|v| match v {
                 Value::String(s) => Some(s),
                 _ => None,
@@ -1500,6 +1515,38 @@ mod tests {
 
         assert_eq!(voices[1].id, "basalt");
         assert!(voices[1].languages.is_empty());
+    }
+
+    #[test]
+    fn mistral_voices_map_prefers_the_slug_over_the_uuid() {
+        // A preset voice is addressed at synthesis time by its slug (`en_paul_excited`); the raw `id`
+        // is an opaque uuid. The slug must become the canonical id — a picker that offers uuids
+        // offers ids the speech endpoint may not accept — with the uuid preserved verbatim in extra.
+        let body = json!({
+            "items": [
+                { "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "slug": "en_paul_excited",
+                  "name": "Paul (excited)", "languages": ["en"], "user_id": null },
+                { "id": "9b2e4c1a-0d3f-4e5a-8b7c-6d5e4f3a2b1c", "slug": null, "name": "My Clone" },
+                { "slug": "fr_margaux_calm" }
+            ],
+            "total": 3, "page": 1, "page_size": 100
+        });
+        let voices = mistral_voices_to_canonical(body);
+        assert_eq!(voices.len(), 3);
+
+        assert_eq!(voices[0].id, "en_paul_excited");
+        assert_eq!(
+            voices[0].extra.get("id").and_then(Value::as_str),
+            Some("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+        );
+        assert!(!voices[0].extra.contains_key("slug"));
+
+        // A null slug (a custom clone) falls back to the uuid — the only handle it has.
+        assert_eq!(voices[1].id, "9b2e4c1a-0d3f-4e5a-8b7c-6d5e4f3a2b1c");
+        assert!(!voices[1].extra.contains_key("id"));
+
+        // Slug-only entries are kept, not dropped for the missing uuid.
+        assert_eq!(voices[2].id, "fr_margaux_calm");
     }
 
     #[test]

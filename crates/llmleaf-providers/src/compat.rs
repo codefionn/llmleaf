@@ -671,14 +671,43 @@ impl OpenAiCompatProvider {
     }
 
     /// Fetch a brand's live voice catalog from its `GET /audio/voices` endpoint (Mistral). The listing
-    /// is account-wide (no model parameter) and paginated; we ask for a large page so a single request
-    /// returns the whole catalog. Reuses the shared auth + failure taxonomy, so a transport error is
-    /// fallback-eligible exactly like any other call.
+    /// is account-wide (no model parameter) and offset-paginated (`{ items, total, … }`). Two upstream
+    /// quirks shape the request: `type=all` is passed EXPLICITLY — the server-side default can exclude
+    /// the preset voices, which reads as an empty catalog on an account with no custom voices — and the
+    /// page size stays modest (the old single `limit=1000` shot gambled on an undocumented cap) with
+    /// `offset` following the reported `total`. The page loop is bounded and duplicate-guarded, so an
+    /// upstream that ignores `offset` terminates instead of looping. Reuses the shared auth + failure
+    /// taxonomy, so a transport error is fallback-eligible exactly like any other call.
     async fn fetch_voices(&self, cx: &ProviderCx) -> Result<Vec<VoiceInfo>, ModelError> {
-        let url = format!("{}?limit=1000", self.url_for(cx, "", "audio/voices"));
-        let req = self.apply_auth(HttpRequest::get(&url), cx);
-        let value = post_json(&*self.http, req).await?;
-        Ok(mistral_voices_to_canonical(value))
+        const PAGE_LIMIT: u64 = 100;
+        const PAGE_CAP: usize = 20;
+        let base = self.url_for(cx, "", "audio/voices");
+        let mut voices: Vec<VoiceInfo> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut offset = 0u64;
+        for _ in 0..PAGE_CAP {
+            let url = format!("{base}?type=all&limit={PAGE_LIMIT}&offset={offset}");
+            let req = self.apply_auth(HttpRequest::get(&url), cx);
+            let value = post_json(&*self.http, req).await?;
+            let fetched = value
+                .get("items")
+                .and_then(Value::as_array)
+                .map_or(0, |a| a.len() as u64);
+            let total = value.get("total").and_then(Value::as_u64);
+            let before = voices.len();
+            voices.extend(
+                mistral_voices_to_canonical(value)
+                    .into_iter()
+                    .filter(|v| seen.insert(v.id.clone())),
+            );
+            offset += fetched;
+            // Stop on an empty or fully-duplicate page, or once the reported total is covered; a
+            // body without `total` (e.g. a bare array) means the first page was the whole catalog.
+            if fetched == 0 || voices.len() == before || total.is_none_or(|t| offset >= t) {
+                break;
+            }
+        }
+        Ok(voices)
     }
 
     /// The list-models URL: a fixed brand-specific override when set (Cerebras's public catalog,
@@ -1594,6 +1623,105 @@ mod tests {
         let voices = p.voices("openai/tts-1", &cx).await.unwrap();
         assert_eq!(voices.len(), 6); // OpenAI classic catalog, not the single declared id
         assert!(voices.iter().any(|v| v.id == "alloy"));
+    }
+
+    /// A scripted Mistral voices upstream: serves `total` synthetic voices in `page` slices, honoring
+    /// (or, when `ignore_offset`, deliberately dropping) the request's `offset` — and asserts every
+    /// request carries the explicit `type=all` (the server default can hide presets) plus auth.
+    fn voices_upstream(total: usize, ignore_offset: bool) -> crate::fake::FakeHttpTransport {
+        crate::fake::FakeHttpTransport::new(move |req| {
+            assert!(
+                req.url.contains("type=all"),
+                "voices fetch must request presets explicitly: {}",
+                req.url
+            );
+            assert!(req
+                .headers
+                .iter()
+                .any(|(n, v)| n == "Authorization" && v == "Bearer test-key"));
+            let offset: usize = if ignore_offset {
+                0
+            } else {
+                req.url
+                    .split("offset=")
+                    .nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+            let items: Vec<serde_json::Value> = (offset..total.min(offset + 100))
+                .map(|i| serde_json::json!({ "id": format!("uuid-{i}"), "slug": format!("voice_{i}") }))
+                .collect();
+            Ok(crate::fake::FakeResponse::ok_json(&serde_json::json!({
+                "items": items, "total": total, "page": 1, "page_size": 100
+            })))
+        })
+    }
+
+    fn voices_cx() -> ProviderCx {
+        ProviderCx {
+            credential: Some("test-key".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn mistral_voices_follow_pagination_to_the_total() {
+        // 250 voices at 100 per page → three requests, every voice listed exactly once. The old
+        // single `limit=1000` shot both gambled on an undocumented page cap and silently truncated
+        // anything past it.
+        let transports = crate::transport::Transports {
+            http: std::sync::Arc::new(voices_upstream(250, false)),
+            realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
+        };
+        let p = OpenAiCompatProvider::for_kind("mistral", &transports).unwrap();
+        let voices = p.voices("voxtral-mini-tts-2603", &voices_cx()).await.unwrap();
+        assert_eq!(voices.len(), 250);
+        assert_eq!(voices[0].id, "voice_0");
+        assert_eq!(voices[249].id, "voice_249");
+    }
+
+    #[tokio::test]
+    async fn mistral_voices_terminate_on_an_offset_ignoring_upstream() {
+        // An upstream that repeats the first page regardless of `offset` must terminate with one
+        // page's unique voices — the duplicate guard, not the page cap, ends the loop.
+        let transports = crate::transport::Transports {
+            http: std::sync::Arc::new(voices_upstream(250, true)),
+            realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
+        };
+        let p = OpenAiCompatProvider::for_kind("mistral", &transports).unwrap();
+        let voices = p.voices("voxtral-mini-tts-2603", &voices_cx()).await.unwrap();
+        assert_eq!(voices.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn mistral_voices_fall_back_to_declared_when_the_live_fetch_fails() {
+        // The live catalog is authoritative, but an upstream failure lands on the operator-declared
+        // list (config is a genuine fallback) — and only then.
+        let transports = crate::transport::Transports {
+            http: std::sync::Arc::new(crate::fake::FakeHttpTransport::status(
+                500,
+                r#"{"detail":"boom"}"#,
+            )),
+            realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
+        };
+        let p = OpenAiCompatProvider::for_kind("mistral", &transports).unwrap();
+        let cx = ProviderCx {
+            credential: Some("test-key".into()),
+            settings: serde_json::from_value(serde_json::json!({
+                "voices": { "voxtral-mini-tts-2603": ["en_paul_excited"] }
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        let voices = p.voices("voxtral-mini-tts-2603", &cx).await.unwrap();
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0].id, "en_paul_excited");
+
+        // With nothing declared the upstream error surfaces — never an invented empty catalog.
+        assert!(p
+            .voices("voxtral-mini-tts-2603", &voices_cx())
+            .await
+            .is_err());
     }
 
     #[test]
