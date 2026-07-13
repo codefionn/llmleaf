@@ -362,6 +362,23 @@ pw_hash = "$2y$12$e8yd7Vi6xtWz5gUpEvKBkOtgIoq4nIBkFZ1iMtWj5T8oeAQWL/WSi"
 # timeout_ms = 2000
 # on_error = "allow"                          # default for limits; shown for clarity
 
+# PULL: dynamic topology — provider instances + routes the control plane layers ON TOP of the file
+# base above. The endpoint answers `{ "providers": [ … ], "routes": [ … ] }` in exactly the shapes of
+# [[providers]] / [[routes]] (as JSON; `env:VAR` credential indirection resolves node-locally, so no
+# secret has to ride the wire). Every refresh is DIFFED against the previously pulled topology and
+# reconciled: new entries are added, entries that vanished are removed (instance dropped, node-local
+# rate/health state cleaned up), changed entries are updated in place — while untouched providers
+# keep their live rate-limit buckets and cooldowns. The file base always wins: a pulled provider (or
+# route) whose name (or model) collides with one declared above is skipped with a warning — the
+# pulled layer extends the base, it never overrides it (principle 6). Fails OPEN: a failed pull keeps
+# the last-good dynamic layer; a cold node runs from this file alone. Note the converse: a SUCCESSFUL
+# pull answering empty lists removes every dynamic resource (the controller declared none).
+# [control.topology]
+# url = "https://limiter.internal/llmleaf/topology"
+# auth = "limiter"
+# refresh_secs = 30
+# timeout_ms = 2000
+
 # PUSH: usage/lifecycle events, batched and async. Never back-pressures the hot path; a full ring
 # (server.event_buffer) drops oldest, exactly as the old broadcast tap did for slow consumers.
 # [control.usage]

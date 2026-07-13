@@ -32,12 +32,15 @@ pub use admin::{
 };
 pub use config::{
     AuthConfig, AuthScheme, Config, ConfigError, ControlConfig, IdentitySource, InterceptHook,
-    InterceptPhase, IntrospectionConfig, LimitsSource, OAuthConfig, OnError, RateLimitConfig,
-    ResolvedAuth, Secret, UsageSink,
+    InterceptPhase, IntrospectionConfig, LimitsSource, OAuthConfig, OnError, ProviderConfig,
+    RateLimitConfig, ResolvedAuth, RouteConfig, Secret, Target, TopologySource, UsageSink,
 };
-pub use engine::{Engine, EngineError, InterceptOutcome, Interceptor};
+pub use engine::{Engine, EngineError, InterceptOutcome, Interceptor, Topology, TopologyDiff};
+// Re-exported so the control crate (which depends only on the core) can hand the binary's factory to
+// [`Engine::install_topology`] without growing a dependency on the extension crate.
 pub use events::{Envelope, Event, EventBus};
 pub use keys::{AuthError, IdentityInput, KeyStore, KeyView, ModelScope, Verdict};
+pub use llmleaf_provider::ProviderFactory;
 #[cfg(feature = "oauth")]
 pub use oauth::{OAuthVerifier, TokenIntrospector};
 pub use ratelimit::{RateGuard, RateLimiter};

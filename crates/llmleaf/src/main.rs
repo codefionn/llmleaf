@@ -13,8 +13,22 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use llmleaf_core::Config;
-use llmleaf_provider::ProviderRegistry;
+use llmleaf_provider::{Provider, ProviderFactory, ProviderRegistry};
 use tokio_util::sync::CancellationToken;
+
+/// The binary's `kind` → implementation mapping as a [`ProviderFactory`] handle: the exact mapping
+/// applied to the config base at startup, handed to the control plane so a `[control.topology]` pull
+/// can instantiate providers at runtime that behave identically to file-configured ones. Owns the
+/// production transports, so every instance — startup or pulled — shares the same network clients.
+struct FirstPartyFactory {
+    transports: llmleaf_providers::Transports,
+}
+
+impl ProviderFactory for FirstPartyFactory {
+    fn build(&self, kind: &str) -> Option<Arc<dyn Provider>> {
+        llmleaf_providers::build(kind, &self.transports)
+    }
+}
 
 /// Embedded dev config used only when no config file is present, so `cargo run` works out of the box.
 /// Loud warning at startup makes clear this is not for production.
@@ -62,11 +76,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Build the registry from config. The binary owns the `kind` → implementation mapping, and wires
     // the production transports (reqwest for HTTP, tungstenite for realtime) into every provider — the
-    // single place a real network client is injected (tests/benches/sim inject fakes instead).
-    let transports = llmleaf_providers::Transports::real();
+    // single place a real network client is injected (tests/benches/sim inject fakes instead). The
+    // same mapping, as `factory`, is handed to the control tasks so a pulled `[control.topology]`
+    // builds its providers identically.
+    let factory: Arc<dyn ProviderFactory> = Arc::new(FirstPartyFactory {
+        transports: llmleaf_providers::Transports::real(),
+    });
     let mut registry = ProviderRegistry::new();
     for p in &config.providers {
-        let provider = llmleaf_providers::build(&p.kind, &transports).ok_or_else(|| {
+        let provider = factory.build(&p.kind).ok_or_else(|| {
             format!(
                 "unknown provider kind '{}' for '{}'. known kinds: {:?}",
                 p.kind,
@@ -91,6 +109,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &config.control,
         state.keys.clone(),
         &state.events,
+        Some(llmleaf_control::TopologyTarget {
+            engine: state.engine.clone(),
+            factory,
+        }),
         shutdown.clone(),
     )
     .await;

@@ -235,6 +235,16 @@ pub enum Health {
     Down,
 }
 
+/// Builds a provider instance from its `kind` string. The same `kind` → implementation mapping the
+/// binary applies to the config base at startup, packaged as a handle so the pulled control plane can
+/// instantiate providers at runtime (a pulled topology's providers behave exactly like file-configured
+/// ones). Lives on the extension boundary like [`ProviderRegistry`]: the core only ever calls the
+/// trait, it never names a kind itself (principle 2).
+pub trait ProviderFactory: Send + Sync {
+    /// Instantiate the implementation registered for `kind`, or `None` when the kind is unknown.
+    fn build(&self, kind: &str) -> Option<Arc<dyn Provider>>;
+}
+
 /// The set of provider instances available to a node, keyed by their config name.
 ///
 /// Built once by the binary from config + first-party/WASM factories, then shared read-only with

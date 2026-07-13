@@ -699,21 +699,26 @@ fn register_lookups(suite: &mut Suite, state: &llmleaf_core::AppState) {
     }
 
     // router/resolve — a logical model to its ordered fallback chain. An explicit route resolves to
-    // a borrow (no allocation); an unrouted, non-prefixed model resolves to `None`.
+    // a borrow (no allocation); an unrouted, non-prefixed model resolves to `None`. Each bench pins
+    // its own topology snapshot, so this measures the pure resolve (the per-request snapshot bump is
+    // covered by the dispatch benches).
     {
-        let router = state.engine.router();
+        let topology = state.engine.topology();
         suite.bench(
             "router/resolve_hit",
             || (),
             move |()| {
-                std::hint::black_box(router.resolve("gpt-4o"));
+                std::hint::black_box(topology.router().resolve("gpt-4o"));
             },
         );
+    }
+    {
+        let topology = state.engine.topology();
         suite.bench(
             "router/resolve_miss",
             || (),
             move |()| {
-                std::hint::black_box(router.resolve("not-a-model"));
+                std::hint::black_box(topology.router().resolve("not-a-model"));
             },
         );
     }

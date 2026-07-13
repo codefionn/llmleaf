@@ -115,7 +115,10 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+// `PartialEq` is load-bearing: the pulled `[control.topology]` layer is reconciled by *diffing* a
+// fresh pull against the previously installed one, so unchanged providers keep their live node-local
+// state (rate buckets, cooldowns) across a swap.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Instance name; routing targets refer to this.
@@ -158,7 +161,7 @@ pub struct ProviderConfig {
 /// **Multi-node (principle 9):** every node enforces its *own* slice with no cross-node coordination, so
 /// a cluster-wide cap should be divided by the node count (or treated as approximate) — exactly like the
 /// node-local cooldown.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Max requests per minute (a token bucket whose burst capacity is this value). Omitted ⇒ unlimited.
@@ -175,7 +178,7 @@ pub struct RateLimitConfig {
     pub max_concurrent: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteConfig {
     /// The logical model id consumers request.
@@ -184,7 +187,7 @@ pub struct RouteConfig {
     pub targets: Vec<Target>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     /// Provider instance name (matches a [`ProviderConfig::name`]).
@@ -319,6 +322,13 @@ pub struct ControlConfig {
     /// already-authenticated key*, so it FAILS OPEN by default (`on_error = "allow"`): a blip keeps the
     /// last-good verdicts serving (principle 8).
     pub limits: Option<LimitsSource>,
+    /// Dynamic topology source: provider instances + routes the control plane layers on top of the
+    /// file base. Disabled when omitted ⇒ the file `[[providers]]`/`[[routes]]` are the whole topology.
+    /// Each pull is *diffed* against the previously installed layer — new entries are added, vanished
+    /// ones removed (their node-local state cleaned up), changed ones rebuilt — while untouched
+    /// providers keep their live rate buckets and cooldowns. Fails OPEN: a failed pull keeps the
+    /// last-good layer (principle 8); the file base is never touched (principle 6).
+    pub topology: Option<TopologySource>,
     /// Usage/lifecycle push sink. Disabled when omitted ⇒ events are emitted to the in-process bus and
     /// dropped with no subscriber, exactly as today. Async, batched, never back-pressures the hot path.
     pub usage: Option<UsageSink>,
@@ -371,6 +381,13 @@ impl ControlConfig {
                 "control.limits",
                 self.limits.as_ref().and_then(|s| s.auth.as_deref()),
                 self.limits.as_ref().is_some_and(|s| s.credential.is_some()),
+            ),
+            (
+                "control.topology",
+                self.topology.as_ref().and_then(|s| s.auth.as_deref()),
+                self.topology
+                    .as_ref()
+                    .is_some_and(|s| s.credential.is_some()),
             ),
             (
                 "control.usage",
@@ -564,6 +581,30 @@ pub struct LimitsSource {
     pub on_error: OnError,
 }
 
+/// PULL: dynamic topology — provider instances + routes. The response carries `{"providers": […],
+/// "routes": […]}` in exactly the shapes of the file `[[providers]]`/`[[routes]]`; the core diffs it
+/// against the previously pulled layer and reconciles (add / update / remove), never touching the file
+/// base. Always fails OPEN — this is availability-additive config, not authentication: a failed pull
+/// keeps the last-good dynamic layer, and a cold node simply runs from the file base alone. Note the
+/// converse: a *successful* pull with empty lists deliberately removes every dynamic resource (the
+/// controller declared none).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TopologySource {
+    /// Endpoint the core GETs the topology from. Required.
+    pub url: String,
+    #[serde(default)]
+    pub credential: Option<Secret>,
+    /// Reference a central `[[control.auth]]` entry by `id` instead of an inline `credential` (bearer
+    /// or custom-header). Mutually exclusive with `credential`.
+    #[serde(default)]
+    pub auth: Option<String>,
+    #[serde(default = "default_topology_refresh_secs")]
+    pub refresh_secs: u64,
+    #[serde(default = "default_pull_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
 /// PUSH: usage/lifecycle events. The core batches and POSTs; it never blocks the hot path on the sink.
 /// Buffering and payload inclusion are governed by the in-process bus (`server.event_buffer`,
 /// `server.include_payloads`) the reporter subscribes to — a full ring drops oldest for a slow sink.
@@ -636,6 +677,9 @@ fn default_identity_refresh_secs() -> u64 {
 fn default_limits_refresh_secs() -> u64 {
     5
 }
+fn default_topology_refresh_secs() -> u64 {
+    30
+}
 fn default_pull_timeout_ms() -> u64 {
     2000
 }
@@ -684,8 +728,9 @@ fn is_valid_header_name(name: &str) -> bool {
 }
 
 /// A secret value that is either a literal or an `env:VAR` reference resolved at load time. Keeps
-/// real credentials out of the config file when desired.
-#[derive(Clone, Deserialize)]
+/// real credentials out of the config file when desired. Equality compares the *unresolved* form (the
+/// literal or the `env:` reference), never resolved secrets — used only to detect config changes.
+#[derive(Clone, PartialEq, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
 
@@ -830,8 +875,36 @@ mod tests {
         let cfg = Config::from_toml_str("").unwrap();
         assert!(cfg.control.identity.is_none());
         assert!(cfg.control.limits.is_none());
+        assert!(cfg.control.topology.is_none());
         assert!(cfg.control.usage.is_none());
         assert!(cfg.control.intercept.is_none());
+    }
+
+    #[test]
+    fn control_topology_parses_with_defaults_and_validates_auth() {
+        let cfg = Config::from_toml_str(
+            r#"
+            [control.topology]
+            url = "https://ctl/topology"
+            credential = "env:LLMLEAF_CONTROL_TOKEN"
+        "#,
+        )
+        .unwrap();
+        let topo = cfg.control.topology.unwrap();
+        assert_eq!(topo.url, "https://ctl/topology");
+        assert_eq!(topo.refresh_secs, 30); // default
+        assert_eq!(topo.timeout_ms, 2000); // default
+
+        // The auth-reference integrity checks cover the topology sub-table like every other one.
+        let err = Config::from_toml_str(
+            r#"
+            [control.topology]
+            url = "https://ctl/topology"
+            auth = "missing"
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "got {err:?}");
     }
 
     #[test]

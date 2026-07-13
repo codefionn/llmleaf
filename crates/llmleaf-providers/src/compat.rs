@@ -1674,7 +1674,10 @@ mod tests {
             realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
         };
         let p = OpenAiCompatProvider::for_kind("mistral", &transports).unwrap();
-        let voices = p.voices("voxtral-mini-tts-2603", &voices_cx()).await.unwrap();
+        let voices = p
+            .voices("voxtral-mini-tts-2603", &voices_cx())
+            .await
+            .unwrap();
         assert_eq!(voices.len(), 250);
         assert_eq!(voices[0].id, "voice_0");
         assert_eq!(voices[249].id, "voice_249");
@@ -1689,7 +1692,10 @@ mod tests {
             realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
         };
         let p = OpenAiCompatProvider::for_kind("mistral", &transports).unwrap();
-        let voices = p.voices("voxtral-mini-tts-2603", &voices_cx()).await.unwrap();
+        let voices = p
+            .voices("voxtral-mini-tts-2603", &voices_cx())
+            .await
+            .unwrap();
         assert_eq!(voices.len(), 100);
     }
 

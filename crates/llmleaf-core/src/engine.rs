@@ -11,9 +11,9 @@
 //! committed to it (its bytes may already be on the wire). A connect failure penalizes that provider
 //! (node-local health) and falls through to the next target.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_stream::stream;
@@ -25,13 +25,13 @@ use llmleaf_model::{
     TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_pricing::Pricing;
-use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry, RealtimeParams};
+use llmleaf_provider::{Provider, ProviderCx, ProviderFactory, ProviderRegistry, RealtimeParams};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::time::Instant;
 
 use crate::batch_id;
-use crate::config::{Config, InterceptPhase, ProviderConfig};
+use crate::config::{Config, InterceptPhase, ProviderConfig, RouteConfig, Target};
 use crate::events::{Event, EventBus};
 use crate::ratelimit::{RateGuard, RateLimiter};
 use crate::route::{HealthTable, Router};
@@ -110,6 +110,9 @@ struct Dispatched<T> {
     /// what the tokens/min rate-limit debit keys on (per-model buckets are keyed by *upstream* model).
     provider: String,
     upstream_model: String,
+    /// The limiter this request was admitted against — the one the tokens/min debit must land in. Held
+    /// per-request so a topology swap mid-stream keeps debiting the buckets that admitted it.
+    rate: Arc<RateLimiter>,
     /// The rate-limit admission guard (concurrency permits). Kept alive for the life of the request:
     /// moved into the instrumented stream for streaming modalities, held until return for batch ones.
     guard: RateGuard,
@@ -128,18 +131,86 @@ pub struct RealtimeTarget {
     pub provider_name: String,
 }
 
-/// The data-plane engine. Cheap to share behind an `Arc`; holds only read-only config plus the
-/// node-local health table and the (clone-able) event bus.
-pub struct Engine {
-    registry: Arc<ProviderRegistry>,
+/// One immutable view of everything routing needs: the provider registry, the route table, the
+/// per-instance configs, and the node-local rate limiter. Built from the file base at startup;
+/// [`Engine::install_topology`] reconciles a pulled dynamic layer onto that base and swaps in a new
+/// snapshot. A handler grabs one `Arc` per request, so a mid-request swap never mixes two topologies.
+pub struct Topology {
+    registry: ProviderRegistry,
     router: Router,
+    /// Merged per-instance configs (base + dynamic), what [`Topology::build_cx`] reads.
     providers: HashMap<String, ProviderConfig>,
-    events: EventBus,
-    pricing: Arc<Pricing>,
-    health: HealthTable,
     /// Node-local rate limiter (per-provider + per-model flow control). Shared into instrumented streams
     /// behind an `Arc` so the tokens/min debit can fire as usage is observed (principles 1, 8, 9).
     rate: Arc<RateLimiter>,
+    /// The dynamic (pulled) layer this snapshot carries — what the *next* pull is diffed against.
+    dynamic_providers: HashMap<String, ProviderConfig>,
+    dynamic_routes: HashMap<String, RouteConfig>,
+    /// Instances built for the dynamic providers, carried across installs while their `kind` holds.
+    dynamic_instances: HashMap<String, Arc<dyn Provider>>,
+}
+
+impl Topology {
+    /// Resolves logical models to fallback chains (and prefix namespaces) in this snapshot.
+    pub fn router(&self) -> &Router {
+        &self.router
+    }
+
+    fn build_cx(&self, name: &str, request_id: &str) -> ProviderCx {
+        let cfg = self.providers.get(name);
+        ProviderCx {
+            request_id: request_id.to_string(),
+            credential: cfg
+                .and_then(|c| c.credential.as_ref())
+                .and_then(|s| s.resolve()),
+            endpoint: cfg.and_then(|c| c.endpoint.clone()),
+            settings: cfg.map(|c| c.settings.clone()).unwrap_or_default(),
+        }
+    }
+}
+
+/// What one [`Engine::install_topology`] reconciliation did, for the control-plane refresher to log.
+/// Counts are of *dynamic* resources only; the file base never changes.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TopologyDiff {
+    pub providers_added: usize,
+    pub providers_updated: usize,
+    pub providers_removed: usize,
+    pub routes_added: usize,
+    pub routes_updated: usize,
+    pub routes_removed: usize,
+    /// Pulled entries that could not be installed (a base-name collision, a duplicate, an unknown
+    /// kind), each with its reason — surfaced so the operator sees exactly what was dropped.
+    pub skipped: Vec<String>,
+}
+
+impl TopologyDiff {
+    /// Whether this install changed nothing (skips are not changes — a skipped entry was never live).
+    pub fn is_noop(&self) -> bool {
+        self.providers_added == 0
+            && self.providers_updated == 0
+            && self.providers_removed == 0
+            && self.routes_added == 0
+            && self.routes_updated == 0
+            && self.routes_removed == 0
+    }
+}
+
+/// The data-plane engine. Cheap to share behind an `Arc`; holds the swappable topology snapshot plus
+/// the node-local health table and the (clone-able) event bus.
+pub struct Engine {
+    /// The current topology, swapped wholesale by [`Engine::install_topology`] — the same snapshot
+    /// pattern as [`crate::keys::KeyStore`]: the hot path takes one short read lock, bumps the `Arc`,
+    /// and never holds the lock across an `.await` (principle 1: no allocation, no I/O).
+    topology: RwLock<Arc<Topology>>,
+    /// The immutable file base (principle 6). A pulled layer merges *onto* this; it can extend the
+    /// base but never shadow one of its names.
+    base_registry: Arc<ProviderRegistry>,
+    base_providers: Vec<ProviderConfig>,
+    base_routes: Vec<RouteConfig>,
+    events: EventBus,
+    pricing: Arc<Pricing>,
+    health: HealthTable,
     /// Upper bound on the hot-path wait for rate-limit capacity when every target is saturated.
     rate_max_wait: Duration,
     include_payloads: bool,
@@ -162,19 +233,206 @@ impl Engine {
             .iter()
             .map(|p| (p.name.clone(), p.clone()))
             .collect();
-        Engine {
-            registry,
+        let base = Topology {
+            registry: (*registry).clone(),
             router: Router::new(&config.routes, &config.providers),
             providers,
+            rate: Arc::new(RateLimiter::new(&config.providers)),
+            dynamic_providers: HashMap::new(),
+            dynamic_routes: HashMap::new(),
+            dynamic_instances: HashMap::new(),
+        };
+        Engine {
+            topology: RwLock::new(Arc::new(base)),
+            base_registry: registry,
+            base_providers: config.providers.clone(),
+            base_routes: config.routes.clone(),
             events,
             pricing,
             health: HealthTable::new(),
-            rate: Arc::new(RateLimiter::new(&config.providers)),
             rate_max_wait: Duration::from_millis(config.server.rate_limit_max_wait_ms),
             include_payloads: config.server.include_payloads,
             cooldown_secs: config.server.fallback_cooldown_secs,
             interceptor,
         }
+    }
+
+    /// The current topology snapshot: one short read lock and an `Arc` bump. Callers hold one snapshot
+    /// for a whole request, so a concurrent [`Engine::install_topology`] never mixes two topologies.
+    pub fn topology(&self) -> Arc<Topology> {
+        self.topology.read().unwrap().clone()
+    }
+
+    /// Install a pulled dynamic topology layer (`[control.topology]`): diff `providers`/`routes`
+    /// against the previously installed layer and swap in a reconciled snapshot — new resources are
+    /// added, vanished ones removed (instance dropped, rate and cooldown state cleaned up), changed
+    /// ones rebuilt — while untouched providers keep their live instances, rate buckets, and cooldowns.
+    ///
+    /// The file base always wins: a pulled provider whose name (or route whose model) collides with a
+    /// config-file entry is skipped, so the pulled layer extends the base but never overrides it
+    /// (principle 6). `factory` builds instances for new kinds — the core itself still never names a
+    /// provider (principle 2). Per-entry failures (unknown kind, duplicate) skip that entry and are
+    /// reported in the returned [`TopologyDiff`], never poisoning the rest of the pull.
+    ///
+    /// Called by the control plane's single topology refresher; installs are serialized by having that
+    /// one caller. The hot path only ever *reads* snapshots, so requests are unaffected either way.
+    pub fn install_topology(
+        &self,
+        providers: Vec<ProviderConfig>,
+        routes: Vec<RouteConfig>,
+        factory: &dyn ProviderFactory,
+    ) -> TopologyDiff {
+        let prev = self.topology();
+        let mut diff = TopologyDiff::default();
+
+        // Filter the pulled providers (base shadowing, duplicates, unknown kinds), reusing the previous
+        // instance while `kind` is unchanged: an instance is per-kind dialect logic — endpoint,
+        // credential, and settings flow per-call via `ProviderCx` — so a config-only change needs no
+        // rebuild, and a re-kinded or new provider goes through the factory.
+        let base_names: HashSet<&str> = self
+            .base_providers
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let mut dyn_providers: HashMap<String, ProviderConfig> = HashMap::new();
+        let mut dyn_instances: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        for p in providers {
+            if base_names.contains(p.name.as_str()) {
+                diff.skipped.push(format!(
+                    "provider '{}' shadows a config-file provider; skipped",
+                    p.name
+                ));
+                continue;
+            }
+            if dyn_providers.contains_key(&p.name) {
+                diff.skipped.push(format!(
+                    "duplicate provider '{}' in pulled topology; first entry wins",
+                    p.name
+                ));
+                continue;
+            }
+            let reused = match prev.dynamic_providers.get(&p.name) {
+                Some(old) if old.kind == p.kind => prev.dynamic_instances.get(&p.name).cloned(),
+                _ => None,
+            };
+            let Some(instance) = reused.or_else(|| factory.build(&p.kind)) else {
+                diff.skipped.push(format!(
+                    "provider '{}' has unknown kind '{}'; skipped",
+                    p.name, p.kind
+                ));
+                continue;
+            };
+            dyn_instances.insert(p.name.clone(), instance);
+            dyn_providers.insert(p.name.clone(), p);
+        }
+
+        let base_models: HashSet<&str> =
+            self.base_routes.iter().map(|r| r.model.as_str()).collect();
+        let mut dyn_routes: HashMap<String, RouteConfig> = HashMap::new();
+        for r in routes {
+            if base_models.contains(r.model.as_str()) {
+                diff.skipped.push(format!(
+                    "route '{}' shadows a config-file route; skipped",
+                    r.model
+                ));
+                continue;
+            }
+            if dyn_routes.contains_key(&r.model) {
+                diff.skipped.push(format!(
+                    "duplicate route '{}' in pulled topology; first entry wins",
+                    r.model
+                ));
+                continue;
+            }
+            dyn_routes.insert(r.model.clone(), r);
+        }
+
+        // The diff proper, against the previously installed dynamic layer.
+        for (name, cfg) in &dyn_providers {
+            match prev.dynamic_providers.get(name) {
+                None => diff.providers_added += 1,
+                Some(old) if old != cfg => diff.providers_updated += 1,
+                Some(_) => {}
+            }
+        }
+        diff.providers_removed = prev
+            .dynamic_providers
+            .keys()
+            .filter(|n| !dyn_providers.contains_key(*n))
+            .count();
+        for (model, cfg) in &dyn_routes {
+            match prev.dynamic_routes.get(model) {
+                None => diff.routes_added += 1,
+                Some(old) if old != cfg => diff.routes_updated += 1,
+                Some(_) => {}
+            }
+        }
+        diff.routes_removed = prev
+            .dynamic_routes
+            .keys()
+            .filter(|m| !dyn_routes.contains_key(*m))
+            .count();
+
+        // An identical pull is the common steady state: keep the current snapshot untouched — no swap,
+        // no state churn, nothing rebuilt.
+        if diff.is_noop() {
+            return diff;
+        }
+
+        // Merge onto the base and rebuild the derived tables.
+        let merged_providers: Vec<ProviderConfig> = self
+            .base_providers
+            .iter()
+            .cloned()
+            .chain(dyn_providers.values().cloned())
+            .collect();
+        let merged_routes: Vec<RouteConfig> = self
+            .base_routes
+            .iter()
+            .cloned()
+            .chain(dyn_routes.values().cloned())
+            .collect();
+        let providers_map: HashMap<String, ProviderConfig> = merged_providers
+            .iter()
+            .map(|p| (p.name.clone(), p.clone()))
+            .collect();
+
+        let mut registry = (*self.base_registry).clone();
+        for (name, instance) in &dyn_instances {
+            registry.register(name.clone(), instance.clone());
+        }
+
+        // Rate state carries over for every provider whose limit config is unchanged (the whole base
+        // always qualifies), so a swap never resets buckets or drops held permits for untouched
+        // providers — and in-flight streams still debit those same shared buckets.
+        let rate = Arc::new(prev.rate.reconciled(&merged_providers, |name| {
+            match (prev.providers.get(name), providers_map.get(name)) {
+                (Some(old), Some(new)) => {
+                    old.limits == new.limits && old.model_limits == new.model_limits
+                }
+                _ => false,
+            }
+        }));
+
+        // Cooldown cleanup: a removed provider must not leave a stale health entry behind, and a
+        // *changed* one is a new upstream contact whose old penalty no longer means anything.
+        for (name, old) in &prev.providers {
+            if providers_map.get(name).is_none_or(|new| new != old) {
+                self.health.clear(name);
+            }
+        }
+
+        let next = Topology {
+            registry,
+            router: Router::new(&merged_routes, &merged_providers),
+            providers: providers_map,
+            rate,
+            dynamic_providers: dyn_providers,
+            dynamic_routes: dyn_routes,
+            dynamic_instances: dyn_instances,
+        };
+        *self.topology.write().unwrap() = Arc::new(next);
+        diff
     }
 
     /// Run the request-phase sync interceptor, if one is configured and in scope for this `(key,
@@ -211,17 +469,13 @@ impl Engine {
         }
     }
 
-    pub fn router(&self) -> &Router {
-        &self.router
-    }
-
     pub fn health(&self) -> &HealthTable {
         &self.health
     }
 
-    /// The node-local rate limiter, for read-only observability surfaces.
-    pub fn rate(&self) -> &RateLimiter {
-        &self.rate
+    /// The current topology's node-local rate limiter, for read-only observability surfaces.
+    pub fn rate(&self) -> Arc<RateLimiter> {
+        self.topology().rate.clone()
     }
 
     /// Read-only access to the bundled model catalog (modality + limits + rates) for the model-listing
@@ -233,11 +487,13 @@ impl Engine {
     /// The ordered fallback chain for a logical `model`, or `None` if unrouted. Delegates to the router
     /// so a handler can read a model's targets *without* ever touching the provider registry (principle
     /// 2: the core knows no provider — this exposes only operator-declared config, not a catalog).
-    pub fn resolve_targets(
-        &self,
-        model: &str,
-    ) -> Option<std::borrow::Cow<'_, [crate::config::Target]>> {
-        self.router.resolve(model)
+    /// Returned owned (targets are a handful of small strings, and only listing surfaces call this) so
+    /// the chain outlives the topology snapshot it was resolved from.
+    pub fn resolve_targets(&self, model: &str) -> Option<Vec<Target>> {
+        self.topology()
+            .router
+            .resolve(model)
+            .map(|t| t.into_owned())
     }
 
     /// Enumerate the upstream catalog of a configured provider instance by asking it
@@ -251,12 +507,13 @@ impl Engine {
         provider_name: &str,
         request_id: &str,
     ) -> Result<Vec<ModelInfo>, ModelError> {
-        let Some(provider) = self.registry.get(provider_name) else {
+        let topo = self.topology();
+        let Some(provider) = topo.registry.get(provider_name) else {
             return Err(ModelError::Unsupported(format!(
                 "no provider instance '{provider_name}'"
             )));
         };
-        let cx = self.build_cx(provider_name, request_id);
+        let cx = topo.build_cx(provider_name, request_id);
         provider.models(&cx).await
     }
 
@@ -273,7 +530,8 @@ impl Engine {
         request_id: &str,
         now: u64,
     ) -> Option<RealtimeTarget> {
-        let targets = self.router.resolve(model)?;
+        let topo = self.topology();
+        let targets = topo.router.resolve(model)?;
         // First pass prefers realtime-capable targets that aren't cooling down; the second falls open
         // to a cooled-down one when none is fresh. A provider that lacks native realtime is skipped in
         // both passes — that is a capability gap, not a health signal, so it correctly falls through to
@@ -283,14 +541,14 @@ impl Engine {
                 if honor_cooldown && self.health.is_down(&target.provider, now) {
                     continue;
                 }
-                let Some(provider) = self.registry.get(&target.provider) else {
+                let Some(provider) = topo.registry.get(&target.provider) else {
                     continue;
                 };
                 if !provider.supports_realtime() {
                     continue;
                 }
                 let upstream = target.model.clone().unwrap_or_else(|| model.to_string());
-                let cx = self.build_cx(&target.provider, request_id);
+                let cx = topo.build_cx(&target.provider, request_id);
                 return Some(RealtimeTarget {
                     provider,
                     cx,
@@ -336,15 +594,7 @@ impl Engine {
                 },
             )
             .await?;
-        Ok(self.instrument(
-            dispatched.value,
-            dispatched.request_id,
-            dispatched.key,
-            dispatched.logical_model,
-            dispatched.provider,
-            dispatched.upstream_model,
-            dispatched.guard,
-        ))
+        Ok(self.instrument(dispatched))
     }
 
     /// Embed inputs through the pipeline. Same route→fallback→health→events skeleton as chat; a target
@@ -381,12 +631,13 @@ impl Engine {
             logical_model,
             provider,
             upstream_model,
+            rate,
             guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
         // Debit the observed tokens against this provider/model's tokens/min bucket (the cost was unknown
         // at admission); then release the concurrency permit by dropping the guard.
-        self.rate.debit_tokens(
+        rate.debit_tokens(
             &provider,
             &upstream_model,
             resp.usage.total_tokens,
@@ -432,10 +683,11 @@ impl Engine {
             logical_model,
             provider,
             upstream_model,
+            rate,
             guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
-        self.rate.debit_tokens(
+        rate.debit_tokens(
             &provider,
             &upstream_model,
             resp.usage.total_tokens,
@@ -472,15 +724,7 @@ impl Engine {
                 },
             )
             .await?;
-        Ok(self.instrument_audio(
-            dispatched.value,
-            dispatched.request_id,
-            dispatched.key,
-            dispatched.logical_model,
-            dispatched.provider,
-            dispatched.upstream_model,
-            dispatched.guard,
-        ))
+        Ok(self.instrument_audio(dispatched))
     }
 
     /// List the voices a speech model can synthesize with. A metadata lookup, not a billed completion:
@@ -547,10 +791,11 @@ impl Engine {
             logical_model,
             provider,
             upstream_model,
+            rate,
             guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
-        self.rate.debit_tokens(
+        rate.debit_tokens(
             &provider,
             &upstream_model,
             resp.usage.total_tokens,
@@ -583,12 +828,13 @@ impl Engine {
         if spec.items.is_empty() {
             return Err(EngineError::EmptyBatch);
         }
-        let (provider_name, routing_model, spec) = self.resolve_batch(spec)?;
-        let provider = self
+        let topo = self.topology();
+        let (provider_name, routing_model, spec) = Self::resolve_batch(&topo, spec)?;
+        let provider = topo
             .registry
             .get(&provider_name)
             .ok_or_else(|| EngineError::BatchNotFound(provider_name.clone()))?;
-        let cx = self.build_cx(&provider_name, &request_id);
+        let cx = topo.build_cx(&provider_name, &request_id);
 
         self.events.emit(Event::RequestStarted {
             id: request_id.clone(),
@@ -630,8 +876,9 @@ impl Engine {
         batch_id: &str,
         request_id: String,
     ) -> Result<BatchHandle, EngineError> {
-        let (provider, provider_name, upstream_id) = self.batch_target(batch_id)?;
-        let cx = self.build_cx(&provider_name, &request_id);
+        let topo = self.topology();
+        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
+        let cx = topo.build_cx(&provider_name, &request_id);
         let mut handle = provider
             .batch_retrieve(&upstream_id, &cx)
             .await
@@ -646,8 +893,9 @@ impl Engine {
         batch_id: &str,
         request_id: String,
     ) -> Result<BatchHandle, EngineError> {
-        let (provider, provider_name, upstream_id) = self.batch_target(batch_id)?;
-        let cx = self.build_cx(&provider_name, &request_id);
+        let topo = self.topology();
+        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
+        let cx = topo.build_cx(&provider_name, &request_id);
         let mut handle = provider
             .batch_cancel(&upstream_id, &cx)
             .await
@@ -666,8 +914,9 @@ impl Engine {
         key: String,
         request_id: String,
     ) -> Result<BatchResultStream, EngineError> {
-        let (provider, provider_name, upstream_id) = self.batch_target(batch_id)?;
-        let cx = self.build_cx(&provider_name, &request_id);
+        let topo = self.topology();
+        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
+        let cx = topo.build_cx(&provider_name, &request_id);
         let stream = provider
             .batch_results(&upstream_id, &cx)
             .await
@@ -679,13 +928,13 @@ impl Engine {
     /// its route's upstream id. Every item must route to the same provider (a batch is one upstream
     /// job). Returns `(provider_name, routing_model, rewritten_spec)`.
     fn resolve_batch(
-        &self,
+        topo: &Topology,
         mut spec: BatchSpec,
     ) -> Result<(String, String, BatchSpec), EngineError> {
         let routing_model = spec.items[0].request.model.clone();
         let mut chosen: Option<String> = None;
         for item in spec.items.iter_mut() {
-            let targets = self
+            let targets = topo
                 .router
                 .resolve(&item.request.model)
                 .ok_or_else(|| EngineError::NoRoute(item.request.model.clone()))?;
@@ -714,12 +963,12 @@ impl Engine {
     /// opaque and may be stale or foreign — never a 5xx). The provider name is the one we encoded into
     /// the id at create time, i.e. the config instance name `build_cx` expects.
     fn batch_target(
-        &self,
+        topo: &Topology,
         batch_id: &str,
     ) -> Result<(Arc<dyn Provider>, String, String), EngineError> {
         let (provider_name, upstream_id) = batch_id::decode_batch(batch_id)
             .map_err(|_| EngineError::BatchNotFound(batch_id.to_string()))?;
-        let provider = self
+        let provider = topo
             .registry
             .get(&provider_name)
             .ok_or_else(|| EngineError::BatchNotFound(batch_id.to_string()))?;
@@ -780,7 +1029,10 @@ impl Engine {
         Op: Fn(Arc<dyn Provider>, ProviderCx, String) -> Fut,
         Fut: Future<Output = Result<T, ModelError>> + Send,
     {
-        let targets = self
+        // One topology snapshot for the whole dispatch: the chain walked, the registry consulted, and
+        // the limiter admitted against all agree even if a pulled swap lands mid-request.
+        let topo = self.topology();
+        let targets = topo
             .router
             .resolve(&logical_model)
             .ok_or_else(|| EngineError::NoRoute(logical_model.clone()))?;
@@ -818,7 +1070,7 @@ impl Engine {
                     if honor_cooldown && self.health.is_down(&target.provider, now) {
                         continue;
                     }
-                    let Some(provider) = self.registry.get(&target.provider) else {
+                    let Some(provider) = topo.registry.get(&target.provider) else {
                         last_err = Some(ModelError::Unavailable(format!(
                             "provider '{}' is not registered",
                             target.provider
@@ -836,7 +1088,7 @@ impl Engine {
                     // limit ⇒ skip this target and remember the soonest moment it could admit, just like a
                     // cooldown skip. The guard holds the concurrency permits until the request's stream ends.
                     let guard =
-                        match self
+                        match topo
                             .rate
                             .try_admit(&target.provider, &upstream_model, now_instant)
                         {
@@ -847,7 +1099,7 @@ impl Engine {
                             }
                         };
 
-                    let cx = self.build_cx(&target.provider, &request_id);
+                    let cx = topo.build_cx(&target.provider, &request_id);
 
                     match op(provider, cx, upstream_model.clone()).await {
                         Ok(value) => {
@@ -864,6 +1116,7 @@ impl Engine {
                                 logical_model,
                                 provider: target.provider.clone(),
                                 upstream_model,
+                                rate: topo.rate.clone(),
                                 guard,
                             });
                         }
@@ -957,37 +1210,22 @@ impl Engine {
         });
     }
 
-    fn build_cx(&self, name: &str, request_id: &str) -> ProviderCx {
-        let cfg = self.providers.get(name);
-        ProviderCx {
-            request_id: request_id.to_string(),
-            credential: cfg
-                .and_then(|c| c.credential.as_ref())
-                .and_then(|s| s.resolve()),
-            endpoint: cfg.and_then(|c| c.endpoint.clone()),
-            settings: cfg.map(|c| c.settings.clone()).unwrap_or_default(),
-        }
-    }
-
     /// Wrap a provider stream so usage/lifecycle events flow out the bus, and so provider-reported
     /// usage is priced from the bundled dataset (a lookup + multiply — never a fetch). The core does
     /// not count tokens; it relays what the provider emits (principle 5).
-    // The instrumented-stream context is irreducible: the lifecycle ids (request/key/logical model), the
-    // rate-debit keys (provider/upstream model), and the admission guard each flow into the stream.
-    #[allow(clippy::too_many_arguments)]
-    fn instrument(
-        &self,
-        inner: ResponseStream,
-        request_id: String,
-        key: String,
-        model: String,
-        provider: String,
-        upstream_model: String,
-        guard: RateGuard,
-    ) -> ResponseStream {
+    fn instrument(&self, d: Dispatched<ResponseStream>) -> ResponseStream {
+        let Dispatched {
+            value: inner,
+            request_id,
+            key,
+            logical_model: model,
+            provider,
+            upstream_model,
+            rate,
+            guard,
+        } = d;
         let events = self.events.clone();
         let pricing = self.pricing.clone();
-        let rate = self.rate.clone();
         Box::pin(stream! {
             // Hold the concurrency permit for the life of the stream; the generator dropping (normal end,
             // error, or client disconnect) releases it.
@@ -1031,20 +1269,19 @@ impl Engine {
     /// The audio analogue of [`Self::instrument`]: wrap a provider [`AudioStream`] so usage is priced
     /// and usage/lifecycle events flow as audio bytes pass. The core does not measure audio; it relays
     /// what the provider emits (principle 5).
-    #[allow(clippy::too_many_arguments)]
-    fn instrument_audio(
-        &self,
-        inner: AudioStream,
-        request_id: String,
-        key: String,
-        model: String,
-        provider: String,
-        upstream_model: String,
-        guard: RateGuard,
-    ) -> AudioStream {
+    fn instrument_audio(&self, d: Dispatched<AudioStream>) -> AudioStream {
+        let Dispatched {
+            value: inner,
+            request_id,
+            key,
+            logical_model: model,
+            provider,
+            upstream_model,
+            rate,
+            guard,
+        } = d;
         let events = self.events.clone();
         let pricing = self.pricing.clone();
-        let rate = self.rate.clone();
         Box::pin(stream! {
             let _guard = guard;
             let mut inner = inner;
@@ -1187,8 +1424,12 @@ mod tests {
     }
 
     fn chat_req() -> ChatRequest {
+        chat_req_for("solo-model")
+    }
+
+    fn chat_req_for(model: &str) -> ChatRequest {
         ChatRequest {
-            model: "solo-model".into(),
+            model: model.into(),
             messages: vec![Message::text(Role::User, "ping")],
             max_tokens: None,
             temperature: None,
@@ -1400,6 +1641,240 @@ mod tests {
             .expect("waited for capacity, then served");
         let resp = collect(stream).await.expect("stream completes");
         assert_eq!(resp.model, "p");
+    }
+
+    // ---- Dynamic topology (the pulled [control.topology] layer) -------------------------------------
+
+    /// A [`ProviderFactory`] that builds a healthy [`FlakyProvider`] for kind `"test"` (counting how
+    /// often it was asked) and knows no other kind — the test double for the binary's factory.
+    struct TestFactory {
+        built: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TestFactory {
+        fn new() -> Self {
+            TestFactory {
+                built: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ProviderFactory for TestFactory {
+        fn build(&self, kind: &str) -> Option<Arc<dyn Provider>> {
+            if kind != "test" {
+                return None;
+            }
+            self.built.fetch_add(1, Ordering::SeqCst);
+            Some(Arc::new(FlakyProvider {
+                name: "dyn".into(),
+                down: AtomicBool::new(false),
+                realtime: false,
+            }))
+        }
+    }
+
+    fn dyn_provider(name: &str, kind: &str) -> ProviderConfig {
+        ProviderConfig {
+            name: name.into(),
+            kind: kind.into(),
+            endpoint: None,
+            credential: None,
+            prefix: None,
+            settings: Default::default(),
+            limits: None,
+            model_limits: Default::default(),
+        }
+    }
+
+    fn dyn_route(model: &str, provider: &str) -> RouteConfig {
+        RouteConfig {
+            model: model.into(),
+            targets: vec![Target {
+                provider: provider.into(),
+                model: Some(provider.into()),
+            }],
+        }
+    }
+
+    // A pulled provider + route become servable; a later pull without them cleans both up (the route
+    // unresolves, the instance is gone, the stale cooldown entry is dropped).
+    #[tokio::test]
+    async fn install_topology_adds_then_removes_dynamic_resources() {
+        let engine = engine_with(&[("p", false, false)]);
+        let factory = TestFactory::new();
+
+        let diff = engine.install_topology(
+            vec![dyn_provider("extra", "test")],
+            vec![dyn_route("extra-model", "extra")],
+            &factory,
+        );
+        assert_eq!(diff.providers_added, 1);
+        assert_eq!(diff.routes_added, 1);
+        assert!(diff.skipped.is_empty(), "{:?}", diff.skipped);
+
+        let stream = engine
+            .run(chat_req_for("extra-model"), "k".into(), "r1".into(), 0)
+            .await
+            .expect("the pulled route serves through the pulled provider");
+        let resp = collect(stream).await.expect("stream completes");
+        assert_eq!(resp.model, "extra", "the dynamic target served");
+
+        // Leave a cooldown entry behind, then pull a topology without the provider: everything about it
+        // must be cleaned up, while the file base keeps serving untouched.
+        engine.health().penalize("extra", 100, 30);
+        let diff = engine.install_topology(Vec::new(), Vec::new(), &factory);
+        assert_eq!(diff.providers_removed, 1);
+        assert_eq!(diff.routes_removed, 1);
+        assert!(matches!(
+            engine
+                .run(chat_req_for("extra-model"), "k".into(), "r2".into(), 0)
+                .await,
+            Err(EngineError::NoRoute(_))
+        ));
+        assert!(
+            engine.health().snapshot(110).is_empty(),
+            "the removed provider's cooldown entry was dropped"
+        );
+        let stream = engine
+            .run(chat_req(), "k".into(), "r3".into(), 0)
+            .await
+            .expect("the file base still serves");
+        collect(stream).await.expect("stream completes");
+    }
+
+    // The file base always wins (principle 6): a pulled provider/route colliding with a config-file
+    // name is skipped — reported, not installed — and the base behavior is unchanged.
+    #[tokio::test]
+    async fn install_topology_never_shadows_the_config_base() {
+        let engine = engine_with(&[("p", false, false)]);
+        let factory = TestFactory::new();
+
+        let diff = engine.install_topology(
+            vec![dyn_provider("p", "test")],
+            vec![dyn_route("solo-model", "p")],
+            &factory,
+        );
+        assert!(diff.is_noop());
+        assert_eq!(diff.skipped.len(), 2, "{:?}", diff.skipped);
+        assert_eq!(factory.built.load(Ordering::SeqCst), 0, "nothing was built");
+
+        let stream = engine
+            .run(chat_req(), "k".into(), "r1".into(), 0)
+            .await
+            .expect("base route untouched");
+        let resp = collect(stream).await.expect("stream completes");
+        assert_eq!(resp.model, "p", "the base target still serves");
+    }
+
+    // Re-pulling an identical topology is a no-op: the snapshot is not even swapped, so nothing is
+    // rebuilt and no node-local state can churn. An *updated* provider config is applied without
+    // rebuilding the instance (only a `kind` change goes back through the factory).
+    #[tokio::test]
+    async fn install_topology_diffs_updates_and_reuses_instances() {
+        let engine = engine_with(&[("p", false, false)]);
+        let factory = TestFactory::new();
+
+        let providers = vec![dyn_provider("extra", "test")];
+        let routes = vec![dyn_route("extra-model", "extra")];
+        engine.install_topology(providers.clone(), routes.clone(), &factory);
+        assert_eq!(factory.built.load(Ordering::SeqCst), 1);
+
+        // Identical pull ⇒ no-op, same snapshot object.
+        let before = engine.topology();
+        let diff = engine.install_topology(providers.clone(), routes.clone(), &factory);
+        assert!(diff.is_noop(), "{diff:?}");
+        assert!(Arc::ptr_eq(&before, &engine.topology()));
+        assert_eq!(factory.built.load(Ordering::SeqCst), 1);
+
+        // A settings-only change is an update that reuses the instance (config flows per-call via
+        // ProviderCx, so there is nothing to rebuild).
+        let mut updated = providers.clone();
+        updated[0]
+            .settings
+            .insert("organization".into(), serde_json::json!("org-x"));
+        let diff = engine.install_topology(updated, routes.clone(), &factory);
+        assert_eq!(diff.providers_updated, 1);
+        assert_eq!(factory.built.load(Ordering::SeqCst), 1, "instance reused");
+
+        // A kind change rebuilds through the factory.
+        let mut rekinded = providers.clone();
+        rekinded[0].kind = "unknown-kind".into();
+        let diff = engine.install_topology(rekinded, routes.clone(), &factory);
+        // The unknown kind cannot be built: the provider is skipped (and, having existed before, it
+        // counts as removed) — a bad pull entry never poisons the rest.
+        assert_eq!(diff.providers_removed, 1);
+        assert_eq!(diff.skipped.len(), 1, "{:?}", diff.skipped);
+        let diff = engine.install_topology(providers, routes, &factory);
+        assert_eq!(diff.providers_added, 1);
+        assert_eq!(
+            factory.built.load(Ordering::SeqCst),
+            2,
+            "rebuilt after re-add"
+        );
+    }
+
+    // A topology swap must not reset rate-limit state for providers whose limits did not change: the
+    // drained bucket stays drained across an unrelated install, and only a limits *change* on the
+    // provider itself gets fresh state.
+    #[tokio::test(start_paused = true)]
+    async fn install_topology_preserves_unchanged_rate_state() {
+        let engine = rate_limited_engine(&[("p", Some(rl(Some(1), None, None)))], 0);
+        let factory = TestFactory::new();
+        let t0 = Instant::now();
+
+        // Drain the base provider's single-token burst.
+        engine
+            .rate()
+            .try_admit("p", "p", t0)
+            .expect("the one token");
+        assert!(engine.rate().try_admit("p", "p", t0).is_err());
+
+        // A dynamic provider with its own limits, drained too.
+        let mut dyn_p = dyn_provider("extra", "test");
+        dyn_p.limits = Some(rl(Some(1), None, None));
+        engine.install_topology(
+            vec![dyn_p.clone()],
+            vec![dyn_route("extra-model", "extra")],
+            &factory,
+        );
+        engine
+            .rate()
+            .try_admit("extra", "extra", t0)
+            .expect("the one dynamic token");
+
+        // An unrelated change (a new route) swaps the snapshot — both drained buckets must survive.
+        engine.install_topology(
+            vec![dyn_p.clone()],
+            vec![
+                dyn_route("extra-model", "extra"),
+                dyn_route("extra-model-2", "extra"),
+            ],
+            &factory,
+        );
+        assert!(
+            engine.rate().try_admit("p", "p", t0).is_err(),
+            "base state kept"
+        );
+        assert!(
+            engine.rate().try_admit("extra", "extra", t0).is_err(),
+            "dynamic state kept"
+        );
+
+        // Changing the dynamic provider's limits rebuilds *its* state only.
+        dyn_p.limits = Some(rl(Some(2), None, None));
+        engine.install_topology(
+            vec![dyn_p],
+            vec![dyn_route("extra-model", "extra")],
+            &factory,
+        );
+        assert!(
+            engine.rate().try_admit("extra", "extra", t0).is_ok(),
+            "fresh bucket"
+        );
+        assert!(
+            engine.rate().try_admit("p", "p", t0).is_err(),
+            "base still kept"
+        );
     }
 
     // A concurrency permit is held for the life of the response stream and released when it ends, so a

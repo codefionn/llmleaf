@@ -107,7 +107,8 @@ impl Observability for AppState {
     }
 
     fn routes(&self) -> RoutesView {
-        let router = self.engine.router();
+        let topology = self.engine.topology();
+        let router = topology.router();
         RoutesView {
             models: router.models().map(str::to_string).collect(),
             prefixes: router

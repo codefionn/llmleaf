@@ -1093,9 +1093,13 @@ async fn list_models(
     // Build the SERVED-model union, deduped by id; a BTreeMap gives deterministic, id-sorted output.
     let mut entries: BTreeMap<String, ModelEntry> = BTreeMap::new();
 
+    // One topology snapshot for the whole listing, so routes and prefixes agree even if a pulled
+    // topology swap lands mid-request.
+    let topology = engine.topology();
+
     // 1. Explicitly-routed models (logical ids). Enrich from the bundled dataset by the logical id,
     //    then by the first target's upstream model id — never inventing metadata, only looking it up.
-    for model in engine.router().models() {
+    for model in topology.router().models() {
         let card = engine.pricing().card(model).or_else(|| {
             engine
                 .resolve_targets(model)
@@ -1119,7 +1123,7 @@ async fn list_models(
     //    from the bundled dataset for whatever the provider's list-models API does not report. A
     //    provider that cannot enumerate (Unsupported) — or a fetch that fails — degrades to a single
     //    non-callable `<prefix>/*` marker rather than failing the whole listing or guessing members.
-    let prefixes: Vec<(String, String)> = engine
+    let prefixes: Vec<(String, String)> = topology
         .router()
         .prefixes()
         .map(|(p, n)| (p.to_string(), n.to_string()))

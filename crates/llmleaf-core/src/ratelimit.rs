@@ -36,12 +36,14 @@ const CONCURRENCY_POLL: Duration = Duration::from_millis(50);
 /// caps every wait at `rate_limit_max_wait_ms` anyway, so a 0-limit scope just falls through then 429s.
 const NEVER: Duration = Duration::from_secs(86_400);
 
-/// Node-local rate limiter. Built once from config and then read-only at the map level (the set of
-/// scopes is fixed at load), so a hot-path lookup borrows `&str` keys with no lock and no allocation;
-/// only the per-entry bucket/semaphore state mutates, each behind its own mutex/atomic.
+/// Node-local rate limiter. Built from config and then read-only at the map level (the set of scopes
+/// is fixed per instance), so a hot-path lookup borrows `&str` keys with no lock and no allocation;
+/// only the per-entry bucket/semaphore state mutates, each behind its own mutex/atomic. A topology
+/// swap builds a *new* limiter via [`RateLimiter::reconciled`], carrying the live per-provider state
+/// over (each entry is an `Arc`) for providers whose limit config did not change.
 #[derive(Default)]
 pub struct RateLimiter {
-    providers: HashMap<String, ProviderLimits>,
+    providers: HashMap<String, Arc<ProviderLimits>>,
 }
 
 struct ProviderLimits {
@@ -79,8 +81,30 @@ impl RateLimiter {
     /// `model_limits` contributes no entry, so it is unlimited and its admission is a single missing-key
     /// lookup that returns immediately.
     pub fn new(providers: &[ProviderConfig]) -> Self {
+        Self::default().reconciled(providers, |_| false)
+    }
+
+    /// Build the limiter for a new provider set, carrying over the live entry (bucket levels, held
+    /// semaphore permits) of every provider `unchanged` reports as having the same limit config as in
+    /// this limiter — so a topology swap never resets flow-control state for untouched providers, and
+    /// in-flight streams holding the old limiter keep debiting the very same shared buckets. Changed or
+    /// new providers get fresh state built from their config; providers absent from `providers` simply
+    /// contribute no entry (their state is dropped with the old limiter).
+    pub fn reconciled(
+        &self,
+        providers: &[ProviderConfig],
+        unchanged: impl Fn(&str) -> bool,
+    ) -> Self {
         let mut map = HashMap::new();
         for p in providers {
+            if unchanged(&p.name) {
+                // Same limit config as before: keep the live state (or, for an unlimited provider,
+                // keep having no entry).
+                if let Some(entry) = self.providers.get(&p.name) {
+                    map.insert(p.name.clone(), entry.clone());
+                }
+                continue;
+            }
             let global = p
                 .limits
                 .as_ref()
@@ -94,7 +118,10 @@ impl RateLimiter {
             if global.is_unlimited() && per_model.is_empty() {
                 continue;
             }
-            map.insert(p.name.clone(), ProviderLimits { global, per_model });
+            map.insert(
+                p.name.clone(),
+                Arc::new(ProviderLimits { global, per_model }),
+            );
         }
         RateLimiter { providers: map }
     }
@@ -400,6 +427,30 @@ mod tests {
         }
         // Now the global 600-token burst is exhausted too.
         assert!(rl.try_admit("p", "other", t0).is_err());
+    }
+
+    // Reconciliation (a topology swap): an unchanged provider's entry is carried over live — its
+    // drained bucket stays drained — while a changed one gets fresh state, and a removed one reverts to
+    // unlimited (no entry).
+    #[tokio::test(start_paused = true)]
+    async fn reconciled_carries_unchanged_state_and_rebuilds_changed() {
+        let cfgs = [provider("p", Some(cfg(Some(1), None, None)))]; // burst of exactly one
+        let rl = RateLimiter::new(&cfgs);
+        let t0 = Instant::now();
+        rl.try_admit("p", "m", t0).expect("the single burst token");
+        assert!(rl.try_admit("p", "m", t0).is_err(), "bucket drained");
+
+        // Unchanged ⇒ the new limiter shares the very same (drained) bucket.
+        let same = rl.reconciled(&cfgs, |_| true);
+        assert!(same.try_admit("p", "m", t0).is_err(), "state carried over");
+
+        // Changed ⇒ fresh state, a full new burst.
+        let fresh = rl.reconciled(&cfgs, |_| false);
+        assert!(fresh.try_admit("p", "m", t0).is_ok(), "fresh bucket");
+
+        // Removed ⇒ no entry, back to unlimited.
+        let removed = rl.reconciled(&[], |_| false);
+        assert!(removed.try_admit("p", "m", t0).is_ok());
     }
 
     // TPM admits while positive, is driven negative by an observed-usage debit (overshoot), then refuses

@@ -28,8 +28,9 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty dif
   open-reasoning replay, routed cost), Groq's beta `POST /responses` (open unsigned reasoning), and
   Azure OpenAI's v1 surface (resource-scoped `POST /openai/v1/responses`) are per-provider opt-ins
   (`chat_api = "responses"`).
-- Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits, and usage ride an
-  **outbound** control plane (pull verdicts, push usage). Fully operable from the config file alone.
+- Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits, topology, and usage ride
+  an **outbound** control plane (pull verdicts and provider/route config — diff-reconciled on every
+  refresh — push usage). Fully operable from the config file alone.
 
 ### Supported providers
 
@@ -93,8 +94,11 @@ Official client SDKs for 6 languages live in [`clients/`](clients/).
 ## Architecture
 
 Two strictly separated planes. The **core** (data plane) is the proxy; the **control plane** is
-reached only outbound — the core pulls identity/verdicts and pushes usage, never the reverse. See
-[SOUL.md](SOUL.md) for the full design constitution.
+reached only outbound — the core pulls identity/verdicts/topology and pushes usage, never the
+reverse. A pulled topology (`[control.topology]`) lets the controller also serve provider and route
+configuration, diffed against the previous pull on every refresh so resources are added, updated,
+and removed incrementally on top of the immutable config file. See [SOUL.md](SOUL.md) for the full
+design constitution.
 
 ```mermaid
 flowchart LR
@@ -107,6 +111,7 @@ flowchart LR
   Prov --> Up["LLM providers"]
   Ctrl[["Control plane (outbound)"]]
   Auth -. "pull identity / verdicts" .-> Ctrl
+  Route -. "pull topology (providers + routes)" .-> Ctrl
   Ev -. "push usage" .-> Ctrl
 ```
 
