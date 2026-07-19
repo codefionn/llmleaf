@@ -63,6 +63,10 @@ await foreach (var evt in client.CreateResponseStreamAsync(new ResponsesRequest
 }
 ```
 
+Streaming tool calls are exposed as `choice.Delta.ToolCalls`. Group fragments by the choice index
+and each `ToolCallDelta.Index`; retain `Id` / `Type` / function `Name` whenever present, and append every
+function `Arguments` fragment until `FinishReason == FinishReason.ToolCalls`.
+
 Every call takes a final `CancellationToken`. `LlmleafClientOptions` also accepts `AdminToken`
 (widens `GET /v1/models` with `endpoints`) and `HttpClient` (bring your own, for proxies /
 pooling / TLS).

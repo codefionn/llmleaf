@@ -75,6 +75,10 @@ for {
 }
 ```
 
+Streaming tool calls are exposed by `choice.GetDelta().GetToolCalls()`. Group fragments by the
+choice index and each `ToolCallDelta.Index`; retain ID, type, and function name whenever present, then append
+each function-arguments fragment until the finish reason is `FinishReason_TOOL_CALLS`.
+
 Construct with options: `WithTimeout`, `WithAdminToken` (adds the `endpoints` array to
 `GET /v1/models`), and `WithHTTPClient` for proxies / TLS / transport tuning. `WithHTTPClient`
 wins over `WithTimeout`; for long-lived streams prefer a client with `Timeout: 0` plus a

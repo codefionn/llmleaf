@@ -51,6 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Streaming tool calls are exposed as `choice.delta.tool_calls`. Group fragments by the choice index
+and each `ToolCallDelta.index`; retain `id` / `kind` / function `name` whenever present, and append every
+`function.arguments` fragment in arrival order until `finish_reason == Some(FinishReason::ToolCalls)`.
+
 ### OpenAI Responses dialect
 
 `POST /v1/responses` is the same canonical core behind a different edge dialect. `input` is a

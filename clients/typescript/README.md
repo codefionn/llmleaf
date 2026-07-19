@@ -54,6 +54,10 @@ for await (const event of client.responsesStream({
 }
 ```
 
+Streaming tool calls are exposed as `choice.delta.toolCalls`. Group fragments by the choice index
+and each `ToolCallDelta.index`; retain `id` / `type` / function `name` whenever present, and append every
+`function.arguments` fragment in arrival order until `finishReason === FinishReason.TOOL_CALLS`.
+
 ## Endpoints
 
 ```ts

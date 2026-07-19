@@ -51,6 +51,13 @@ by a blank line; `<json>` is a `ChatCompletionChunk`. The stream ends with the l
 MUST stop on `[DONE]` without trying to JSON-parse it. Accumulate `choices[].delta.content`
 for the assembled text; `usage` appears only on the terminal chunk (when present).
 
+Tool calls are streamed through `choices[].delta.tool_calls[]`. Each entry is a fragment:
+`id`, `type`, and `function.name` normally arrive on the first fragment, while
+`function.arguments` may be split across any number of later frames. Consumers assemble calls by
+the pair `(choice.index, tool_call.index)`, retaining each present metadata field and appending
+every present `function.arguments` fragment in arrival order. A `finish_reason` of `"tool_calls"`
+marks the choice complete; it is not itself a tool-call fragment.
+
 ### POST /v1/responses
 Body = `ResponsesRequest` — the OpenAI Responses dialect on the same canonical core. Notes:
 - `input` is a bare string (one user message) or an array of items; each item's `"type"` selects

@@ -1542,6 +1542,38 @@ test "decode streaming chunk" {
     try testing.expectEqualStrings("Hel", chunk.choices[0].delta.content.?);
 }
 
+test "decode split streaming tool call deltas" {
+    const first_json =
+        \\{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m",
+        \\ "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",
+        \\   "type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Par"}}]}}]}
+    ;
+    const second_json =
+        \\{"id":"c1","object":"chat.completion.chunk","created":2,"model":"m",
+        \\ "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,
+        \\   "function":{"arguments":"is\"}"}}]}}]}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const first_value = try std.json.parseFromSliceLeaky(Value, a, first_json, .{});
+    const second_value = try std.json.parseFromSliceLeaky(Value, a, second_json, .{});
+    const first = try decodeChunk(a, first_value);
+    const second = try decodeChunk(a, second_value);
+
+    const start = first.choices[0].delta.tool_calls[0];
+    try testing.expectEqual(@as(u32, 0), start.index);
+    try testing.expectEqualStrings("call_1", start.id.?);
+    try testing.expectEqualStrings("function", start.type.?);
+    try testing.expectEqualStrings("get_weather", start.function.?.name.?);
+    try testing.expectEqualStrings("{\"city\":\"Par", start.function.?.arguments.?);
+
+    const continuation = second.choices[0].delta.tool_calls[0];
+    try testing.expect(continuation.id == null);
+    try testing.expect(continuation.function.?.name == null);
+    try testing.expectEqualStrings("is\"}", continuation.function.?.arguments.?);
+}
+
 test "encode tools with raw parameters" {
     const req = gen.ChatRequest{
         .model = "m",

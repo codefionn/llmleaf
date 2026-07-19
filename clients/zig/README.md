@@ -75,6 +75,10 @@ while (try stream.next()) |chunk| {
 that is **reset on the next `next()`** — copy out anything you need to keep. A callback form
 (`chatStreamCallback`) is also provided.
 
+Streaming tool calls are exposed as `choice.delta.tool_calls`. Group fragments by the choice index
+and each `ToolCallDelta.index`; copy `id` / `type` / function `name` whenever present, and append every
+function `arguments` fragment before calling `next()` again, until `finish_reason == .tool_calls`.
+
 ## Responses (`POST /v1/responses`)
 
 The OpenAI Responses dialect on the same canonical core. `input` is a bare string or an array

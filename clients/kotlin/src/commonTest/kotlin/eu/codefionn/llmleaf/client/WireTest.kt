@@ -2,6 +2,7 @@ package eu.codefionn.llmleaf.client
 
 import eu.codefionn.llmleaf.client.model.ChatMessage
 import eu.codefionn.llmleaf.client.model.ChatRequest
+import eu.codefionn.llmleaf.client.model.FinishReason
 import eu.codefionn.llmleaf.client.model.MessageContent
 import eu.codefionn.llmleaf.client.model.ReasoningDetail
 import eu.codefionn.llmleaf.client.model.Role
@@ -119,6 +120,32 @@ class WireTest {
         assertEquals(2, chunks.size) // the [DONE] sentinel is not a chunk
         val text = chunks.joinToString("") { it.choices.first().delta.content ?: "" }
         assertEquals("Hello", text)
+        client.close()
+    }
+
+    @Test
+    fun streamingChatPreservesSplitToolCallDeltas() = runTest {
+        val sse = buildString {
+            append("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Par\"}}]}}]}\n\n")
+            append("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"is\\\"}\"}}]}}]}\n\n")
+            append("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+            append("data: [DONE]\n\n")
+        }
+        val engine = MockEngine {
+            respond(sse, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "text/event-stream"))
+        }
+        val client = LlmleafClient("https://gw.example.com", "test", engine)
+        val chunks = client.chatStream(ChatRequest("m", listOf(ChatMessage.user("weather?")))).toList()
+
+        val calls = chunks.flatMap { chunk ->
+            chunk.choices.flatMap { choice -> choice.delta.toolCalls }
+        }
+        assertEquals(2, calls.size)
+        assertEquals("call_1", calls[0].id)
+        assertEquals("function", calls[0].type)
+        assertEquals("get_weather", calls[0].function?.name)
+        assertEquals("{\"city\":\"Paris\"}", calls.joinToString("") { it.function?.arguments ?: "" })
+        assertEquals(FinishReason.TOOL_CALLS, chunks.last().choices.single().finishReason)
         client.close()
     }
 

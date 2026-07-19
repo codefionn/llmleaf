@@ -344,6 +344,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sse_preserves_split_tool_call_deltas() {
+        let frames = vec![
+            r#"data: {"id":"a","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Par"}}]}}]}
+
+"#,
+            r#"data: {"id":"a","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"is\"}"}}]}}]}
+
+"#,
+            r#"data: {"id":"a","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        ];
+
+        let chunks: Vec<ChatCompletionChunk> = sse_chunks(bytes_stream(frames))
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(|chunk| chunk.unwrap())
+            .collect();
+
+        let calls: Vec<_> = chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .flat_map(|choice| &choice.delta.tool_calls)
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+        assert_eq!(calls[0].kind.as_deref(), Some("function"));
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().name.as_deref(),
+            Some("get_weather")
+        );
+        let arguments: String = calls
+            .iter()
+            .filter_map(|call| call.function.as_ref()?.arguments.as_deref())
+            .collect();
+        assert_eq!(arguments, r#"{"city":"Paris"}"#);
+        assert_eq!(
+            chunks[2].choices[0].finish_reason,
+            Some(crate::FinishReason::ToolCalls)
+        );
+    }
+
+    #[tokio::test]
     async fn sse_handles_split_across_byte_chunks() {
         // A single SSE line delivered in two arbitrary byte slices.
         let frames = vec![

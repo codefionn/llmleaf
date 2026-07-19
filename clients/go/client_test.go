@@ -188,6 +188,73 @@ func TestChatStreaming(t *testing.T) {
 	}
 }
 
+func TestChatStreamingToolCallDeltas(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frames := []string{
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Par"}}]}}]}`,
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"is\"}"}}]}}]}`,
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, frame := range frames {
+			_, _ = io.WriteString(w, "data: "+frame+"\n\n")
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	defer srv.Close()
+
+	stream, err := client.CreateChatCompletionStream(context.Background(), &pb.ChatRequest{
+		Model:    "m",
+		Messages: []*pb.ChatMessage{{Role: pb.Role_USER, Content: &pb.ChatMessage_Text{Text: "weather?"}}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var arguments strings.Builder
+	var id, kind, name string
+	var sawToolCallsFinish bool
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		for _, choice := range chunk.GetChoices() {
+			for _, call := range choice.GetDelta().GetToolCalls() {
+				if call.Id != nil {
+					id = call.GetId()
+				}
+				if call.Type != nil {
+					kind = call.GetType()
+				}
+				if function := call.GetFunction(); function != nil {
+					if function.Name != nil {
+						name = function.GetName()
+					}
+					arguments.WriteString(function.GetArguments())
+				}
+			}
+			if choice.GetFinishReason() == pb.FinishReason_TOOL_CALLS {
+				sawToolCallsFinish = true
+			}
+		}
+	}
+
+	if id != "call_1" || kind != "function" || name != "get_weather" {
+		t.Fatalf("tool metadata = (%q, %q, %q)", id, kind, name)
+	}
+	if got := arguments.String(); got != `{"city":"Paris"}` {
+		t.Errorf("arguments = %q", got)
+	}
+	if !sawToolCallsFinish {
+		t.Error("finish_reason tool_calls not seen")
+	}
+}
+
 func TestResponsesWireAndDecode(t *testing.T) {
 	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {

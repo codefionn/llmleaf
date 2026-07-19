@@ -51,6 +51,10 @@ client.chatStream(ChatRequest("gpt-4o-mini", listOf(ChatMessage.user("Count to 5
 client.close()
 ```
 
+Streaming tool calls are exposed as `choice.delta.toolCalls`. Group fragments by the choice index
+and each `ToolCallDelta.index`; retain `id` / `type` / function `name` whenever present, and append every
+function `arguments` fragment until `finishReason == FinishReason.TOOL_CALLS`.
+
 ### Responses (`POST /v1/responses`)
 
 The OpenAI **Responses** dialect on the same core. `input` is a bare string (one user message) or

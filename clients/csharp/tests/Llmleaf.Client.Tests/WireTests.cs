@@ -301,6 +301,45 @@ public sealed class WireTests
         Assert.Equal("thin", firstDetail.Text);
     }
 
+    [Fact]
+    public async Task ChatStream_PreservesSplitToolCallDeltas()
+    {
+        const string sse =
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Par\"}}]}}]}\n\n" +
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"is\\\"}\"}}]}}]}\n\n" +
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+        using var server = new TestServer(_ => CannedResponse.Sse(sse));
+        using var client = Client(server);
+
+        var arguments = "";
+        string? id = null, type = null, name = null;
+        FinishReason? finishReason = null;
+        await foreach (var chunk in client.CreateChatCompletionStreamAsync(new ChatRequest
+        {
+            Model = "m", Messages = [ChatMessage.Text(Role.User, "weather?")],
+        }))
+        {
+            foreach (var choice in chunk.Choices)
+            {
+                foreach (var call in choice.Delta.ToolCalls ?? [])
+                {
+                    id = call.Id ?? id;
+                    type = call.Type ?? type;
+                    name = call.Function?.Name ?? name;
+                    arguments += call.Function?.Arguments ?? "";
+                }
+                finishReason = choice.FinishReason ?? finishReason;
+            }
+        }
+
+        Assert.Equal("call_1", id);
+        Assert.Equal("function", type);
+        Assert.Equal("get_weather", name);
+        Assert.Equal("{\"city\":\"Paris\"}", arguments);
+        Assert.Equal(FinishReason.ToolCalls, finishReason);
+    }
+
     // ---- chat: streaming -----------------------------------------------
 
     [Fact]
