@@ -15,6 +15,8 @@ use llmleaf_model::{
 };
 use serde_json::{json, Map, Value};
 
+pub use crate::http::sse_payloads;
+
 /// Canonical request → OpenAI wire JSON. Dialect-specific `extra` fields ride back out verbatim
 /// (principle 7).
 ///
@@ -415,37 +417,6 @@ pub fn openai_chunk_to_canonical(
         }));
     }
 
-    out
-}
-
-/// Drain complete SSE `data:` payloads out of a rolling byte buffer.
-///
-/// `reqwest`'s byte stream yields arbitrary boundaries — a single SSE frame (or even one multi-byte
-/// UTF-8 character) can split across TCP reads — so bytes are accumulated and only *complete* lines
-/// (terminated by `\n`) are decoded. Returns the payload of each `data:` line (the text after
-/// `data: `), including the `[DONE]` sentinel for the caller to detect; comment lines (`:`...), blank
-/// lines, and other SSE fields (`event:`/`id:`/`retry:`) are skipped. A trailing partial line stays in
-/// `buf` for the next call.
-pub fn sse_payloads(buf: &mut Vec<u8>, incoming: &[u8]) -> Vec<String> {
-    buf.extend_from_slice(incoming);
-    let mut out = Vec::new();
-    while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-        // The line is buf[..nl]; tolerate a CRLF terminator.
-        let end = if nl > 0 && buf[nl - 1] == b'\r' {
-            nl - 1
-        } else {
-            nl
-        };
-        if let Ok(line) = std::str::from_utf8(&buf[..end]) {
-            let line = line.trim();
-            if !line.is_empty() && !line.starts_with(':') {
-                if let Some(rest) = line.strip_prefix("data:") {
-                    out.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
-                }
-            }
-        }
-        buf.drain(..=nl);
-    }
     out
 }
 

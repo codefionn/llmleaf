@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 
 use std::sync::Arc;
 
-use crate::http::{post_json, send_checked};
+use crate::http::{json_sse_to_stream, post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
 const DEFAULT_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -89,7 +89,10 @@ impl Provider for GeminiProvider {
             .as_deref()
             .unwrap_or(DEFAULT_ENDPOINT)
             .trim_end_matches('/');
-        let url = format!("{endpoint}/models/{}:generateContent", req.model);
+        let url = format!(
+            "{endpoint}/models/{}:streamGenerateContent?alt=sse",
+            req.model
+        );
         let body = request_to_gemini(&req);
 
         let mut http_req = HttpRequest::post(&url).json(body);
@@ -98,9 +101,8 @@ impl Provider for GeminiProvider {
             http_req = http_req.header("x-goog-api-key", cred);
         }
 
-        let value = post_json(&*self.http, http_req).await?;
-        let chunks = gemini_to_chunks(value, &req.model);
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
     }
 
     async fn embed(
@@ -518,6 +520,150 @@ pub(crate) fn gemini_to_chunks(value: Value, fallback_model: &str) -> Vec<Stream
     chunks
 }
 
+#[derive(Default)]
+struct GeminiStreamState {
+    fallback_model: String,
+    seen_start: bool,
+    next_tool_indexes: std::collections::BTreeMap<u32, u32>,
+    saw_tools: std::collections::BTreeSet<u32>,
+    finished: std::collections::BTreeSet<u32>,
+}
+
+/// Stream Gemini/Vertex `GenerateContentResponse` SSE objects into canonical deltas. Google emits
+/// each text piece as a response part and function calls as soon as they are available; unlike the
+/// unary mapper this state machine emits Start and Finish only once across the sequence.
+pub(crate) fn gemini_sse_to_stream(
+    body: crate::transport::BytesStream,
+    fallback_model: String,
+) -> ResponseStream {
+    json_sse_to_stream(
+        body,
+        GeminiStreamState {
+            fallback_model,
+            ..Default::default()
+        },
+        gemini_event_to_chunks,
+    )
+}
+
+fn gemini_event_to_chunks(
+    event: &Value,
+    state: &mut GeminiStreamState,
+) -> Result<Vec<StreamChunk>, ModelError> {
+    if let Some(error) = event.get("error") {
+        let status = error.get("code").and_then(Value::as_u64).unwrap_or(500) as u16;
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Gemini stream error")
+            .to_string();
+        return Err(ModelError::Upstream { status, message });
+    }
+
+    let mut chunks = Vec::new();
+    if !state.seen_start {
+        chunks.push(StreamChunk::Start {
+            id: event
+                .get("responseId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            model: event
+                .get("modelVersion")
+                .and_then(Value::as_str)
+                .unwrap_or(&state.fallback_model)
+                .to_string(),
+        });
+        state.seen_start = true;
+    }
+
+    if let Some(candidates) = event.get("candidates").and_then(Value::as_array) {
+        for candidate in candidates {
+            let index = candidate.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if let Some(parts) = candidate
+                .get("content")
+                .and_then(|content| content.get("parts"))
+                .and_then(Value::as_array)
+            {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            chunks.push(StreamChunk::Content {
+                                index,
+                                delta: text.to_string(),
+                            });
+                        }
+                    } else if let Some(call) = part.get("functionCall") {
+                        let tool_index = state.next_tool_indexes.entry(index).or_default();
+                        chunks.push(StreamChunk::ToolCall {
+                            index,
+                            call: ToolCallDelta {
+                                index: *tool_index,
+                                id: call.get("id").and_then(Value::as_str).map(str::to_owned),
+                                name: call.get("name").and_then(Value::as_str).map(str::to_owned),
+                                arguments: call.get("args").map(Value::to_string),
+                            },
+                        });
+                        *tool_index += 1;
+                        state.saw_tools.insert(index);
+                    }
+                }
+            }
+
+            if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
+                if state.finished.insert(index) {
+                    let reason = if state.saw_tools.contains(&index) {
+                        FinishReason::ToolCalls
+                    } else {
+                        map_finish_reason(reason)
+                    };
+                    chunks.push(StreamChunk::Finish { index, reason });
+                }
+            }
+        }
+    }
+
+    if event
+        .get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .is_some()
+        && state.finished.insert(0)
+    {
+        chunks.push(StreamChunk::Finish {
+            index: 0,
+            reason: FinishReason::ContentFilter,
+        });
+    }
+
+    if let Some(usage) = event.get("usageMetadata") {
+        let prompt = usage
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let completion = usage
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        chunks.push(StreamChunk::Usage(Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: usage
+                .get("totalTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(prompt + completion),
+            cost_usd: None,
+            cache_read_tokens: usage
+                .get("cachedContentTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            cache_creation_tokens: 0,
+        }));
+    }
+
+    Ok(chunks)
+}
+
 fn map_finish_reason(reason: &str) -> FinishReason {
     match reason {
         "MAX_TOKENS" => FinishReason::Length,
@@ -789,6 +935,52 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn stream_events_emit_tool_call_before_terminal_usage() {
+        let mut state = GeminiStreamState {
+            fallback_model: "gemini-2.0-flash".into(),
+            ..Default::default()
+        };
+        let first = gemini_event_to_chunks(
+            &json!({
+                "responseId": "r1",
+                "modelVersion": "gemini-2.0-flash-001",
+                "candidates": [{
+                    "index": 0,
+                    "content": { "parts": [{
+                        "functionCall": { "id": "call_1", "name": "weather", "args": { "city": "Paris" } }
+                    }] }
+                }]
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&first[0], StreamChunk::Start { id, .. } if id == "r1"));
+        assert!(matches!(&first[1], StreamChunk::ToolCall { call, .. }
+            if call.id.as_deref() == Some("call_1") && call.arguments.as_deref() == Some("{\"city\":\"Paris\"}")));
+
+        let terminal = gemini_event_to_chunks(
+            &json!({
+                "candidates": [{ "index": 0, "finishReason": "STOP" }],
+                "usageMetadata": {
+                    "promptTokenCount": 4,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 7
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(
+            terminal[0],
+            StreamChunk::Finish {
+                reason: FinishReason::ToolCalls,
+                ..
+            }
+        ));
+        assert!(matches!(terminal[1], StreamChunk::Usage(usage) if usage.total_tokens == 7));
     }
 
     #[test]

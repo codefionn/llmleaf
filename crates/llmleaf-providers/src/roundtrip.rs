@@ -3,8 +3,8 @@
 //! Each case constructs a provider with a [`Transports`] whose HTTP (or realtime) side is a
 //! [`crate::fake`] returning a canned upstream response or a seeded error, then calls the actual
 //! [`Provider`] method. This exercises the genuine request-build + response-parse path — the same
-//! [`request_to_openai`]/[`openai_sse_to_stream`]/[`request_to_anthropic`]/[`anthropic_to_chunks`] code
-//! that runs against a live upstream — without a network or live credentials. The unit tests already
+//! provider request builders and SSE decoders that run against a live upstream — without a network
+//! or live credentials. The unit tests already
 //! cover the pure mappers in isolation; these prove the wiring *through the transport seam* and the
 //! shared failure taxonomy ([`crate::http`]) classify exactly as documented.
 
@@ -20,7 +20,9 @@ use tokio::sync::mpsc;
 
 use crate::fake::{FakeHttpTransport, FakeRealtimeTransport, FakeResponse};
 use crate::transport::{HttpBody, HttpRequest, RealtimeTransport, Transports};
-use crate::{AnthropicProvider, OpenAiCompatProvider};
+use crate::{
+    AnthropicProvider, CohereProvider, GeminiProvider, OpenAiCompatProvider, VertexProvider,
+};
 
 /// Build a [`Transports`] whose HTTP side is `http` and whose realtime side is a no-op (the chat /
 /// embeddings cases never touch realtime). Mirrors the task's "inject a specific HTTP response" recipe.
@@ -671,19 +673,30 @@ async fn responses_500_does_not_downgrade() {
 
 #[tokio::test]
 async fn anthropic_chat_roundtrips_to_canonical_stream() {
-    // A canned Anthropic Messages response. The provider collects it (Anthropic's non-streaming chat
-    // path) and maps it through `anthropic_to_chunks`; here we drive `request_to_anthropic` (the request
-    // build) and that mapping over the transport seam end to end.
-    let canned = json!({
-        "id": "msg_01abc",
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-sonnet-4",
-        "content": [{ "type": "text", "text": "Bonjour" }],
-        "stop_reason": "end_turn",
-        "usage": { "input_tokens": 11, "output_tokens": 4 }
-    });
-    let transports = http_transports(FakeHttpTransport::json(canned));
+    // Drive the real Messages SSE path end to end. The two text deltas must remain incremental through
+    // the provider and collect back to the same non-streaming response.
+    let sse = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01abc\",\"model\":\"claude-sonnet-4\",\"usage\":{\"input_tokens\":11,\"output_tokens\":1}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Bon\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"jour\"}}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::new(move |request| {
+        assert_eq!(request.url, "https://example.test/v1/messages");
+        let HttpBody::Json(body) = &request.body else {
+            panic!("Anthropic chat must send JSON")
+        };
+        assert_eq!(body["stream"], true);
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    }));
     let provider = AnthropicProvider::new(&transports);
 
     let stream = provider
@@ -701,6 +714,102 @@ async fn anthropic_chat_roundtrips_to_canonical_stream() {
     assert_eq!(resp.usage.prompt_tokens, 11);
     assert_eq!(resp.usage.completion_tokens, 4);
     assert_eq!(resp.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn cohere_tool_arguments_stream_and_collect() {
+    let sse = concat!(
+        "data: {\"type\":\"message-start\",\"id\":\"co_1\"}\n\n",
+        "data: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"call_1\",\"function\":{\"name\":\"weather\",\"arguments\":\"\"}}}}}\n\n",
+        "data: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"{\\\"city\\\":\"}}}}}\n\n",
+        "data: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}}}}\n\n",
+        "data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"TOOL_CALL\",\"usage\":{\"tokens\":{\"input_tokens\":9,\"output_tokens\":4}}}}\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::new(move |request| {
+        assert_eq!(request.url, "https://example.test/v2/chat");
+        assert!(request.headers.iter().any(
+            |(name, value)| name.eq_ignore_ascii_case("accept") && value == "text/event-stream"
+        ));
+        let HttpBody::Json(body) = &request.body else {
+            panic!("Cohere chat must send JSON")
+        };
+        assert_eq!(body["stream"], true);
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    }));
+    let response = collect(
+        CohereProvider::new(&transports)
+            .chat(user_chat("command-r-plus", "weather"), &cx())
+            .await
+            .expect("chat returns a stream"),
+    )
+    .await
+    .expect("stream collects cleanly");
+    assert_eq!(response.choices[0].tool_calls[0].id, "call_1");
+    assert_eq!(
+        response.choices[0].tool_calls[0].arguments,
+        "{\"city\":\"Paris\"}"
+    );
+    assert_eq!(response.usage.total_tokens, 13);
+}
+
+#[tokio::test]
+async fn gemini_tool_call_stream_uses_stream_generate_content() {
+    let sse = concat!(
+        "data: {\"responseId\":\"g_1\",\"modelVersion\":\"gemini-2.0-flash-001\",\"candidates\":[{\"index\":0,\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call_1\",\"name\":\"weather\",\"args\":{\"city\":\"Paris\"}}}]}}]}\n\n",
+        "data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::new(move |request| {
+        assert_eq!(
+            request.url,
+            "https://example.test/models/gemini-2.0-flash:streamGenerateContent?alt=sse"
+        );
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    }));
+    let response = collect(
+        GeminiProvider::new(&transports)
+            .chat(user_chat("gemini-2.0-flash", "weather"), &cx())
+            .await
+            .expect("chat returns a stream"),
+    )
+    .await
+    .expect("stream collects cleanly");
+    assert_eq!(response.id, "g_1");
+    assert_eq!(response.choices[0].tool_calls[0].id, "call_1");
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(FinishReason::ToolCalls)
+    );
+    assert_eq!(response.usage.total_tokens, 8);
+}
+
+#[tokio::test]
+async fn vertex_chat_uses_shared_gemini_stream_decoder() {
+    let sse = concat!(
+        "data: {\"responseId\":\"v_1\",\"candidates\":[{\"index\":0,\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}]}\n\n",
+    );
+    let transports = http_transports(FakeHttpTransport::new(move |request| {
+        assert_eq!(
+            request.url,
+            "https://example.test/v1/projects/proj/locations/global/publishers/google/models/gemini-2.0-flash:streamGenerateContent?alt=sse"
+        );
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    }));
+    let mut vertex_cx = cx();
+    vertex_cx.settings.insert("project".into(), json!("proj"));
+    vertex_cx
+        .settings
+        .insert("location".into(), json!("global"));
+    let response = collect(
+        VertexProvider::new(&transports)
+            .chat(user_chat("gemini-2.0-flash", "hello"), &vertex_cx)
+            .await
+            .expect("chat returns a stream"),
+    )
+    .await
+    .expect("stream collects cleanly");
+    assert_eq!(response.id, "v_1");
+    assert_eq!(response.choices[0].text, "hello");
 }
 
 // ---------------------------------------------------------------------------------------------

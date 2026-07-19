@@ -6,7 +6,6 @@
 //! `usage` object in v2). Mapped here.
 
 use async_trait::async_trait;
-use futures::stream;
 use llmleaf_model::{
     ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse, FinishReason, Message, Modality,
     ModelError, ModelInfo, RerankDocument, RerankRequest, RerankResponse, RerankResult,
@@ -17,7 +16,7 @@ use serde_json::{json, Map, Value};
 
 use std::sync::Arc;
 
-use crate::http::post_json;
+use crate::http::{json_sse_to_stream, post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
 const DEFAULT_ENDPOINT: &str = "https://api.cohere.com";
@@ -79,18 +78,18 @@ impl Provider for CohereProvider {
             .unwrap_or(DEFAULT_ENDPOINT)
             .trim_end_matches('/');
         let url = format!("{endpoint}/v2/chat");
-        let body = request_to_cohere(&req);
+        let mut body = request_to_cohere(&req);
+        body["stream"] = json!(true);
 
         let mut http_req = HttpRequest::post(&url)
-            .header("Accept", "application/json")
+            .header("Accept", "text/event-stream")
             .json(body);
         if let Some(cred) = &cx.credential {
             http_req = http_req.bearer(cred);
         }
 
-        let value = post_json(&*self.http, http_req).await?;
-        let chunks = cohere_to_chunks(value, &req.model);
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(cohere_sse_to_stream(resp.body, req.model.clone()))
     }
 
     async fn embed(
@@ -449,6 +448,7 @@ fn tool_choice_to_cohere(tc: &ToolChoice) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 fn cohere_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
     let id = value
         .get("id")
@@ -532,6 +532,149 @@ fn cohere_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
     chunks
 }
 
+#[derive(Default)]
+struct CohereStreamState {
+    model: String,
+}
+
+fn cohere_sse_to_stream(
+    body: crate::transport::BytesStream,
+    fallback_model: String,
+) -> ResponseStream {
+    json_sse_to_stream(
+        body,
+        CohereStreamState {
+            model: fallback_model,
+        },
+        cohere_event_to_chunks,
+    )
+}
+
+fn cohere_event_to_chunks(
+    event: &Value,
+    state: &mut CohereStreamState,
+) -> Result<Vec<StreamChunk>, ModelError> {
+    let mut chunks = Vec::new();
+    match event.get("type").and_then(Value::as_str) {
+        Some("message-start") => {
+            chunks.push(StreamChunk::Start {
+                id: event
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                model: state.model.clone(),
+            });
+        }
+        Some("content-delta") => {
+            if let Some(text) = event
+                .get("delta")
+                .and_then(|delta| delta.get("message"))
+                .and_then(|message| message.get("content"))
+                .and_then(|content| content.get("text"))
+                .and_then(Value::as_str)
+            {
+                if !text.is_empty() {
+                    chunks.push(StreamChunk::Content {
+                        index: 0,
+                        delta: text.to_string(),
+                    });
+                }
+            }
+        }
+        Some("tool-call-start") => {
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let call = event
+                .get("delta")
+                .and_then(|delta| delta.get("message"))
+                .and_then(|message| message.get("tool_calls"))
+                .unwrap_or(&Value::Null);
+            chunks.push(StreamChunk::ToolCall {
+                index: 0,
+                call: ToolCallDelta {
+                    index,
+                    id: call.get("id").and_then(Value::as_str).map(str::to_owned),
+                    name: call
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    arguments: call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                        .filter(|arguments| !arguments.is_empty())
+                        .map(str::to_owned),
+                },
+            });
+        }
+        Some("tool-call-delta") => {
+            let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if let Some(arguments) = event
+                .get("delta")
+                .and_then(|delta| delta.get("message"))
+                .and_then(|message| message.get("tool_calls"))
+                .and_then(|call| call.get("function"))
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+            {
+                chunks.push(StreamChunk::ToolCall {
+                    index: 0,
+                    call: ToolCallDelta {
+                        index,
+                        id: None,
+                        name: None,
+                        arguments: Some(arguments.to_string()),
+                    },
+                });
+            }
+        }
+        Some("message-end") => {
+            let delta = event.get("delta").unwrap_or(&Value::Null);
+            let reason = delta
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .map(map_finish_reason)
+                .unwrap_or(FinishReason::Stop);
+            chunks.push(StreamChunk::Finish { index: 0, reason });
+            if let Some(tokens) = delta.get("usage").and_then(|usage| usage.get("tokens")) {
+                let prompt = cohere_token_count(tokens.get("input_tokens"));
+                let completion = cohere_token_count(tokens.get("output_tokens"));
+                chunks.push(StreamChunk::Usage(Usage {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    total_tokens: prompt + completion,
+                    cost_usd: None,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                }));
+            }
+        }
+        Some("error") => {
+            let message = event
+                .get("message")
+                .or_else(|| event.get("error").and_then(|error| error.get("message")))
+                .and_then(Value::as_str)
+                .unwrap_or("Cohere stream error")
+                .to_string();
+            return Err(ModelError::Upstream {
+                status: 500,
+                message,
+            });
+        }
+        // Block boundaries, citations, tool plans, and future additive events carry no canonical data.
+        _ => {}
+    }
+    Ok(chunks)
+}
+
+fn cohere_token_count(value: Option<&Value>) -> u64 {
+    value
+        .and_then(Value::as_u64)
+        .or_else(|| value.and_then(Value::as_f64).map(|tokens| tokens as u64))
+        .unwrap_or(0)
+}
+
 fn map_finish_reason(reason: &str) -> FinishReason {
     // Cohere v2 vocabulary: COMPLETE | STOP_SEQUENCE | MAX_TOKENS | TOOL_CALL | ERROR | TIMEOUT.
     // There is no dedicated content-filter reason.
@@ -608,6 +751,57 @@ mod tests {
             }
         ));
         assert!(matches!(chunks[3], StreamChunk::Usage(u) if u.total_tokens == 9));
+    }
+
+    #[test]
+    fn stream_events_emit_incremental_tool_arguments() {
+        let mut state = CohereStreamState {
+            model: "command-r-plus".into(),
+        };
+        let events = [
+            json!({ "type": "message-start", "id": "c1" }),
+            json!({
+                "type": "tool-call-start",
+                "index": 0,
+                "delta": { "message": { "tool_calls": {
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "weather", "arguments": "" }
+                } } }
+            }),
+            json!({
+                "type": "tool-call-delta",
+                "index": 0,
+                "delta": { "message": { "tool_calls": { "function": { "arguments": "{\"city\":" } } } }
+            }),
+            json!({
+                "type": "tool-call-delta",
+                "index": 0,
+                "delta": { "message": { "tool_calls": { "function": { "arguments": "\"Paris\"}" } } } }
+            }),
+            json!({
+                "type": "message-end",
+                "delta": {
+                    "finish_reason": "TOOL_CALL",
+                    "usage": { "tokens": { "input_tokens": 9.0, "output_tokens": 4.0 } }
+                }
+            }),
+        ];
+        let chunks: Vec<_> = events
+            .iter()
+            .flat_map(|event| cohere_event_to_chunks(event, &mut state).unwrap())
+            .collect();
+        let response = llmleaf_model::collect_chunks(chunks);
+        assert_eq!(response.id, "c1");
+        assert_eq!(response.choices[0].tool_calls[0].id, "call_1");
+        assert_eq!(
+            response.choices[0].tool_calls[0].arguments,
+            "{\"city\":\"Paris\"}"
+        );
+        assert_eq!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(response.usage.total_tokens, 13);
     }
 
     #[test]

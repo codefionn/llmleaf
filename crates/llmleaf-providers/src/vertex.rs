@@ -4,7 +4,7 @@
 //! that [`crate::gemini`] already maps — the request and response bodies are byte-for-byte the same
 //! schema. What differs is the transport, and only the transport:
 //!   - **URL** — a project/location-scoped publisher path,
-//!     `{host}/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`,
+//!     `{host}/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent`,
 //!     where `host` is the regional `https://{location}-aiplatform.googleapis.com` (or the bare
 //!     `https://aiplatform.googleapis.com` when `location = "global"`, which still keeps `locations/global`
 //!     in the path).
@@ -17,12 +17,11 @@
 //!   - **model listing** — the `v1beta1` publisher-models catalog, which reports no generation methods,
 //!     so modality stays unknown (enhanced downstream) rather than guessed.
 //!
-//! So the chat path reuses [`crate::gemini::request_to_gemini`] / [`crate::gemini::gemini_to_chunks`]
-//! verbatim, and this module owns only the URL, the bearer auth, the `:predict` embedding mapping, and
-//! the publisher-models listing.
+//! So the chat path reuses [`crate::gemini::request_to_gemini`] and the shared Gemini SSE decoder;
+//! this module owns only the URL, bearer auth, `:predict` embedding mapping, and publisher-models
+//! listing.
 
 use async_trait::async_trait;
-use futures::stream;
 use llmleaf_model::{
     ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse, ModelError, ModelInfo,
     ResponseStream, Usage,
@@ -32,8 +31,8 @@ use serde_json::{json, Map, Value};
 
 use std::sync::Arc;
 
-use crate::gemini::{gemini_to_chunks, request_to_gemini};
-use crate::http::post_json;
+use crate::gemini::{gemini_sse_to_stream, request_to_gemini};
+use crate::http::{post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
 /// The global (region-less) host. Used when `location = "global"` or no location is configured. Regional
@@ -140,13 +139,15 @@ impl Provider for VertexProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
-        let url = format!("{}:generateContent", self.resource_base(cx, &req.model)?);
+        let url = format!(
+            "{}:streamGenerateContent?alt=sse",
+            self.resource_base(cx, &req.model)?
+        );
         // Same body the live Gemini chat path builds — Vertex's generateContent schema is identical.
         let body = request_to_gemini(&req);
         let http_req = self.auth(HttpRequest::post(&url).json(body), cx);
-        let value = post_json(&*self.http, http_req).await?;
-        let chunks = gemini_to_chunks(value, &req.model);
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
     }
 
     async fn embed(

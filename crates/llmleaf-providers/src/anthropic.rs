@@ -23,7 +23,6 @@
 //! defaults to Anthropic's own 5-minute window and can be extended to 1 hour ([`CacheTtl`]).
 
 use async_trait::async_trait;
-use futures::stream;
 use llmleaf_model::{
     collect_chunks, BatchCounts, BatchHandle, BatchOutcome, BatchResult, BatchResultStream,
     BatchSpec, BatchStatus, ChatRequest, ContentPart, FinishReason, Message, Modality, ModelError,
@@ -35,7 +34,7 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::batch::jsonl_result_stream;
-use crate::http::{post_json, send_checked};
+use crate::http::{json_sse_to_stream, post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
 const DEFAULT_ENDPOINT: &str = "https://api.anthropic.com";
@@ -110,7 +109,10 @@ impl Provider for AnthropicProvider {
         let version = cx
             .setting_str("anthropic_version")
             .unwrap_or(DEFAULT_VERSION);
-        let body = request_to_anthropic(&req, prompt_cache(cx));
+        let mut body = request_to_anthropic(&req, prompt_cache(cx));
+        // The canonical provider boundary is incremental. Force Messages SSE even when the consumer
+        // ultimately wants a collected response; collection happens downstream from this stream.
+        body["stream"] = json!(true);
 
         let mut http_req = HttpRequest::post(&url)
             .header("anthropic-version", version)
@@ -119,9 +121,8 @@ impl Provider for AnthropicProvider {
             http_req = http_req.header("x-api-key", cred);
         }
 
-        let value = post_json(&*self.http, http_req).await?;
-        let chunks = anthropic_to_chunks(value, &req.model);
-        Ok(Box::pin(stream::iter(chunks.into_iter().map(Ok))))
+        let resp = send_checked(&*self.http, http_req).await?;
+        Ok(anthropic_sse_to_stream(resp.body, req.model.clone()))
     }
 
     /// Submit a Message Batch. Anthropic takes the requests *inline* (no file step), so each canonical
@@ -537,6 +538,196 @@ fn anthropic_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
     chunks
 }
 
+#[derive(Default)]
+struct AnthropicStreamState {
+    model: String,
+    usage: Usage,
+    finished: bool,
+    next_tool_index: u32,
+    /// Anthropic indexes all content blocks together; canonical tool indexes count tool calls only.
+    tool_indexes: std::collections::BTreeMap<u32, u32>,
+}
+
+/// Convert Anthropic Messages SSE events to canonical chunks, including raw `input_json_delta`
+/// fragments. The fragments remain strings all the way through the core so clients can observe tool
+/// arguments as Claude generates them and collection can concatenate the exact same stream.
+fn anthropic_sse_to_stream(
+    body: crate::transport::BytesStream,
+    fallback_model: String,
+) -> ResponseStream {
+    let state = AnthropicStreamState {
+        model: fallback_model,
+        ..Default::default()
+    };
+    json_sse_to_stream(body, state, anthropic_event_to_chunks)
+}
+
+fn anthropic_event_to_chunks(
+    event: &Value,
+    state: &mut AnthropicStreamState,
+) -> Result<Vec<StreamChunk>, ModelError> {
+    let mut chunks = Vec::new();
+    match event.get("type").and_then(Value::as_str) {
+        Some("message_start") => {
+            let message = event.get("message").unwrap_or(&Value::Null);
+            let id = message
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let model = message
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(&state.model)
+                .to_string();
+            state.model = model.clone();
+            if let Some(usage) = message.get("usage") {
+                update_anthropic_usage(&mut state.usage, usage);
+            }
+            chunks.push(StreamChunk::Start { id, model });
+        }
+        Some("content_block_start") => {
+            let block_index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let block = event.get("content_block").unwrap_or(&Value::Null);
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    let tool_index = state.next_tool_index;
+                    state.next_tool_index += 1;
+                    state.tool_indexes.insert(block_index, tool_index);
+                    chunks.push(StreamChunk::ToolCall {
+                        index: 0,
+                        call: ToolCallDelta {
+                            index: tool_index,
+                            id: block.get("id").and_then(Value::as_str).map(str::to_owned),
+                            name: block.get("name").and_then(Value::as_str).map(str::to_owned),
+                            arguments: None,
+                        },
+                    });
+                }
+                Some("redacted_thinking") => {
+                    if let Some(data) = block.get("data").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::RedactedThinking {
+                            index: 0,
+                            data: data.to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some("content_block_delta") => {
+            let block_index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let delta = event.get("delta").unwrap_or(&Value::Null);
+            match delta.get("type").and_then(Value::as_str) {
+                Some("text_delta") => {
+                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            chunks.push(StreamChunk::Content {
+                                index: 0,
+                                delta: text.to_string(),
+                            });
+                        }
+                    }
+                }
+                Some("thinking_delta") => {
+                    if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::Thinking {
+                            index: 0,
+                            delta: thinking.to_string(),
+                        });
+                    }
+                }
+                Some("signature_delta") => {
+                    if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                        chunks.push(StreamChunk::ThinkingSignature {
+                            index: 0,
+                            signature: signature.to_string(),
+                        });
+                    }
+                }
+                Some("input_json_delta") => {
+                    if let Some(&tool_index) = state.tool_indexes.get(&block_index) {
+                        if let Some(fragment) = delta.get("partial_json").and_then(Value::as_str) {
+                            chunks.push(StreamChunk::ToolCall {
+                                index: 0,
+                                call: ToolCallDelta {
+                                    index: tool_index,
+                                    id: None,
+                                    name: None,
+                                    arguments: Some(fragment.to_string()),
+                                },
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some("message_delta") => {
+            let reported_usage = event.get("usage");
+            if let Some(usage) = reported_usage {
+                update_anthropic_usage(&mut state.usage, usage);
+            }
+            if let Some(reason) = event
+                .get("delta")
+                .and_then(|delta| delta.get("stop_reason"))
+                .and_then(Value::as_str)
+                .map(map_stop_reason)
+            {
+                if !state.finished {
+                    chunks.push(StreamChunk::Finish { index: 0, reason });
+                    state.finished = true;
+                }
+            }
+            if reported_usage.is_some() {
+                chunks.push(StreamChunk::Usage(state.usage));
+            }
+        }
+        Some("error") => {
+            let error = event.get("error").unwrap_or(event);
+            let kind = error
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("stream_error");
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Anthropic stream error");
+            let status = match kind {
+                "overloaded_error" => 529,
+                "rate_limit_error" => 429,
+                _ => 500,
+            };
+            return Err(ModelError::Upstream {
+                status,
+                message: format!("{kind}: {message}"),
+            });
+        }
+        // `ping`, block-stop, message-stop, and future event types carry no canonical payload.
+        _ => {}
+    }
+    Ok(chunks)
+}
+
+fn update_anthropic_usage(out: &mut Usage, usage: &Value) {
+    if let Some(tokens) = usage.get("input_tokens").and_then(Value::as_u64) {
+        out.prompt_tokens = tokens;
+    }
+    if let Some(tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
+        out.completion_tokens = tokens;
+    }
+    if let Some(tokens) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+        out.cache_read_tokens = tokens;
+    }
+    if let Some(tokens) = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+    {
+        out.cache_creation_tokens = tokens;
+    }
+    out.total_tokens = out.prompt_tokens + out.completion_tokens;
+}
+
 /// Anthropic Message Batch object → canonical [`BatchHandle`]. Anthropic reports instants as ISO-8601
 /// strings (not unix seconds), so rather than pull in a date dependency just to reformat them, the
 /// numeric instant fields stay `None` and the raw strings ride through verbatim in `extra` (principle 7
@@ -799,6 +990,65 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn stream_events_emit_incremental_tool_arguments_and_usage() {
+        let mut state = AnthropicStreamState {
+            model: "fallback".into(),
+            ..Default::default()
+        };
+        let events = [
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_stream",
+                    "model": "claude-sonnet-4",
+                    "usage": { "input_tokens": 8, "output_tokens": 1 }
+                }
+            }),
+            json!({
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": { "type": "tool_use", "id": "tu_1", "name": "weather", "input": {} }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"city\":\"Par" }
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "input_json_delta", "partial_json": "is\"}" }
+            }),
+            json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "tool_use" },
+                "usage": { "output_tokens": 6 }
+            }),
+        ];
+        let chunks: Vec<_> = events
+            .iter()
+            .flat_map(|event| anthropic_event_to_chunks(event, &mut state).unwrap())
+            .collect();
+
+        assert!(matches!(&chunks[1], StreamChunk::ToolCall { call, .. }
+            if call.id.as_deref() == Some("tu_1") && call.name.as_deref() == Some("weather") && call.arguments.is_none()));
+        assert!(matches!(&chunks[2], StreamChunk::ToolCall { call, .. }
+            if call.arguments.as_deref() == Some("{\"city\":\"Par")));
+        assert!(matches!(&chunks[3], StreamChunk::ToolCall { call, .. }
+            if call.arguments.as_deref() == Some("is\"}")));
+        let response = collect_chunks(chunks);
+        assert_eq!(
+            response.choices[0].tool_calls[0].arguments,
+            "{\"city\":\"Paris\"}"
+        );
+        assert_eq!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(response.usage.total_tokens, 14);
     }
 
     #[test]
