@@ -29,8 +29,9 @@ struct Dataset {
     models: HashMap<String, Rate>,
 }
 
-/// One row of the bundled dataset. Beyond the token rates it now carries optional *capability*
-/// metadata (modality + published limits) consumed by the model-catalog surface (`GET /v1/models`).
+/// One row of the bundled dataset. Beyond the token rates it carries optional *capability* metadata
+/// (modality, published limits, and an explicit reasoning flag) consumed by the model-catalog surface
+/// (`GET /v1/models`).
 ///
 /// Every field is optional. Token rates are `Option` because some models are not token-priced
 /// (per-character TTS, per-minute STT) — a `None` rate means "not token-priced", never `0`. The
@@ -50,6 +51,8 @@ struct Rate {
     max_output: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_thinking: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supports_reasoning: Option<bool>,
     /// Canonical sampling parameters this model REJECTS (e.g. a reasoning model's `temperature`, or
     /// Anthropic's `frequency_penalty`). Omitted ⇒ `None` ⇒ "no restriction collected", never a guess.
     #[serde(default, skip_serializing_if = "opt_vec_is_none_or_empty")]
@@ -79,6 +82,7 @@ pub struct ModelCard {
     pub max_context: Option<u32>,
     pub max_output: Option<u32>,
     pub max_thinking: Option<u32>,
+    pub supports_reasoning: Option<bool>,
     pub input_per_mtok: Option<f64>,
     pub output_per_mtok: Option<f64>,
     /// Canonical sampling parameters this model rejects; `None` ⇒ not collected. See [`Rate`].
@@ -97,6 +101,7 @@ impl Rate {
             max_context: self.max_context,
             max_output: self.max_output,
             max_thinking: self.max_thinking,
+            supports_reasoning: self.supports_reasoning,
             input_per_mtok: self.input_per_mtok,
             output_per_mtok: self.output_per_mtok,
             unsupported_parameters: self.unsupported_parameters.clone(),
@@ -170,7 +175,7 @@ pub mod collect {
     #[cfg(feature = "collect")]
     const COMMENT: &str = "Bundled pricing dataset. Collected OFFLINE by the pricing crate's collector (SOUL.md: 'Collection happens offline in the pricing crate; the core only ever reads the bundled dataset'). Rates are USD per 1,000,000 tokens.";
     #[cfg(feature = "collect")]
-    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding) and published limits max_context/max_output/max_thinking. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
+    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank), published limits max_context/max_output/max_thinking, and supports_reasoning when a provider publishes that capability without a numeric budget. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
     #[cfg(feature = "collect")]
     const COMMENT_PARAMS: &str = "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.";
 
@@ -334,6 +339,9 @@ pub mod collect {
         if let Some(v) = info.max_thinking {
             rate.max_thinking = Some(v);
         }
+        if let Some(v) = info.supports_reasoning {
+            rate.supports_reasoning = Some(v);
+        }
         if let Some(v) = info.input_per_mtok {
             rate.input_per_mtok = Some(v);
         }
@@ -360,7 +368,7 @@ pub mod collect {
             comment: COMMENT,
             comment_metadata: COMMENT_METADATA,
             comment_params: COMMENT_PARAMS,
-            version: 4,
+            version: 5,
             models: sorted,
         };
         let text = serde_json::to_string_pretty(&out)?;
@@ -426,7 +434,7 @@ pub mod collect {
             CollectorSource::PricingPage => collect_pricing_page(http, p, name).await,
             CollectorSource::ListEndpoint => collect_list_endpoint(p, name).await,
             CollectorSource::Auto => {
-                if pricing_page_url(p).is_some() {
+                if !pricing_page_urls(p).is_empty() {
                     collect_pricing_page(http, p, name).await
                 } else {
                     collect_list_endpoint(p, name).await
@@ -495,55 +503,84 @@ pub mod collect {
         p: &CollectorProvider,
         name: &str,
     ) -> Result<(String, Vec<ModelInfo>), Box<dyn std::error::Error + Send + Sync>> {
-        let url = pricing_page_url(p).ok_or_else(|| {
-            format!(
-                "{name} ({}) has no built-in pricing page collector; set pricing_url and source = \"pricing-page\" only after adding parser support",
-                p.kind
-            )
-        })?;
-        let html = http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        let lines = html_lines(&html);
-        let infos = match normalized_kind(&p.kind).as_str() {
-            "cohere" => parse_cohere_pricing_lines(&lines),
-            "anthropic" => parse_anthropic_pricing_lines(&lines),
-            "mistral" => parse_mistral_pricing_lines(&lines),
-            "openai" => parse_openai_pricing_lines(&lines),
-            _ => {
-                return Err(format!(
-                    "{name} ({}) has no pricing-page parser; supported page parsers: openai, anthropic, cohere, mistral",
-                    p.kind
-                )
-                .into());
-            }
-        };
-        let infos = dedup_model_infos(infos);
-        if infos.is_empty() {
+        let urls = pricing_page_urls(p);
+        if urls.is_empty() {
             return Err(format!(
-                "pricing page parser for {name} ({}) found no priced model rows at {url}",
+                "{name} ({}) has no built-in pricing page collector; set pricing_url and source = \"pricing-page\" only after adding parser support",
                 p.kind
             )
             .into());
         }
-        Ok((format!("pricing-page:{url}"), infos))
+        let mut infos = Vec::new();
+        for url in &urls {
+            let body = http
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            // Moonshot publishes its tables as MDX. The rendered page omits the client-side table
+            // from visible HTML text, while the official `.md` representation contains the rows.
+            let lines = if url.ends_with(".md") {
+                body.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                html_lines(&body)
+            };
+            let mut page_infos = match normalized_kind(&p.kind).as_str() {
+                "cohere" => parse_cohere_pricing_lines(&lines),
+                "anthropic" => parse_anthropic_pricing_lines(&lines),
+                "mistral" => parse_mistral_pricing_lines(&lines),
+                "openai" => parse_openai_pricing_lines(&lines),
+                "moonshot" | "kimi" | "kimi-k2" => parse_moonshot_pricing_lines(&lines),
+                _ => {
+                    return Err(format!(
+                        "{name} ({}) has no pricing-page parser; supported page parsers: openai, anthropic, cohere, mistral, moonshot",
+                        p.kind
+                    )
+                    .into());
+                }
+            };
+            infos.append(&mut page_infos);
+        }
+        let infos = dedup_model_infos(infos);
+        if infos.is_empty() {
+            return Err(format!(
+                "pricing page parser for {name} ({}) found no priced model rows at {}",
+                p.kind,
+                urls.join(", ")
+            )
+            .into());
+        }
+        Ok((format!("pricing-page:{}", urls.join(",")), infos))
     }
 
     #[cfg(feature = "collect")]
-    fn pricing_page_url(p: &CollectorProvider) -> Option<String> {
+    fn pricing_page_urls(p: &CollectorProvider) -> Vec<String> {
         if let Some(url) = &p.pricing_url {
-            return Some(url.clone());
+            return vec![url.clone()];
         }
         match normalized_kind(&p.kind).as_str() {
-            "openai" => Some("https://openai.com/api/pricing/".to_string()),
-            "anthropic" => Some("https://claude.com/pricing#api".to_string()),
-            "cohere" => Some("https://cohere.com/pricing".to_string()),
-            "mistral" => Some("https://mistral.ai/pricing/".to_string()),
-            _ => None,
+            "openai" => vec!["https://openai.com/api/pricing/".to_string()],
+            "anthropic" => vec!["https://claude.com/pricing#api".to_string()],
+            "cohere" => vec!["https://cohere.com/pricing".to_string()],
+            "mistral" => vec!["https://mistral.ai/pricing/".to_string()],
+            // Prices are split by model family; query every official MDX source and merge by id.
+            "moonshot" | "kimi" | "kimi-k2" => [
+                "chat-k3",
+                "chat-k27-code",
+                "chat-k26",
+                "chat-k25",
+                "chat-v1",
+            ]
+            .into_iter()
+            .map(|page| format!("https://platform.kimi.ai/docs/pricing/{page}.md"))
+            .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -679,6 +716,76 @@ pub mod collect {
     fn json_f64(v: &Value) -> Option<f64> {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    }
+
+    /// Parse Moonshot's official MDX pricing rows. Current families use either three prices
+    /// (cache-hit input, cache-miss input, output) or two (input, output); llmleaf's base input rate
+    /// is the cache-miss rate. Context windows ride in the same row, so the offline dataset can
+    /// enrich explicitly routed models even when no live catalog is queried.
+    #[cfg(any(test, feature = "collect"))]
+    pub(crate) fn parse_moonshot_pricing_lines(lines: &[String]) -> Vec<ModelInfo> {
+        let mut out = Vec::new();
+        for line in lines {
+            let Some(id) = line
+                .strip_prefix("[\"")
+                .and_then(|rest| rest.split('"').next())
+                .filter(|id| id.starts_with("kimi-") || id.starts_with("moonshot-v1-"))
+            else {
+                continue;
+            };
+            let prices = moonshot_mdx_prices(line);
+            let (input, output) = match prices.as_slice() {
+                [input, output] => (*input, *output),
+                [_, cache_miss, output, ..] => (*cache_miss, *output),
+                _ => continue,
+            };
+            let context = line
+                .split('"')
+                .filter(|field| field.trim_end().ends_with("tokens"))
+                .find_map(|field| {
+                    field
+                        .trim_end_matches("tokens")
+                        .trim()
+                        .replace(',', "")
+                        .parse::<u32>()
+                        .ok()
+                });
+
+            let mut info = ModelInfo::new(id);
+            info.modality = Some(Modality::Llm);
+            info.max_context = context;
+            info.input_per_mtok = Some(input);
+            info.output_per_mtok = Some(output);
+            out.push(info);
+        }
+        out
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn moonshot_mdx_prices(line: &str) -> Vec<f64> {
+        let marker = r#"{"$"}"#;
+        let mut rest = line;
+        let mut prices = Vec::new();
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let start = rest
+                .char_indices()
+                .find_map(|(i, ch)| (ch.is_ascii_digit() || ch == '.').then_some(i));
+            let Some(start) = start else { break };
+            let end = rest[start..]
+                .char_indices()
+                .find_map(|(i, ch)| (!(ch.is_ascii_digit() || ch == '.')).then_some(start + i))
+                .unwrap_or(rest.len());
+            if let Ok(price) = rest[start..end].parse() {
+                prices.push(price);
+            }
+            rest = &rest[end..];
+        }
+        if prices.is_empty() {
+            dollar_prices(line)
+        } else {
+            prices
+        }
     }
 
     #[cfg(any(test, feature = "collect"))]
@@ -1232,6 +1339,28 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_pricing_parser_reads_cached_and_classic_rows() {
+        let lines = vec![
+            r#"["kimi-k3", "1M tokens", <>{"$"}0.30</>, <>{"$"}3.00</>, <>{"$"}15.00</>, "1,048,576 tokens"],"#,
+            r#"["moonshot-v1-8k", "1M tokens", <>{"$"}0.20</>, <>{"$"}2.00</>, "8,192 tokens"],"#,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+        let rows = collect::parse_moonshot_pricing_lines(&lines);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "kimi-k3");
+        assert_eq!(rows[0].input_per_mtok, Some(3.0));
+        assert_eq!(rows[0].output_per_mtok, Some(15.0));
+        assert_eq!(rows[0].max_context, Some(1_048_576));
+        assert_eq!(rows[1].id, "moonshot-v1-8k");
+        assert_eq!(rows[1].input_per_mtok, Some(0.2));
+        assert_eq!(rows[1].output_per_mtok, Some(2.0));
+        assert_eq!(rows[1].max_context, Some(8_192));
+    }
+
+    #[test]
     fn anthropic_pricing_page_parser_reads_table_rows() {
         let lines = vec![
             "Claude Opus 4.8$5 / MTok$6.25 / MTok$10 / MTok$0.50 / MTok$25 / MTok",
@@ -1360,6 +1489,23 @@ mod tests {
         assert_eq!(c.modality, Some(Modality::Llm));
         assert_eq!(c.max_context, Some(128_000));
         assert_eq!(c.input_per_mtok, Some(2.5));
+    }
+
+    #[test]
+    fn moonshot_cards_expose_rates_context_and_reasoning() {
+        let p = Pricing::bundled().unwrap();
+        let k3 = p.card("kimi-k3").expect("kimi-k3 card");
+        assert_eq!(k3.modality, Some(Modality::Llm));
+        assert_eq!(k3.max_context, Some(1_048_576));
+        assert_eq!(k3.supports_reasoning, Some(true));
+        assert_eq!(k3.input_per_mtok, Some(3.0));
+        assert_eq!(k3.output_per_mtok, Some(15.0));
+
+        let classic = p.card("moonshot-v1-128k").expect("v1 card");
+        assert_eq!(classic.max_context, Some(131_072));
+        assert_eq!(classic.input_per_mtok, Some(2.0));
+        assert_eq!(classic.output_per_mtok, Some(5.0));
+        assert_eq!(classic.supports_reasoning, None);
     }
 
     #[test]

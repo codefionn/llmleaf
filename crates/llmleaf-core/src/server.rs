@@ -1214,6 +1214,7 @@ fn enrich(mut info: ModelInfo, card: Option<ModelCard>) -> ModelInfo {
         info.max_context = info.max_context.or(c.max_context);
         info.max_output = info.max_output.or(c.max_output);
         info.max_thinking = info.max_thinking.or(c.max_thinking);
+        info.supports_reasoning = info.supports_reasoning.or(c.supports_reasoning);
         info.input_per_mtok = info.input_per_mtok.or(c.input_per_mtok);
         info.output_per_mtok = info.output_per_mtok.or(c.output_per_mtok);
         // Param metadata: the provider's own report wins (a non-empty value), the dataset only fills a
@@ -1265,6 +1266,9 @@ fn render_model(id: &str, entry: &ModelEntry, admin: bool, engine: &Engine, now:
     let max_context = meta.and_then(|m| m.max_context);
     let max_output = meta.and_then(|m| m.max_output);
     let max_thinking = meta.and_then(|m| m.max_thinking);
+    let supports_reasoning = meta
+        .and_then(|m| m.supports_reasoning)
+        .unwrap_or(max_thinking.is_some());
     let name = meta
         .and_then(|m| m.name.clone())
         .unwrap_or_else(|| id.to_string());
@@ -1300,7 +1304,7 @@ fn render_model(id: &str, entry: &ModelEntry, admin: bool, engine: &Engine, now:
         .unwrap_or(&[]);
     let supported = match meta.and_then(|m| m.supported_parameters.as_ref()) {
         Some(list) => json!(list),
-        None => supported_parameters(modality, max_thinking.is_some(), unsupported),
+        None => supported_parameters(modality, supports_reasoning, unsupported),
     };
     obj.insert("supported_parameters".into(), supported);
     if !unsupported.is_empty() {
@@ -1402,9 +1406,10 @@ fn per_token_str(per_mtok: f64) -> String {
 }
 
 /// The OpenRouter `supported_parameters` array, by modality, with the model's `unsupported` set
-/// subtracted. Reasoning params are appended only when the model has a known thinking budget. An unknown
-/// modality yields an empty array (no guessing). `supported` and `unsupported` stay exact complements
-/// within the modality baseline, so a consumer reading either reaches the same conclusion.
+/// subtracted. Reasoning params are appended when the provider explicitly advertises reasoning or
+/// publishes a thinking budget. An unknown modality yields an empty array (no guessing). `supported`
+/// and `unsupported` stay exact complements within the modality baseline, so a consumer reading either
+/// reaches the same conclusion.
 fn supported_parameters(
     modality: Option<Modality>,
     has_thinking: bool,

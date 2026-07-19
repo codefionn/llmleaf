@@ -31,6 +31,10 @@ pub struct ModelInfo {
     /// Maximum reasoning/thinking budget in tokens, when published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_thinking: Option<u32>,
+    /// Whether the provider explicitly reports reasoning/thinking support. Kept separate from
+    /// `max_thinking` because some catalogs publish a capability flag but no numeric budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
     /// USD per 1,000,000 input tokens, when the catalog prices the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_mtok: Option<f64>,
@@ -72,6 +76,7 @@ impl ModelInfo {
             max_context: None,
             max_output: None,
             max_thinking: None,
+            supports_reasoning: None,
             input_per_mtok: None,
             output_per_mtok: None,
             supported_parameters: None,

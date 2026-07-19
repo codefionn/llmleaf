@@ -47,17 +47,23 @@
 //! change): `tool_choice: "required"`/named-function forcing is not served, temperature caps at 1.0,
 //! and `n > 1` needs a non-zero temperature.
 //!
+//! Model discovery remains live: `/models` supplies `context_length` plus explicit image-input,
+//! video-input, and reasoning flags. [`MoonshotProvider::models`] lifts those flags into canonical
+//! modality/architecture/reasoning metadata while preserving the original fields. Token rates do not
+//! appear in that API, so the offline pricing collector reads Moonshot's official per-family pricing
+//! pages and the core fills rates from the bundled dataset, as it does for every sparse catalog.
+//!
 //! On the hot path the rewrite is in-place on the already-owned request: a conformant schema (the
 //! common case) is a read-only walk, zero allocations (principle 1).
 
 use async_trait::async_trait;
 use llmleaf_model::{
     AudioStream, BatchHandle, BatchResultStream, BatchSpec, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
-    SpeechRequest, ToolDef, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
+    EmbeddingResponse, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse,
+    ResponseStream, SpeechRequest, ToolDef, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, RealtimeParams, RealtimePeer};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::compat::OpenAiCompatProvider;
 use crate::transport::Transports;
@@ -89,6 +95,46 @@ fn flavor_tools(tools: &mut [ToolDef]) {
     for tool in tools {
         flavor_schema(&mut tool.parameters);
     }
+}
+
+/// Lift Moonshot's live `/models` capability flags into canonical catalog metadata. The shared
+/// OpenAI-wire parser already captures `context_length`; Moonshot additionally publishes three
+/// booleans that the generic wire cannot interpret without provider knowledge. Keep the original
+/// flags in `extra`, and add the OpenRouter-style architecture arrays consumed by llmleaf's catalog.
+///
+/// The presence of any flag is also an explicit signal that this is a chat/LLM model. Missing flags
+/// leave the entry untouched rather than guessing from its id.
+fn enrich_catalog_capabilities(info: &mut ModelInfo) {
+    let image = info.extra.get("supports_image_in").and_then(Value::as_bool);
+    let video = info.extra.get("supports_video_in").and_then(Value::as_bool);
+    let reasoning = info
+        .extra
+        .get("supports_reasoning")
+        .and_then(Value::as_bool);
+    if image.is_none() && video.is_none() && reasoning.is_none() {
+        return;
+    }
+
+    info.modality.get_or_insert(Modality::Llm);
+    info.supports_reasoning = reasoning;
+
+    // Do not replace a richer architecture if a future Moonshot response starts publishing one.
+    info.extra.entry("architecture").or_insert_with(|| {
+        let mut inputs = vec![json!("text")];
+        if image == Some(true) {
+            inputs.push(json!("image"));
+        }
+        if video == Some(true) {
+            inputs.push(json!("video"));
+        }
+        json!({
+            "input_modalities": inputs,
+            "output_modalities": ["text"],
+            "modality": "text->text",
+            "tokenizer": "Other",
+            "instruct_type": Value::Null,
+        })
+    });
 }
 
 /// Rewrite one JSON Schema into Moonshot's flavored subset (MFJS), in place. Returns whether
@@ -536,7 +582,11 @@ impl Provider for MoonshotProvider {
     }
 
     async fn models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
-        self.inner.models(cx).await
+        let mut models = self.inner.models(cx).await?;
+        for info in &mut models {
+            enrich_catalog_capabilities(info);
+        }
+        Ok(models)
     }
 
     async fn batch_retrieve(
@@ -882,6 +932,58 @@ mod tests {
             captured.lock().unwrap().push(req.clone());
             Ok(respond(req))
         })
+    }
+
+    #[tokio::test]
+    async fn models_query_lifts_context_and_capability_flags() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let transports = http_transports(capturing_transport(captured.clone(), |_| {
+            FakeResponse::ok_json(&json!({
+                "object": "list",
+                "data": [{
+                    "id": "kimi-k3",
+                    "object": "model",
+                    "created": 1_768_435_200,
+                    "owned_by": "moonshot",
+                    "context_length": 1_048_576,
+                    "supports_image_in": true,
+                    "supports_video_in": true,
+                    "supports_reasoning": true
+                }]
+            }))
+        }));
+        let provider = MoonshotProvider::for_kind("moonshot", &transports).unwrap();
+
+        let models = provider.models(&cx()).await.expect("models query succeeds");
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.id, "kimi-k3");
+        assert_eq!(model.modality, Some(Modality::Llm));
+        assert_eq!(model.max_context, Some(1_048_576));
+        assert_eq!(model.supports_reasoning, Some(true));
+        assert_eq!(
+            model.extra["architecture"]["input_modalities"],
+            json!(["text", "image", "video"])
+        );
+        assert_eq!(
+            model.extra["architecture"]["output_modalities"],
+            json!(["text"])
+        );
+        // The upstream flags remain available verbatim as well as through canonical metadata.
+        assert_eq!(model.extra["supports_reasoning"], true);
+
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://api.moonshot.ai/v1/models");
+    }
+
+    #[test]
+    fn absent_capability_flags_do_not_guess_from_model_id() {
+        let mut info = ModelInfo::new("kimi-mystery");
+        enrich_catalog_capabilities(&mut info);
+        assert_eq!(info.modality, None);
+        assert_eq!(info.supports_reasoning, None);
+        assert!(!info.extra.contains_key("architecture"));
     }
 
     #[tokio::test]

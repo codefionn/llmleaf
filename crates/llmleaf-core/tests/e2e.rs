@@ -167,6 +167,8 @@ impl Provider for MockProvider {
         alpha.modality = Some(Modality::Llm);
         alpha.max_context = Some(64000);
         alpha.max_output = Some(8000);
+        // Explicit reasoning support without a published numeric thinking budget (Moonshot shape).
+        alpha.supports_reasoning = Some(true);
         alpha.input_per_mtok = Some(1.0);
         alpha.output_per_mtok = Some(2.0);
         let mut beta = ModelInfo::new("beta-embed");
@@ -1311,6 +1313,14 @@ async fn models_supported_parameters_by_modality() {
     let sp = alpha["supported_parameters"].as_array().unwrap();
     assert!(sp.iter().any(|p| p == "temperature"));
     assert!(sp.iter().any(|p| p == "tools"));
+    assert!(
+        sp.iter().any(|p| p == "reasoning_effort"),
+        "an explicit reasoning capability must not require a numeric thinking budget"
+    );
+    assert!(
+        alpha["top_provider"].get("max_thinking_tokens").is_none(),
+        "unknown budget remains absent"
+    );
     assert!(
         alpha.get("unsupported_parameters").is_none(),
         "no restriction → field omitted"
