@@ -11,7 +11,7 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty dif
 - light-weight
 - extensible
 
-![Memory consumption in kubernetes cluster](./memory_usage.jpeg)
+![Memory consumption in kubernetes cluster with actual traffic](./memory_usage.jpeg)
 
 ## Features
 
