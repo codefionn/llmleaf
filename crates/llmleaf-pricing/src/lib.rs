@@ -565,10 +565,16 @@ pub mod collect {
             return vec![url.clone()];
         }
         match normalized_kind(&p.kind).as_str() {
-            "openai" => vec!["https://openai.com/api/pricing/".to_string()],
-            "anthropic" => vec!["https://claude.com/pricing#api".to_string()],
+            // OpenAI's former /api/pricing page now serves ChatGPT plan pricing. The API model
+            // catalog publishes the current model ids and their per-MTok rates directly.
+            "openai" => vec!["https://developers.openai.com/api/docs/models".to_string()],
+            // The Claude Platform pricing reference exposes the complete base-price table in its
+            // server-rendered HTML (including dated introductory prices).
+            "anthropic" => {
+                vec!["https://platform.claude.com/docs/en/about-claude/pricing".to_string()]
+            }
             "cohere" => vec!["https://cohere.com/pricing".to_string()],
-            "mistral" => vec!["https://mistral.ai/pricing/".to_string()],
+            "mistral" => vec!["https://mistral.ai/pricing/api/".to_string()],
             // Prices are split by model family; query every official MDX source and merge by id.
             "moonshot" | "kimi" | "kimi-k2" => [
                 "chat-k3",
@@ -790,14 +796,64 @@ pub mod collect {
 
     #[cfg(any(test, feature = "collect"))]
     pub(crate) fn parse_openai_pricing_lines(lines: &[String]) -> Vec<ModelInfo> {
+        let mut structured = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line != "Model ID" {
+                continue;
+            }
+            let Some(id) = lines.get(i + 1).filter(|id| is_openai_api_model_id(id)) else {
+                continue;
+            };
+            let end = lines[i + 2..]
+                .iter()
+                .position(|line| line == "Model ID")
+                .map(|offset| i + 2 + offset)
+                .unwrap_or_else(|| lines.len().min(i + 48));
+            let window = &lines[i + 2..end];
+            let input = labeled_price(window, "Input price");
+            let output = labeled_price(window, "Output price");
+            if input.is_none() && output.is_none() {
+                continue;
+            }
+            let mut info = ModelInfo::new(id.clone());
+            info.modality = Some(Modality::Llm);
+            info.input_per_mtok = input;
+            info.output_per_mtok = output;
+            info.max_context = labeled_token_count(window, "Context window");
+            info.max_output = labeled_token_count(window, "Max output");
+            info.supports_reasoning = window
+                .iter()
+                .any(|line| line == "Reasoning")
+                .then_some(true);
+            structured.push(info.clone());
+
+            if let Some(alias) = labeled_value(window, "Alias").filter(|id| {
+                is_openai_api_model_id(id) && !structured.iter().any(|info| info.id == **id)
+            }) {
+                info.id = alias.clone();
+                structured.push(info);
+            }
+        }
+        if !structured.is_empty() {
+            return structured;
+        }
+
+        // Compatibility with the former pricing page and with explicitly overridden sources.
         let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let Some(id) = openai_model_id(line) else {
                 continue;
             };
-            let window = &lines[i + 1..lines.len().min(i + 18)];
-            let input = labeled_price(window, "Input:");
-            let output = labeled_price(window, "Output:");
+            let end = lines[i + 1..]
+                .iter()
+                .position(|line| openai_model_id(line).is_some())
+                .map(|offset| i + 1 + offset)
+                .unwrap_or_else(|| lines.len().min(i + 48));
+            let window = &lines[i + 1..end];
+            let input =
+                labeled_price(window, "Input:").or_else(|| labeled_price(window, "Input price"));
+            let output =
+                labeled_price(window, "Output:").or_else(|| labeled_price(window, "Output price"));
             if input.is_none() && output.is_none() {
                 continue;
             }
@@ -805,16 +861,58 @@ pub mod collect {
             info.modality = Some(Modality::Llm);
             info.input_per_mtok = input;
             info.output_per_mtok = output;
+            info.max_context = labeled_token_count(window, "Context window");
+            info.max_output = labeled_token_count(window, "Max output");
             out.push(info);
         }
         out
     }
 
     #[cfg(any(test, feature = "collect"))]
+    fn is_openai_api_model_id(id: &str) -> bool {
+        let valid_prefix = ["gpt-", "o1", "o3", "o4"]
+            .iter()
+            .any(|prefix| id.starts_with(prefix));
+        valid_prefix
+            && id
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '.'))
+    }
+
+    #[cfg(any(test, feature = "collect"))]
     pub(crate) fn parse_anthropic_pricing_lines(lines: &[String]) -> Vec<ModelInfo> {
+        parse_anthropic_pricing_lines_at(lines, current_utc_date_key())
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    pub(crate) fn parse_anthropic_pricing_lines_at(lines: &[String], today: u32) -> Vec<ModelInfo> {
         let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let Some(name_end) = line.find('$') else {
+                // The Claude Platform docs render each table cell as a separate text node. Base
+                // pricing rows have five prices (input, two cache writes, cache read, output);
+                // fast-mode and batch tables have only two and must not replace base rates.
+                if line.starts_with("Claude ") {
+                    let end = lines[i + 1..]
+                        .iter()
+                        .position(|line| line.starts_with("Claude "))
+                        .map(|offset| i + 1 + offset)
+                        .unwrap_or_else(|| lines.len().min(i + 9));
+                    let window = &lines[i + 1..end];
+                    if !anthropic_row_applies(window.first().map(String::as_str), today) {
+                        continue;
+                    }
+                    let prices = prices_in_lines(window, 8);
+                    if prices.len() >= 5 {
+                        let name = strip_parenthetical(line);
+                        let mut info = ModelInfo::new(anthropic_label_to_model_id(&name));
+                        info.modality = Some(Modality::Llm);
+                        info.input_per_mtok = prices.first().copied();
+                        info.output_per_mtok = prices.get(4).copied();
+                        info.unsupported_parameters = anthropic_unsupported_parameters(&name);
+                        out.push(info);
+                    }
+                }
                 if let Some(label) = anthropic_heading_label(line) {
                     let end = lines[i + 1..]
                         .iter()
@@ -851,6 +949,65 @@ pub mod collect {
             out.push(info);
         }
         out
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn anthropic_row_applies(qualifier: Option<&str>, today: u32) -> bool {
+        let Some(qualifier) = qualifier else {
+            return true;
+        };
+        if let Some(raw) = qualifier.strip_prefix("through ") {
+            return parse_english_date_key(raw).is_none_or(|last_day| today <= last_day);
+        }
+        if let Some(raw) = qualifier.strip_prefix("starting ") {
+            return parse_english_date_key(raw).is_none_or(|first_day| today >= first_day);
+        }
+        true
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn parse_english_date_key(raw: &str) -> Option<u32> {
+        let parts = raw.replace(',', "");
+        let mut parts = parts.split_whitespace();
+        let month = match parts.next()? {
+            "January" => 1,
+            "February" => 2,
+            "March" => 3,
+            "April" => 4,
+            "May" => 5,
+            "June" => 6,
+            "July" => 7,
+            "August" => 8,
+            "September" => 9,
+            "October" => 10,
+            "November" => 11,
+            "December" => 12,
+            _ => return None,
+        };
+        let day = parts.next()?.parse::<u32>().ok()?;
+        let year = parts.next()?.parse::<u32>().ok()?;
+        (parts.next().is_none() && (1..=31).contains(&day))
+            .then_some(year * 10_000 + month * 100 + day)
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn current_utc_date_key() -> u32 {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let z = (seconds / 86_400) as i64 + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let day_of_era = z - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let mut year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_prime = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+        let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+        year += i64::from(month <= 2);
+        (year as u32) * 10_000 + (month as u32) * 100 + day as u32
     }
 
     #[cfg(any(test, feature = "collect"))]
@@ -904,8 +1061,8 @@ pub mod collect {
         let mut out = Vec::new();
         for line in lines {
             let lower = line.to_ascii_lowercase();
-            if lower.contains("aya expanse models") {
-                if let Some((input, output)) = input_output_prices(line) {
+            if let Some(aya_at) = lower.find("aya expanse models") {
+                if let Some((input, output)) = input_output_prices(&line[aya_at..]) {
                     for id in ["aya-expanse-8b", "aya-expanse-32b"] {
                         let mut info = ModelInfo::new(id);
                         info.modality = Some(Modality::Llm);
@@ -923,7 +1080,7 @@ pub mod collect {
             if label.is_empty() {
                 continue;
             }
-            if let Some((input, output)) = input_output_prices(line) {
+            if let Some((input, output)) = input_output_prices(&line[pricing_at..]) {
                 let mut info = ModelInfo::new(cohere_label_to_model_id(label));
                 info.modality = Some(Modality::Llm);
                 info.input_per_mtok = Some(input);
@@ -957,7 +1114,10 @@ pub mod collect {
                 continue;
             }
             let mut info = ModelInfo::new(label_to_model_id(line));
-            info.modality = Some(if line.to_ascii_lowercase().contains("voxtral") {
+            let lower = line.to_ascii_lowercase();
+            info.modality = Some(if lower.contains("embed") {
+                Modality::Embedding
+            } else if lower.contains("voxtral") {
                 Modality::Stt
             } else {
                 Modality::Llm
@@ -1009,6 +1169,39 @@ pub mod collect {
     fn labeled_price(lines: &[String], label: &str) -> Option<f64> {
         let pos = lines.iter().position(|line| line == label)?;
         prices_in_lines(&lines[pos + 1..], 4).into_iter().next()
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn labeled_value<'a>(lines: &'a [String], label: &str) -> Option<&'a String> {
+        let pos = lines.iter().position(|line| line == label)?;
+        lines.get(pos + 1)
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn labeled_token_count(lines: &[String], label: &str) -> Option<u32> {
+        let pos = lines.iter().position(|line| line == label)?;
+        lines[pos + 1..]
+            .iter()
+            .take(3)
+            .find_map(|line| parse_token_count(line))
+    }
+
+    #[cfg(any(test, feature = "collect"))]
+    fn parse_token_count(line: &str) -> Option<u32> {
+        let raw = line
+            .trim()
+            .trim_end_matches("tokens")
+            .trim()
+            .replace(',', "");
+        let (number, multiplier) = match raw.chars().last()? {
+            'K' | 'k' => (&raw[..raw.len() - 1], 1_000.0),
+            'M' | 'm' => (&raw[..raw.len() - 1], 1_000_000.0),
+            ch if ch.is_ascii_digit() => (raw.as_str(), 1.0),
+            _ => return None,
+        };
+        let tokens = number.parse::<f64>().ok()? * multiplier;
+        (tokens.is_finite() && tokens >= 0.0 && tokens <= u32::MAX as f64)
+            .then_some(tokens.round() as u32)
     }
 
     #[cfg(any(test, feature = "collect"))]
@@ -1339,6 +1532,61 @@ mod tests {
     }
 
     #[test]
+    fn openai_model_catalog_parser_reads_ids_alias_prices_and_limits() {
+        let lines = vec![
+            "GPT-5.6 Sol",
+            "Frontier model for complex professional work",
+            "Model ID",
+            "gpt-5.6-sol",
+            "Alias",
+            "gpt-5.6",
+            "Reasoning",
+            "none",
+            "low",
+            "high",
+            "Input price",
+            "$5 / Input MTok",
+            "Output price",
+            "$30 / Output MTok",
+            "Max output",
+            "128K tokens",
+            "Context window",
+            "1.05M",
+            "GPT-5.6 Terra",
+            "Model ID",
+            "gpt-5.6-terra",
+            "Reasoning",
+            "none",
+            "Input price",
+            "$2.50 / Input MTok",
+            "Output price",
+            "$15 / Output MTok",
+            "Max output",
+            "128K tokens",
+            "Context window",
+            "1.05M",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+        let rows = collect::parse_openai_pricing_lines(&lines);
+        assert_eq!(rows.len(), 3);
+        let sol = rows.iter().find(|row| row.id == "gpt-5.6-sol").unwrap();
+        assert_eq!(sol.input_per_mtok, Some(5.0));
+        assert_eq!(sol.output_per_mtok, Some(30.0));
+        assert_eq!(sol.max_context, Some(1_050_000));
+        assert_eq!(sol.max_output, Some(128_000));
+        assert_eq!(sol.supports_reasoning, Some(true));
+        let alias = rows.iter().find(|row| row.id == "gpt-5.6").unwrap();
+        assert_eq!(alias.input_per_mtok, Some(5.0));
+        assert_eq!(alias.max_context, Some(1_050_000));
+        let terra = rows.iter().find(|row| row.id == "gpt-5.6-terra").unwrap();
+        assert_eq!(terra.input_per_mtok, Some(2.5));
+        assert_eq!(terra.output_per_mtok, Some(15.0));
+    }
+
+    #[test]
     fn moonshot_pricing_parser_reads_cached_and_classic_rows() {
         let lines = vec![
             r#"["kimi-k3", "1M tokens", <>{"$"}0.30</>, <>{"$"}3.00</>, <>{"$"}15.00</>, "1,048,576 tokens"],"#,
@@ -1423,10 +1671,61 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_pricing_table_uses_base_and_current_introductory_rates() {
+        let lines = vec![
+            "Claude Opus 5",
+            "$5 / MTok",
+            "$6.25 / MTok",
+            "$10 / MTok",
+            "$0.50 / MTok",
+            "$25 / MTok",
+            "Claude Sonnet 5",
+            "through August 31, 2026",
+            "$2 / MTok",
+            "$2.50 / MTok",
+            "$4 / MTok",
+            "$0.20 / MTok",
+            "$10 / MTok",
+            "Claude Sonnet 5",
+            "starting September 1, 2026",
+            "$3 / MTok",
+            "$3.75 / MTok",
+            "$6 / MTok",
+            "$0.30 / MTok",
+            "$15 / MTok",
+            // A later fast-mode table must not overwrite the base rate.
+            "Claude Opus 5 / Claude Opus 4.8",
+            "$10 / MTok",
+            "$50 / MTok",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+        let rows = collect::parse_anthropic_pricing_lines_at(&lines, 20_260_725);
+        assert_eq!(rows.len(), 2);
+        let opus = rows.iter().find(|row| row.id == "claude-opus-5").unwrap();
+        assert_eq!(opus.input_per_mtok, Some(5.0));
+        assert_eq!(opus.output_per_mtok, Some(25.0));
+        let sonnet = rows.iter().find(|row| row.id == "claude-sonnet-5").unwrap();
+        assert_eq!(sonnet.input_per_mtok, Some(2.0));
+        assert_eq!(sonnet.output_per_mtok, Some(10.0));
+
+        let later = collect::parse_anthropic_pricing_lines_at(&lines, 20_260_901);
+        let sonnet = later
+            .iter()
+            .find(|row| row.id == "claude-sonnet-5")
+            .unwrap();
+        assert_eq!(sonnet.input_per_mtok, Some(3.0));
+        assert_eq!(sonnet.output_per_mtok, Some(15.0));
+    }
+
+    #[test]
     fn cohere_pricing_page_parser_reads_legacy_and_aya_rows() {
         let lines = vec![
             "Command R+ 08-2024 pricing is $2.50/1M tokens for input and $10.00/1M tokens for output",
-            "Aya Expanse models (8B and 32B) on the API are charged at $0.50/1M tokens for input and $1.50/1M tokens for output.",
+            // Hydration JSON may put unrelated dollar values before the pricing sentence.
+            "$15 unrelated Aya Expanse models (8B and 32B) on the API are charged at $0.50/1M tokens for input and $1.50/1M tokens for output.",
         ]
         .into_iter()
         .map(str::to_string)
@@ -1443,6 +1742,9 @@ mod tests {
         );
         assert!(rows.iter().any(|m| m.id == "aya-expanse-8b"));
         assert!(rows.iter().any(|m| m.id == "aya-expanse-32b"));
+        let aya = rows.iter().find(|m| m.id == "aya-expanse-8b").unwrap();
+        assert_eq!(aya.input_per_mtok, Some(0.5));
+        assert_eq!(aya.output_per_mtok, Some(1.5));
     }
 
     #[test]
@@ -1479,6 +1781,15 @@ mod tests {
         assert_eq!(rows[1].input_per_mtok, Some(0.1));
         assert_eq!(rows[1].output_per_mtok, Some(0.4));
         assert_eq!(rows[1].modality, Some(Modality::Stt));
+
+        let embed_lines = ["Codestral Embed", "Embedding", "Input (/M tokens)", "$0.15"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let embed = collect::parse_mistral_pricing_lines(&embed_lines);
+        assert_eq!(embed.len(), 1);
+        assert_eq!(embed[0].id, "codestral-embed");
+        assert_eq!(embed[0].modality, Some(Modality::Embedding));
     }
 
     #[test]

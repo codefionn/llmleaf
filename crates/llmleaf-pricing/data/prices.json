@@ -5,13 +5,13 @@
   "version": 5,
   "models": {
     "aya-expanse-32b": {
-      "input_per_mtok": 5.0,
-      "output_per_mtok": 5.0,
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
       "modality": "llm"
     },
     "aya-expanse-8b": {
-      "input_per_mtok": 5.0,
-      "output_per_mtok": 5.0,
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
       "modality": "llm"
     },
     "claude-fable-5": {
@@ -28,12 +28,30 @@
         "top_k"
       ]
     },
+    "claude-haiku-3-5": {
+      "input_per_mtok": 0.8,
+      "output_per_mtok": 4.0,
+      "modality": "llm",
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
     "claude-haiku-4-5": {
       "input_per_mtok": 1.0,
       "output_per_mtok": 5.0,
       "modality": "llm",
       "max_context": 200000,
       "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-mythos-5": {
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "modality": "llm",
       "unsupported_parameters": [
         "frequency_penalty",
         "presence_penalty"
@@ -112,6 +130,15 @@
         "top_k"
       ]
     },
+    "claude-opus-5": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 25.0,
+      "modality": "llm",
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
     "claude-sonnet-4": {
       "input_per_mtok": 3.0,
       "output_per_mtok": 15.0,
@@ -146,6 +173,15 @@
         "presence_penalty"
       ]
     },
+    "claude-sonnet-5": {
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
     "codestral": {
       "input_per_mtok": 0.3,
       "output_per_mtok": 0.9,
@@ -153,7 +189,7 @@
     },
     "codestral-embed": {
       "input_per_mtok": 0.15,
-      "modality": "llm"
+      "modality": "embedding"
     },
     "command": {
       "input_per_mtok": 1.0,
@@ -479,6 +515,38 @@
         "top_p": 1
       }
     },
+    "gpt-5.6": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 30.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-5.6-luna": {
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 6.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-5.6-sol": {
+      "input_per_mtok": 5.0,
+      "output_per_mtok": 30.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-5.6-terra": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 15.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
     "kimi-k2.5": {
       "input_per_mtok": 0.6,
       "output_per_mtok": 3.0,
@@ -541,7 +609,7 @@
     },
     "mistral-embed": {
       "input_per_mtok": 0.1,
-      "modality": "llm"
+      "modality": "embedding"
     },
     "mistral-large-3": {
       "input_per_mtok": 0.5,
@@ -563,8 +631,8 @@
       "modality": "llm"
     },
     "mistral-small-4": {
-      "input_per_mtok": 0.1,
-      "output_per_mtok": 0.3,
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.6,
       "modality": "llm"
     },
     "moonshot-v1-128k": {
