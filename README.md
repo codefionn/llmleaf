@@ -109,7 +109,8 @@ reached only outbound — the core pulls identity/verdicts/topology and pushes u
 reverse. A pulled topology (`[control.topology]`) lets the controller also serve provider and route
 configuration, diffed against the previous pull on every refresh so resources are added, updated,
 and removed incrementally on top of the immutable config file. See [SOUL.md](SOUL.md) for the full
-design constitution.
+design constitution. To build a compatible controller, see the
+[external control-plane implementation guide](docs/external-control-plane.md).
 
 ```mermaid
 flowchart LR
