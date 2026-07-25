@@ -5,7 +5,9 @@
 #   - llmleaf-provider  : the extension boundary — Provider trait + registry (principle 2).
 #   - llmleaf-core      : the data plane. Depends on model + provider; mentions NO concrete provider.
 #   - llmleaf-providers : first-party compiled-in providers. NOT a dependency of core; wired by the binary.
-#   - llmleaf-pricing   : a sidecar crate — bundled pricing dataset + lookup.
+#   - llmleaf-pricing   : the runtime pricing-information library — bundled dataset + lookup only.
+#   - llmleaf-pricing-collector
+#                       : the offline tool that fetches pricing and generates the bundled dataset.
 #   - llmleaf-control   : a sidecar crate — the outbound control client (pull/push/intercept). Owns all
 #                         outbound HTTP so the core stays HTTP-client-free (principle 2). Wired by the binary.
 #   - llmleaf           : the binary — load config, build the registry, spawn control tasks, serve.

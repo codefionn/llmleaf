@@ -1,0 +1,22 @@
+[package]
+name = "llmleaf-pricing-collector"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Offline collector that generates llmleaf's bundled pricing dataset"
+
+[[bin]]
+name = "llmleaf-pricing-collect"
+path = "src/main.rs"
+
+[dependencies]
+llmleaf-model.workspace = true
+llmleaf-pricing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+scraper = "0.23"
+tokio.workspace = true
+toml.workspace = true

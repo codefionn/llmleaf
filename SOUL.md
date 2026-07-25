@@ -151,12 +151,13 @@ The core never depends on the control plane being reachable. Take the limiter an
 proxy keeps proxying on its last-good cache (identity excepted: a cold node with no identity yet
 fails closed).
 
-**One sidecar crate — pricing.** A dedicated crate collects API pricing data from the
-providers. The resulting dataset is stored and distributed with the core, which uses it to
-tell clients the real-time cost of their requests (in responses and usage events) and to make
-cost-aware decisions — routing, fallback choice — when configured to. Collection happens
-offline in the pricing crate; the core only ever reads the bundled dataset. It never fetches
-pricing at request time: consumption is a lookup, like everything else on the hot path.
+**One sidecar subsystem — pricing.** The offline `llmleaf-pricing-collector` crate collects API
+pricing data from providers and generates the dataset bundled by the read-only `llmleaf-pricing`
+library. The core depends only on that information library, which it uses to tell clients the
+real-time cost of their requests (in responses and usage events) and to make cost-aware decisions
+— routing, fallback choice — when configured to. The runtime library has no collection, HTTP, or
+scraping code. It never fetches pricing at request time: consumption is a lookup, like everything
+else on the hot path.
 
 **Client libraries — under `clients/`.** Official consumer client libraries live in `clients/`,
 one per language: Kotlin Multiplatform, Go, Rust, TypeScript (JavaScript), and Zig. They are
@@ -190,8 +191,9 @@ web UI).
   proceeds
 - Usage/lifecycle event push to a configured sink, batched and async, configurably including
   full payloads so bolt-ons have everything they need
-- A dedicated pricing crate that collects provider API pricing; its dataset ships with the
-  core for real-time cost reporting to clients and cost-aware routing decisions
+- A dedicated offline pricing collector whose generated dataset is exposed through a separate
+  read-only pricing-information library and ships with the core for real-time cost reporting to
+  clients and cost-aware routing decisions
 - A dedicated control crate (`llmleaf-control`), wired by the binary, that owns all outbound
   HTTP: the pull refreshers, the usage push reporter, and the sync interceptor client. The core
   stays HTTP-client-free (principle 2)

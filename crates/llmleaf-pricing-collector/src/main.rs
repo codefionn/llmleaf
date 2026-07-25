@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use llmleaf_pricing::collect::{self, CollectorConfig, CollectorProvider};
+use llmleaf_pricing_collector::{self as collector, CollectorConfig, CollectorProvider};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -10,7 +10,7 @@ use llmleaf_pricing::collect::{self, CollectorConfig, CollectorProvider};
     about = "Collect provider model metadata into the bundled llmleaf pricing dataset"
 )]
 struct Args {
-    /// TOML collector config. See llmleaf_pricing::collect::CollectorConfig docs.
+    /// TOML collector config. See llmleaf_pricing_collector::CollectorConfig docs.
     #[arg(long)]
     config: Option<PathBuf>,
     /// Override the output prices.json path.
@@ -62,12 +62,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if cfg.providers.is_empty() {
         return Err(format!(
             "no providers configured; pass --config or --provider. {}",
-            collect::describe()
+            collector::describe()
         )
         .into());
     }
 
-    let report = collect::run(cfg).await?;
+    let report = collector::run(cfg).await?;
     for p in &report.providers {
         eprintln!(
             "collected {} model{} from {} ({})",

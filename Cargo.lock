@@ -2018,8 +2018,18 @@ dependencies = [
 name = "llmleaf-pricing"
 version = "0.1.0"
 dependencies = [
+ "llmleaf-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "llmleaf-pricing-collector"
+version = "0.1.0"
+dependencies = [
  "clap",
  "llmleaf-model",
+ "llmleaf-pricing",
  "reqwest",
  "scraper",
  "serde",
