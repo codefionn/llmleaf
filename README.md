@@ -17,22 +17,31 @@ different apis and converts it to a single api surface (enhanced
 
 ## Features
 
-- One stable endpoint in front of every provider — consumers speak OpenAI, OpenRouter, or
-  Anthropic dialects; llmleaf maps them to one internal model and back.
+- One stable endpoint in front of every provider — consumers speak OpenAI,
+  OpenRouter, or Anthropic dialects; llmleaf maps them to one internal model
+  and back.
 - Streaming-first (SSE); a non-streaming response is just a collected stream.
-- Modalities: chat, embeddings, rerank, text-to-speech, speech-to-text, realtime (WebSocket), batch jobs.
-- Per-model fallback chains with node-local, health-aware switchover — no consensus or shared
-  state, so N nodes run behind a plain load balancer.
-- Opt-in per request/provider: Anthropic prompt caching, a unified thinking/reasoning-effort ladder.
-- Responses API both ways: consumers can `POST /v1/responses` to *any* routed provider — upstreams
-  without a Responses endpoint are served over their chat-completions wire transparently. Upstream,
-  OpenAI and xAI speak their Responses APIs by default; OpenRouter's beta `POST /responses` (signed
-  open-reasoning replay, routed cost), Groq's beta `POST /responses` (open unsigned reasoning), and
-  Azure OpenAI's v1 surface (resource-scoped `POST /openai/v1/responses`) are per-provider opt-ins
+- Modalities: chat, embeddings, rerank, text-to-speech, speech-to-text,
+  realtime (WebSocket), batch jobs.
+- Per-model fallback chains with node-local, health-aware switchover — no
+  consensus or shared state, so N nodes run behind a plain load balancer.
+- Opt-in per request/provider: Anthropic prompt caching, a unified
+  thinking/reasoning-effort ladder.
+- Responses API both ways: consumers can `POST /v1/responses` to *any* routed
+  provider — upstreams without a Responses endpoint are served over their
+  chat-completions wire transparently. Upstream, OpenAI and xAI speak their
+  Responses APIs by default; OpenRouter's beta `POST /responses` (signed
+  open-reasoning replay, routed cost), Groq's beta `POST /responses` (open
+  unsigned reasoning), and Azure OpenAI's v1 surface (resource-scoped `POST
+  /openai/v1/responses`) are per-provider opt-ins
   (`chat_api = "responses"`).
-- Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits, topology, and usage ride
-  an **outbound** control plane (pull verdicts and provider/route config — diff-reconciled on every
-  refresh — push usage). Fully operable from the config file alone.
+- Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits,
+  topology, and usage ride an **outbound** control plane (pull verdicts and
+  provider/route config — diff-reconciled on every refresh — push usage). Fully
+  operable from the config file alone.
+
+The use of the websocket api is recommended, this greatly improves the chances
+of prompt caching actually working.
 
 ### Supported providers
 
