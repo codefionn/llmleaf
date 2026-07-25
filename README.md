@@ -2,7 +2,9 @@
 
 ![Logo of llm-leaf: a leaf](./logo.png)
 
-llmleaf is a llm proxy. It proxies different llm providers and their slighty different apis and converts it a a single api surface.
+llmleaf is a llm proxy. It proxies different llm providers and their slighty
+different apis and converts it to a single api surface (enhanced
+*openai-compatible* or anthropic).
 
 ## Goals:
 
