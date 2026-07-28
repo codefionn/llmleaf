@@ -214,7 +214,11 @@ fn input_part(p: &ContentPart) -> Option<Value> {
             }
             Some(Value::Object(o))
         }
-        ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
+        // The Responses request schema has no input_audio part. `needs_chat_completions` routes any
+        // request carrying one to Chat Completions before this mapper runs.
+        ContentPart::InputAudio { .. }
+        | ContentPart::Thinking { .. }
+        | ContentPart::RedactedThinking { .. } => None,
     }
 }
 
@@ -326,6 +330,7 @@ const CHAT_ONLY_EXTRA_KEYS: &[&str] = &[
 /// (principle 7: no silent dropping of consumer fields — the request is served where its fields are legal).
 pub fn needs_chat_completions(req: &ChatRequest) -> bool {
     !req.stop.is_empty()
+        || req.has_input_audio()
         || req
             .extra
             .keys()
@@ -1078,6 +1083,13 @@ mod tests {
         // A non-empty `stop` forces the chat-completions downgrade.
         let mut req = user_req("hi");
         req.stop = vec!["\n".into()];
+        assert!(needs_chat_completions(&req));
+        // Chat audio uses the Chat Completions `input_audio` part shape.
+        let mut req = user_req("listen");
+        req.messages[0].content.push(ContentPart::InputAudio {
+            data: "UklGRg==".into(),
+            format: "wav".into(),
+        });
         assert!(needs_chat_completions(&req));
         // A chat-only `extra` key does too.
         for key in [

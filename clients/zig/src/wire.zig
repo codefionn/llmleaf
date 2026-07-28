@@ -66,6 +66,17 @@ fn writeContent(s: *Stringify, content: gen.Content) !void {
                         }
                         try s.endObject();
                     },
+                    .input_audio => |audio| {
+                        try s.objectField("type");
+                        try s.write("input_audio");
+                        try s.objectField("input_audio");
+                        try s.beginObject();
+                        try s.objectField("data");
+                        try s.write(audio.data);
+                        try s.objectField("format");
+                        try s.write(audio.format);
+                        try s.endObject();
+                    },
                 }
                 try s.endObject();
             }
@@ -753,6 +764,13 @@ fn parseContent(arena: Allocator, v: Value) !?gen.Content {
                     parts[n] = .{ .image_url = .{
                         .url = getStr(iu, "url") orelse "",
                         .detail = getStr(iu, "detail"),
+                    } };
+                    n += 1;
+                } else if (std.mem.eql(u8, ty, "input_audio")) {
+                    const audio = objGet(it, "input_audio") orelse continue;
+                    parts[n] = .{ .input_audio = .{
+                        .data = getStr(audio, "data") orelse "",
+                        .format = getStr(audio, "format") orelse "",
                     } };
                     n += 1;
                 }
@@ -1851,6 +1869,7 @@ test "encode multimodal content parts" {
     const parts = [_]gen.ContentPart{
         .{ .text = .{ .text = "look:" } },
         .{ .image_url = .{ .url = "http://x/y.png", .detail = "low" } },
+        .{ .input_audio = .{ .data = "UklGRg==", .format = "wav" } },
     };
     const req = gen.ChatRequest{
         .model = "m",
@@ -1860,4 +1879,5 @@ test "encode multimodal content parts" {
     defer testing.allocator.free(body);
     try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"text\",\"text\":\"look:\"}") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"image_url\":{\"url\":\"http://x/y.png\",\"detail\":\"low\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"input_audio\":{\"data\":\"UklGRg==\",\"format\":\"wav\"}") != null);
 }

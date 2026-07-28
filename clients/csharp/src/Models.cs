@@ -50,7 +50,7 @@ public sealed record ErrorBody(string Message, string? Type = null, string? Code
 // Chat
 // ---------------------------------------------------------------------------
 
-/// <summary>One content part of a multimodal message: text or an image URL.</summary>
+/// <summary>One content part of a multimodal message: text, an image URL, or inline audio.</summary>
 public abstract record ContentPart;
 
 /// <summary>A plain-text content part: <c>{"type":"text","text":"..."}</c>.</summary>
@@ -60,6 +60,11 @@ public sealed record TextPart(string Text) : ContentPart;
 /// An image-URL content part: <c>{"type":"image_url","image_url":{"url":"...","detail":"auto"}}</c>.
 /// </summary>
 public sealed record ImageUrlPart(string Url, string? Detail = null) : ContentPart;
+
+/// <summary>
+/// Inline audio: <c>{"type":"input_audio","input_audio":{"data":"&lt;base64&gt;","format":"wav"}}</c>.
+/// </summary>
+public sealed record InputAudioPart(string Data, string Format) : ContentPart;
 
 /// <summary>
 /// Message content: either plain <see cref="Text"/> or an array of <see cref="Parts"/>. Exactly one

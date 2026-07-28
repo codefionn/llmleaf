@@ -81,9 +81,10 @@ pub enum UrlStyle {
 /// Which chat wire a brand serves. OpenAI-wire is not uniform here: OpenAI and xAI have made the
 /// Responses API (`POST /responses`) their primary chat surface, while the rest of the family still
 /// defaults to the older `/chat/completions`. This selects the request/response mapping and the endpoint
-/// path; the choice is a brand default an operator can override per instance via `settings.chat_api`, and
-/// a single request can transparently fall back to [`ChatApi::Completions`] when it carries chat-only
-/// fields the Responses endpoint rejects (see [`crate::openai_responses_wire::needs_chat_completions`]).
+/// path; the choice is a brand default an operator can override per instance via `settings.chat_api`
+/// and, for audio-bearing requests only, `settings.chat_with_audio_input_api`. A request can also
+/// transparently fall back to [`ChatApi::Completions`] when it carries chat-only fields the Responses
+/// endpoint rejects (see [`crate::openai_responses_wire::needs_chat_completions`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatApi {
     /// The classic `/chat/completions` dialect ([`crate::openai_wire`]).
@@ -116,6 +117,10 @@ pub struct Brand {
     /// `stream_options.include_usage`). Default `true`; a couple of local servers that may choke on
     /// `stream_options` keep the collect-then-rechunk path (`false`).
     pub supports_stream: bool,
+    /// Whether this brand's Chat Completions surface accepts `input_audio` content parts. Kept
+    /// conservative: only documented brands opt in; an operator can enable a compatible/self-hosted
+    /// endpoint with `settings.audio_input = true`.
+    pub audio_input: bool,
     /// Whether this brand exposes a native OpenAI-Realtime WebSocket upstream (only OpenAI today). When
     /// `false`, [`Provider::realtime`] returns `Unsupported` and the core bridges over chat streaming.
     pub realtime_native: bool,
@@ -174,7 +179,7 @@ pub struct Brand {
     pub batch_flavor: BatchFlavor,
     /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for all but OpenAI and
     /// xAI, whose primary chat surface is now the Responses API). Overridable per instance via
-    /// `settings.chat_api`.
+    /// `settings.chat_api`, with `settings.chat_with_audio_input_api` taking precedence for audio.
     pub chat_api: ChatApi,
     /// Which Responses-wire flavor the brand's `POST /responses` endpoint speaks (see
     /// [`ResponsesFlavor`]): [`ResponsesFlavor::OpenRouter`] for OpenRouter's beta endpoint (open
@@ -195,6 +200,7 @@ impl Brand {
             default_api_version: "",
             max_tokens_field: "max_tokens",
             supports_stream: true,
+            audio_input: false,
             realtime_native: false,
             transcription_json_base64: false,
             voices_api: false,
@@ -216,6 +222,7 @@ impl Brand {
             default_api_version: "",
             max_tokens_field: "max_completion_tokens",
             supports_stream: true,
+            audio_input: false,
             realtime_native: false,
             transcription_json_base64: false,
             voices_api: false,
@@ -238,6 +245,7 @@ impl Brand {
                 models_api: true,
                 batch_flavor: BatchFlavor::OpenAi,
                 chat_api: ChatApi::Responses,
+                audio_input: true,
                 ..bc("openai", "https://api.openai.com/v1", AuthStyle::Bearer)
             },
             // OpenRouter's `/audio/transcriptions` takes a JSON body with base64 audio, not the OpenAI
@@ -245,6 +253,7 @@ impl Brand {
             "openrouter" => Brand {
                 transcription_json_base64: true,
                 models_api: true,
+                audio_input: true,
                 // OpenRouter serves `POST /api/v1/rerank` (Cohere/Jina-shaped, documents may be
                 // multimodal objects) — routed to the shared rerank wire.
                 rerank_api: true,
@@ -387,6 +396,7 @@ impl Brand {
                 default_api_version: "2024-10-21",
                 max_tokens_field: "max_completion_tokens",
                 supports_stream: true,
+                audio_input: false,
                 // Azure's realtime surface uses a different URL/auth shape — bridge it for now.
                 realtime_native: false,
                 transcription_json_base64: false,
@@ -518,20 +528,30 @@ impl OpenAiCompatProvider {
     }
 
     /// Resolve the effective chat API for a request: the brand default, overridden by the operator's
-    /// `settings.chat_api`, then downgraded to `/chat/completions` for this one request when it carries a
-    /// chat-completions-only feature the Responses endpoint rejects.
+    /// `settings.chat_api`, then by `settings.chat_with_audio_input_api` for a request containing
+    /// inline audio. Finally, requests carrying other chat-completions-only features are downgraded to
+    /// `/chat/completions`.
     ///
     /// The setting accepts `"responses"` and `"chat_completions"`/`"completions"`; any other value is
     /// ignored and the brand default stands (an operator typo must never silently change the wire). This
     /// lets an operator opt any OpenAI-wire brand (groq, fireworks, openrouter, azure, …) into Responses,
-    /// or pin OpenAI/xAI back to chat completions. The per-request downgrade is the documented transparent
-    /// fallback (principle 7: a chat-only field is served where it is legal, never dropped).
+    /// or pin OpenAI/xAI back to chat completions. The audio-specific override accepts the same values
+    /// and wins only for audio-bearing requests, allowing ordinary chat to stay on Responses.
     fn effective_chat_api(&self, cx: &ProviderCx, req: &ChatRequest) -> ChatApi {
         let mut api = self.brand.chat_api;
         match cx.setting_str("chat_api") {
             Some("responses") => api = ChatApi::Responses,
             Some("chat_completions") | Some("completions") => api = ChatApi::Completions,
             _ => {} // absent or unrecognized: keep the brand default.
+        }
+        if req.has_input_audio() {
+            match cx.setting_str("chat_with_audio_input_api") {
+                Some("responses") => return ChatApi::Responses,
+                Some("chat_completions") | Some("completions") => {
+                    return ChatApi::Completions;
+                }
+                _ => {} // absent/unrecognized: retain the automatic downgrade for compatibility.
+            }
         }
         if api == ChatApi::Responses && needs_chat_completions(req) {
             api = ChatApi::Completions;
@@ -548,6 +568,18 @@ impl OpenAiCompatProvider {
             || cx
                 .settings
                 .get("rerank_api")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Whether this provider instance accepts audio inside chat messages. Brand defaults cover the
+    /// documented OpenAI/OpenRouter surfaces; explicit configuration lets an OpenAI-compatible
+    /// deployment opt in without teaching the shared mapper another brand.
+    fn audio_input_enabled(&self, cx: &ProviderCx) -> bool {
+        self.brand.audio_input
+            || cx
+                .settings
+                .get("audio_input")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
     }
@@ -1128,10 +1160,25 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.has_input_audio() && !self.audio_input_enabled(cx) {
+            return Err(ModelError::Unsupported(format!(
+                "provider '{}' does not support audio input in chat",
+                self.brand.name
+            )));
+        }
         // Endpoint selection is the only thing this level decides; each wire path owns its own mapping.
         // The helpers borrow `&req`, so the Responses→Completions retry below reuses the same request
         // with no clone of the whole `ChatRequest` (principle 1: every allocation justified).
-        match self.effective_chat_api(cx, &req) {
+        let chat_api = self.effective_chat_api(cx, &req);
+        if chat_api == ChatApi::Responses && needs_chat_completions(&req) {
+            return Err(ModelError::Unsupported(format!(
+                "provider '{}' is configured for the Responses API, which cannot represent this \
+                 chat request; set settings.chat_with_audio_input_api = \"chat_completions\" or \
+                 settings.chat_api = \"chat_completions\"",
+                self.brand.name
+            )));
+        }
+        match chat_api {
             ChatApi::Completions => self.chat_completions(&req, cx).await,
             // An operator can opt any OpenAI-wire brand into Responses (`settings.chat_api`), but a
             // brand/deployment that turns out not to serve `POST /responses` must degrade to the endpoint
@@ -1361,6 +1408,14 @@ impl Provider for OpenAiCompatProvider {
         cx: &ProviderCx,
     ) -> Result<BatchHandle, ModelError> {
         self.ensure_batch()?;
+        if req.items.iter().any(|item| item.request.has_input_audio())
+            && !self.audio_input_enabled(cx)
+        {
+            return Err(ModelError::Unsupported(format!(
+                "provider '{}' does not support audio input in chat batches",
+                self.brand.name
+            )));
+        }
         let jsonl = build_jsonl(req.items.iter().map(|item| self.batch_line(item)));
         let file_id = self.upload_batch_file(cx, jsonl).await?;
         let url = format!("{}{}", self.batch_collection(cx), self.batch_query(cx));
@@ -2277,6 +2332,23 @@ mod tests {
     }
 
     #[test]
+    fn audio_input_is_enabled_only_for_known_or_opted_in_chat_wires() {
+        let t = crate::transport::Transports::fake();
+        let openai = OpenAiCompatProvider::for_kind("openai", &t).unwrap();
+        let openrouter = OpenAiCompatProvider::for_kind("openrouter", &t).unwrap();
+        let groq = OpenAiCompatProvider::for_kind("groq", &t).unwrap();
+        assert!(openai.audio_input_enabled(&ProviderCx::default()));
+        assert!(openrouter.audio_input_enabled(&ProviderCx::default()));
+        assert!(!groq.audio_input_enabled(&ProviderCx::default()));
+
+        let opted_in = ProviderCx {
+            settings: serde_json::from_value(json!({ "audio_input": true })).unwrap(),
+            ..Default::default()
+        };
+        assert!(groq.audio_input_enabled(&opted_in));
+    }
+
+    #[test]
     fn responses_url_standard_and_azure_v1() {
         let t = crate::transport::Transports::fake();
         // Standard brands append `/responses` to the base — xAI's documented URL.
@@ -2377,5 +2449,66 @@ mod tests {
             groq.effective_chat_api(&cx_with_chat_api("responses"), &req),
             ChatApi::Completions
         );
+
+        let mut audio_req = chat_req("gpt-audio");
+        audio_req.messages[0]
+            .content
+            .push(llmleaf_model::ContentPart::InputAudio {
+                data: "UklGRg==".into(),
+                format: "wav".into(),
+            });
+
+        // The audio-specific API wins without changing the provider's ordinary chat API.
+        let audio_responses = ProviderCx {
+            settings: serde_json::from_value(json!({
+                "chat_api": "responses",
+                "chat_with_audio_input_api": "responses"
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            openai.effective_chat_api(&audio_responses, &audio_req),
+            ChatApi::Responses
+        );
+
+        let audio_completions = ProviderCx {
+            settings: serde_json::from_value(json!({
+                "chat_api": "responses",
+                "chat_with_audio_input_api": "chat_completions"
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            openai.effective_chat_api(&audio_completions, &audio_req),
+            ChatApi::Completions
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_specific_responses_setting_rejects_instead_of_dropping_audio() {
+        let t = crate::transport::Transports::fake();
+        let openai = OpenAiCompatProvider::for_kind("openai", &t).unwrap();
+        let mut req = chat_req("gpt-audio");
+        req.messages[0]
+            .content
+            .push(llmleaf_model::ContentPart::InputAudio {
+                data: "UklGRg==".into(),
+                format: "wav".into(),
+            });
+        let cx = ProviderCx {
+            settings: serde_json::from_value(json!({
+                "chat_api": "responses",
+                "chat_with_audio_input_api": "responses"
+            }))
+            .unwrap(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            openai.chat(req, &cx).await,
+            Err(ModelError::Unsupported(message))
+                if message.contains("chat_with_audio_input_api")
+        ));
     }
 }

@@ -45,6 +45,21 @@ pub struct ChatRequest {
     pub extra: Map<String, Value>,
 }
 
+impl ChatRequest {
+    /// Whether this request contains audio embedded in a chat turn. Provider extensions use this
+    /// cheap scan to return [`crate::ModelError::Unsupported`] before contacting an upstream whose
+    /// wire has no audio-input representation, allowing the router to fall through without marking
+    /// that provider unhealthy.
+    pub fn has_input_audio(&self) -> bool {
+        self.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::InputAudio { .. }))
+        })
+    }
+}
+
 /// Reasoning ("thinking") effort — an optional, deliberately coarse, canonical ladder.
 ///
 /// Five rungs the core understands; the mapping into each dialect's own wire shape (an effort string,
@@ -143,6 +158,14 @@ pub enum ContentPart {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+    },
+    /// Base64-encoded audio supplied as part of a user chat turn. `format` is the container/codec
+    /// token used by the OpenAI/OpenRouter chat dialect (`wav`, `mp3`, …); provider extensions map it
+    /// to their own MIME vocabulary at the edge. The core keeps the base64 string opaque and never
+    /// decodes, transcodes, or fetches media on the hot path.
+    InputAudio {
+        data: String,
+        format: String,
     },
     /// An extended-thinking (reasoning) block emitted by an assistant turn. `signature` is the
     /// upstream's cryptographic signature over the reasoning: it is opaque to the core and **must be

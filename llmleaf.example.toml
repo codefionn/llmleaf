@@ -65,6 +65,12 @@ settings = { organization = "org-xxxx" }
 # `previous_response_id`, and `store: true` as unsupported, so llmleaf's stateless mapping omits
 # `include` there). Not supported for `azure-openai` (its Responses URL differs).
 #   settings = { organization = "org-xxxx", chat_api = "chat_completions" }
+# Select a different API only for chat requests containing inline audio, while keeping ordinary chat
+# on Responses. Omit this override for the backward-compatible automatic selection:
+#   settings = { organization = "org-xxxx", chat_api = "responses", chat_with_audio_input_api = "chat_completions" }
+# OpenAI and OpenRouter accept inline `input_audio` parts by default. For another OpenAI-wire
+# endpoint that supports the same Chat Completions shape, opt in explicitly:
+#   settings = { audio_input = true }
 # Node-local rate limits (optional) — flow control TOWARD this provider so a node never pushes it past
 # its published limits and eats 429s. This is the node-local HA family (principles 8 and 9), NOT per-key
 # usage accounting (that is the pulled [control.limits] verdicts, principle 5). Each dimension is

@@ -74,6 +74,11 @@ impl Provider for LmStudioProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.has_input_audio() {
+            return Err(ModelError::Unsupported(
+                "provider 'lmstudio' does not support audio input in chat".into(),
+            ));
+        }
         // `/api/v0/chat/completions` is OpenAI-wire and streams SSE; reuse the shared request mapping
         // and SSE streaming core so tokens flow live (principle 4). `max_tokens` is the cap field
         // (LM Studio accepts it; `-1` would mean unlimited, but the canonical cap is always a count).

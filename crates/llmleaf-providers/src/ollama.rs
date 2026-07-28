@@ -89,6 +89,11 @@ impl Provider for OllamaProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.has_input_audio() {
+            return Err(ModelError::Unsupported(
+                "provider 'ollama' does not support audio input in chat".into(),
+            ));
+        }
         let url = format!("{}/api/chat", self.endpoint(cx));
         let body = request_to_ollama(&req, cx.setting_str("keep_alive"));
         let http_req = self.auth(HttpRequest::post(&url).json(body), cx);
@@ -285,6 +290,9 @@ fn message_to_ollama(msg: &Message) -> Value {
                 if let Some(b64) = ollama_image_b64(url) {
                     images.push(b64);
                 }
+            }
+            ContentPart::InputAudio { .. } => {
+                // `Provider::chat` rejects this request before mapping.
             }
             // Reasoning blocks do not port across providers and Ollama has no slot for them; skip.
             ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {}

@@ -22,16 +22,26 @@ public data class ImageUrl(
     @SerialName("detail") val detail: String? = null, // "auto" | "low" | "high"
 )
 
+/** The `input_audio` object inside a [ContentPart.InputAudioPart]. */
+@Serializable
+public data class InputAudio(
+    @SerialName("data") val data: String,
+    @SerialName("format") val format: String,
+)
+
 /**
  * One part of a multimodal message. Discriminated on the wire by `type`:
  *   {"type":"text","text":"..."}
  *   {"type":"image_url","image_url":{"url":"...","detail":"auto"}}
+ *   {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}
  */
 @Serializable(with = ContentPartSerializer::class)
 public sealed interface ContentPart {
     public data class Text(val text: String) : ContentPart
 
     public data class ImageUrlPart(val imageUrl: ImageUrl) : ContentPart
+
+    public data class InputAudioPart(val inputAudio: InputAudio) : ContentPart
 }
 
 /** Manual discriminated-union serializer keyed on `type` (proto `ContentPart.part` oneof). */
@@ -55,6 +65,12 @@ public object ContentPartSerializer : KSerializer<ContentPart> {
                     "image_url" to json.encodeToJsonElement(ImageUrl.serializer(), value.imageUrl),
                 ),
             )
+            is ContentPart.InputAudioPart -> JsonObject(
+                mapOf(
+                    "type" to JsonPrimitive("input_audio"),
+                    "input_audio" to json.encodeToJsonElement(InputAudio.serializer(), value.inputAudio),
+                ),
+            )
         }
         jsonEncoder.encodeJsonElement(element)
     }
@@ -68,6 +84,9 @@ public object ContentPartSerializer : KSerializer<ContentPart> {
             "text" -> ContentPart.Text((obj["text"] as JsonPrimitive).content)
             "image_url" -> ContentPart.ImageUrlPart(
                 jsonDecoder.json.decodeFromJsonElement(ImageUrl.serializer(), obj.getValue("image_url")),
+            )
+            "input_audio" -> ContentPart.InputAudioPart(
+                jsonDecoder.json.decodeFromJsonElement(InputAudio.serializer(), obj.getValue("input_audio")),
             )
             else -> error("unknown content part type: ${obj["type"]}")
         }

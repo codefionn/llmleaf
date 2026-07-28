@@ -130,6 +130,7 @@ public sealed class WireTests
                     [
                         new TextPart("look:"),
                         new ImageUrlPart("https://x/y.png", "high"),
+                        new InputAudioPart("UklGRg==", "wav"),
                     ]),
                 },
             ],
@@ -141,6 +142,9 @@ public sealed class WireTests
         Assert.Equal("image_url", content[1].GetProperty("type").GetString());
         Assert.Equal("https://x/y.png", content[1].GetProperty("image_url").GetProperty("url").GetString());
         Assert.Equal("high", content[1].GetProperty("image_url").GetProperty("detail").GetString());
+        Assert.Equal("input_audio", content[2].GetProperty("type").GetString());
+        Assert.Equal("UklGRg==", content[2].GetProperty("input_audio").GetProperty("data").GetString());
+        Assert.Equal("wav", content[2].GetProperty("input_audio").GetProperty("format").GetString());
     }
 
     // ---- chat: response decoding ---------------------------------------

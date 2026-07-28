@@ -92,10 +92,12 @@ enum FinishReason {
 // A single content part for multimodal messages:
 //   {"type":"text","text":"..."}
 //   {"type":"image_url","image_url":{"url":"...","detail":"auto"}}
+//   {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}
 message ContentPart {
   oneof part {
     TextPart text = 1;
     ImageUrlPart image_url = 2;
+    InputAudioPart input_audio = 3;
   }
 }
 
@@ -106,6 +108,13 @@ message TextPart {
 message ImageUrlPart {
   string url = 1;
   optional string detail = 2; // "auto" | "low" | "high"
+}
+
+// Inline audio. `data` is opaque base64; `format` is a provider-supported
+// lowercase audio format such as "wav" or "mp3".
+message InputAudioPart {
+  string data = 1;
+  string format = 2;
 }
 
 message ContentParts {

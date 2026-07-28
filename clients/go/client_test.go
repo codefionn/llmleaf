@@ -35,6 +35,37 @@ func newTestClient(h http.HandlerFunc, opts ...Option) (*Client, *httptest.Serve
 	return New(srv.URL, "test-key", opts...), srv
 }
 
+func TestInlineAudioContentPartWireRoundTrip(t *testing.T) {
+	part := wireContentPart{
+		audio: &pb.InputAudioPart{Data: "UklGRg==", Format: "wav"},
+	}
+	body, err := json.Marshal(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["type"] != "input_audio" {
+		t.Fatalf("type = %v", got["type"])
+	}
+	audio := got["input_audio"].(map[string]any)
+	if audio["data"] != "UklGRg==" || audio["format"] != "wav" {
+		t.Fatalf("input_audio = %#v", audio)
+	}
+
+	var decoded wireContentPart
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	pbPart := partToPB(&decoded)
+	if pbPart.GetInputAudio().GetData() != "UklGRg==" ||
+		pbPart.GetInputAudio().GetFormat() != "wav" {
+		t.Fatalf("decoded input audio = %#v", pbPart.GetInputAudio())
+	}
+}
+
 func TestChatCompletionWireAndAuth(t *testing.T) {
 	var gotAuth string
 	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {

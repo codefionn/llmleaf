@@ -2,7 +2,9 @@ package eu.codefionn.llmleaf.client
 
 import eu.codefionn.llmleaf.client.model.ChatMessage
 import eu.codefionn.llmleaf.client.model.ChatRequest
+import eu.codefionn.llmleaf.client.model.ContentPart
 import eu.codefionn.llmleaf.client.model.FinishReason
+import eu.codefionn.llmleaf.client.model.InputAudio
 import eu.codefionn.llmleaf.client.model.MessageContent
 import eu.codefionn.llmleaf.client.model.ReasoningDetail
 import eu.codefionn.llmleaf.client.model.Role
@@ -28,6 +30,27 @@ import kotlin.test.assertTrue
 private val jsonHeaders = headersOf(HttpHeaders.ContentType, "application/json")
 
 class WireTest {
+    @Test
+    fun chatRequestSerialisesInlineAudio() {
+        val content = MessageContent.Parts(
+            listOf(
+                ContentPart.Text("What is said?"),
+                ContentPart.InputAudioPart(InputAudio("UklGRg==", "wav")),
+            ),
+        )
+        val req = ChatRequest(
+            model = "gpt-audio",
+            messages = listOf(ChatMessage(role = Role.USER, content = content)),
+        )
+        val body = LenientJson.encodeToString(ChatRequest.serializer(), req)
+        val parts = Json.parseToJsonElement(body).jsonObject["messages"]!!
+            .let { (it as JsonArray)[0] }.jsonObject["content"] as JsonArray
+        val audio = parts[1].jsonObject
+        assertEquals("input_audio", audio["type"]!!.jsonPrimitive.content)
+        assertEquals("UklGRg==", audio["input_audio"]!!.jsonObject["data"]!!.jsonPrimitive.content)
+        assertEquals("wav", audio["input_audio"]!!.jsonObject["format"]!!.jsonPrimitive.content)
+    }
+
     @Test
     fun chatRequestSerialisesPlainContentAsString() = runTest {
         val req = ChatRequest(

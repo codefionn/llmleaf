@@ -17,13 +17,20 @@ internal sealed class WireImageUrl
     [JsonPropertyName("detail")] public string? Detail { get; set; }
 }
 
-// A content part on the wire is one of {type:text,text} | {type:image_url,image_url:{...}}.
+internal sealed class WireInputAudio
+{
+    [JsonPropertyName("data")] public string Data { get; set; } = "";
+    [JsonPropertyName("format")] public string Format { get; set; } = "";
+}
+
+// A content part on the wire is text, image_url, or input_audio.
 // Custom (de)serialisation lives in ContentPartConverter.
 [JsonConverter(typeof(ContentPartConverter))]
 internal sealed class WireContentPart
 {
     public string? Text { get; set; }
     public WireImageUrl? ImageUrl { get; set; }
+    public WireInputAudio? InputAudio { get; set; }
 }
 
 // ---- tool calls ----------------------------------------------------------

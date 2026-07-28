@@ -34,6 +34,7 @@ export type {
   ErrorBody,
   TextPart,
   ImageUrlPart,
+  InputAudioPart,
   ContentPart,
   MessageContent,
   FunctionCall,

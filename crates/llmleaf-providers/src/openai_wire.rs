@@ -163,6 +163,10 @@ fn content_parts(msg: &Message) -> Value {
                 }
                 Some(json!({ "type": "image_url", "image_url": Value::Object(image_url) }))
             }
+            ContentPart::InputAudio { data, format } => Some(json!({
+                "type": "input_audio",
+                "input_audio": { "data": data, "format": format },
+            })),
             // OpenAI chat completions has no field for replayed reasoning (it is server-side on o-series
             // models); reasoning does not port across providers, so drop these blocks at this edge.
             ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
@@ -1617,6 +1621,28 @@ mod tests {
         assert!(wire.get("stream_options").is_none());
         assert_eq!(wire["tool_choice"], "required");
         assert!(wire.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn request_maps_inline_audio_to_openai_shape() {
+        let mut req = sample_req();
+        req.messages[0].content = vec![
+            ContentPart::Text {
+                text: "transcribe this".into(),
+            },
+            ContentPart::InputAudio {
+                data: "UklGRg==".into(),
+                format: "wav".into(),
+            },
+        ];
+        let wire = request_to_openai(&req, "max_tokens", false);
+        assert_eq!(
+            wire["messages"][0]["content"][1],
+            json!({
+                "type": "input_audio",
+                "input_audio": { "data": "UklGRg==", "format": "wav" }
+            })
+        );
     }
 
     #[test]

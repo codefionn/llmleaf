@@ -84,6 +84,7 @@ impl Provider for GeminiProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        ensure_audio_input_supported(&req, self.name())?;
         let endpoint = cx
             .endpoint
             .as_deref()
@@ -143,6 +144,9 @@ impl Provider for GeminiProvider {
         req: BatchSpec,
         cx: &ProviderCx,
     ) -> Result<BatchHandle, ModelError> {
+        for item in &req.items {
+            ensure_audio_input_supported(&item.request, self.name())?;
+        }
         let model = req
             .items
             .first()
@@ -387,6 +391,11 @@ fn message_to_gemini(msg: &Message) -> Value {
         .filter_map(|p| match p {
             ContentPart::Text { text } => Some(json!({ "text": text })),
             ContentPart::ImageUrl { url, .. } => Some(json!({ "fileData": { "fileUri": url } })),
+            ContentPart::InputAudio { data, format } => {
+                let mime_type = audio_mime_type(format)
+                    .expect("audio format preflighted before Gemini request mapping");
+                Some(json!({ "inlineData": { "mimeType": mime_type, "data": data } }))
+            }
             // Anthropic-style signed thinking blocks have no Gemini representation; reasoning does not
             // port across providers, so drop them at this edge rather than emit an invalid part.
             ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
@@ -399,6 +408,37 @@ fn message_to_gemini(msg: &Message) -> Value {
     }
 
     json!({ "role": role, "parts": parts })
+}
+
+/// Gemini's documented audio-input formats. Keep this table explicit rather than inventing
+/// `audio/<format>` for an unknown token; an unsupported format should fall through to another
+/// provider without a health penalty.
+fn audio_mime_type(format: &str) -> Option<&'static str> {
+    match format.to_ascii_lowercase().as_str() {
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mp3"),
+        "aiff" => Some("audio/aiff"),
+        "aac" => Some("audio/aac"),
+        "ogg" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
+}
+
+pub(crate) fn ensure_audio_input_supported(
+    req: &ChatRequest,
+    provider: &str,
+) -> Result<(), ModelError> {
+    for part in req.messages.iter().flat_map(|message| &message.content) {
+        if let ContentPart::InputAudio { format, .. } = part {
+            if audio_mime_type(format).is_none() {
+                return Err(ModelError::Unsupported(format!(
+                    "provider '{provider}' does not support chat audio format '{format}'"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Map a Gemini `generateContent` *response* onto canonical [`StreamChunk`]s. `pub(crate)` because
@@ -866,6 +906,64 @@ mod tests {
         assert_eq!(wire["generationConfig"]["maxOutputTokens"], 256);
         // No thinking requested -> no thinkingConfig.
         assert!(wire["generationConfig"].get("thinkingConfig").is_none());
+    }
+
+    #[test]
+    fn maps_inline_audio_to_gemini_inline_data() {
+        let req = ChatRequest {
+            model: "gemini-2.5-flash".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentPart::InputAudio {
+                    data: "UklGRg==".into(),
+                    format: "wav".into(),
+                }],
+                tool_calls: vec![],
+                tool_call_id: None,
+                name: None,
+            }],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            stream: false,
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            extra: Default::default(),
+        };
+        assert!(ensure_audio_input_supported(&req, "gemini").is_ok());
+        assert_eq!(
+            request_to_gemini(&req)["contents"][0]["parts"][0],
+            json!({
+                "inlineData": { "mimeType": "audio/wav", "data": "UklGRg==" }
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_inline_audio_format_before_transport() {
+        let mut req = ChatRequest {
+            model: "gemini-2.5-flash".into(),
+            messages: vec![Message::text(Role::User, "hi")],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            stream: false,
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            extra: Default::default(),
+        };
+        req.messages[0].content = vec![ContentPart::InputAudio {
+            data: "AAAA".into(),
+            format: "opus".into(),
+        }];
+        assert!(matches!(
+            ensure_audio_input_supported(&req, "gemini"),
+            Err(ModelError::Unsupported(message)) if message.contains("opus")
+        ));
     }
 
     #[test]

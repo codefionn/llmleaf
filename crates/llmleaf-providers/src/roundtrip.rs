@@ -271,6 +271,60 @@ async fn openai_chat_with_stop_downgrades_to_chat_completions() {
 }
 
 #[tokio::test]
+async fn openai_chat_with_audio_downgrades_and_preserves_input_audio() {
+    use llmleaf_model::ContentPart;
+    use std::sync::Mutex;
+
+    let sse = concat!(
+        "data: {\"id\":\"chatcmpl-audio\",\"model\":\"gpt-audio\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let captured: Arc<Mutex<Option<HttpRequest>>> = Arc::new(Mutex::new(None));
+    let cap = captured.clone();
+    let http = FakeHttpTransport::new(move |req: &HttpRequest| {
+        *cap.lock().unwrap() = Some(req.clone());
+        Ok(FakeResponse::ok_bytes("text/event-stream", sse))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+
+    let mut req = user_chat("gpt-audio", "What is said?");
+    req.messages[0].content.push(ContentPart::InputAudio {
+        data: "UklGRg==".into(),
+        format: "wav".into(),
+    });
+    let audio_cx = ProviderCx {
+        credential: Some("test-key".into()),
+        endpoint: Some("https://example.test".into()),
+        settings: serde_json::from_value(json!({
+            "chat_api": "responses",
+            "chat_with_audio_input_api": "chat_completions"
+        }))
+        .unwrap(),
+        ..Default::default()
+    };
+    let stream = provider
+        .chat(req, &audio_cx)
+        .await
+        .expect("audio chat returns a stream");
+    let resp = collect(stream).await.expect("stream collects cleanly");
+
+    let sent = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a request was sent");
+    assert!(sent.url.ends_with("/chat/completions"));
+    assert_eq!(
+        json_body(&sent)["messages"][0]["content"][1],
+        json!({
+            "type": "input_audio",
+            "input_audio": { "data": "UklGRg==", "format": "wav" }
+        })
+    );
+    assert_eq!(resp.choices[0].text, "hello");
+}
+
+#[tokio::test]
 async fn openrouter_responses_opt_in_posts_beta_endpoint_and_replays_signed_reasoning() {
     use llmleaf_model::ContentPart;
     use std::sync::Mutex;

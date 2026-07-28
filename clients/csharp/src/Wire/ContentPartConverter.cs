@@ -1,6 +1,7 @@
 // System.Text.Json converter for a single content part. On the wire a part is one of:
 //   {"type":"text","text":"..."}
 //   {"type":"image_url","image_url":{"url":"...","detail":"auto"}}
+//   {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}
 // An unknown/absent type is treated as text (lenient decode), matching the Go client.
 
 using System;
@@ -29,6 +30,14 @@ internal sealed class ContentPartConverter : JsonConverter<WireContentPart>
                 Detail = iu.TryGetProperty("detail", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null,
             };
         }
+        else if (type == "input_audio" && root.TryGetProperty("input_audio", out var ia) && ia.ValueKind == JsonValueKind.Object)
+        {
+            part.InputAudio = new WireInputAudio
+            {
+                Data = ia.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.String ? data.GetString()! : "",
+                Format = ia.TryGetProperty("format", out var format) && format.ValueKind == JsonValueKind.String ? format.GetString()! : "",
+            };
+        }
         else
         {
             // "text" or unknown -> treat as text.
@@ -53,6 +62,15 @@ internal sealed class ContentPartConverter : JsonConverter<WireContentPart>
             {
                 writer.WriteString("detail", image.Detail);
             }
+            writer.WriteEndObject();
+        }
+        else if (value.InputAudio is { } audio)
+        {
+            writer.WriteString("type", "input_audio");
+            writer.WritePropertyName("input_audio");
+            writer.WriteStartObject();
+            writer.WriteString("data", audio.Data);
+            writer.WriteString("format", audio.Format);
             writer.WriteEndObject();
         }
         else

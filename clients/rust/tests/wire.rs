@@ -30,12 +30,14 @@ fn content_is_string_for_text_and_array_for_parts() {
     multi.content = Some(Content::Parts(vec![
         ContentPart::text("look:"),
         ContentPart::image_url("https://x/y.png"),
+        ContentPart::input_audio("UklGRg==", "wav"),
     ]));
     assert_eq!(
         serde_json::to_value(&multi).unwrap()["content"],
         json!([
             { "type": "text", "text": "look:" },
-            { "type": "image_url", "image_url": { "url": "https://x/y.png" } }
+            { "type": "image_url", "image_url": { "url": "https://x/y.png" } },
+            { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
         ])
     );
 }

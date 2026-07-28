@@ -599,7 +599,8 @@ fn components() -> Value {
             "ChatMessage": {
                 "type": "object",
                 "description": "A single conversation message. `content` may be a string or an array of \
-                    content parts (text/image), per the OpenAI dialect.",
+                    content parts (text/image/input_audio), per the OpenAI Chat Completions dialect. \
+                    Inline audio uses `{type:\"input_audio\",input_audio:{data:\"<base64>\",format:\"wav\"}}`.",
                 "properties": {
                     "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
                     "content": {},

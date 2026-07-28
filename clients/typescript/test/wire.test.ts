@@ -17,6 +17,31 @@ import { cachedTokens } from "../src/types.js";
 import type { ChatRequest } from "../src/types.js";
 import { Role } from "../src/enums.js";
 
+test("request encodes inline audio content exactly", () => {
+  const req: ChatRequest = {
+    model: "gpt-audio",
+    messages: [{
+      role: Role.USER,
+      content: [
+        { type: "text", text: "What is said?" },
+        {
+          type: "input_audio",
+          inputAudio: { data: "UklGRg==", format: "wav" },
+        },
+      ],
+    }],
+  };
+  const body = encodeChatRequest(req) as Record<string, unknown>;
+  const messages = body["messages"] as Array<Record<string, unknown>>;
+  assert.deepEqual(messages[0]!["content"], [
+    { type: "text", text: "What is said?" },
+    {
+      type: "input_audio",
+      input_audio: { data: "UklGRg==", format: "wav" },
+    },
+  ]);
+});
+
 test("request encodes reasoning + reasoning_details (signed, verbatim)", () => {
   const req: ChatRequest = {
     model: "some-model",

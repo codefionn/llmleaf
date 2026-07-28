@@ -39,6 +39,7 @@ pub const ModelType = gen.ModelType;
 // Chat
 pub const TextPart = gen.TextPart;
 pub const ImageUrlPart = gen.ImageUrlPart;
+pub const InputAudioPart = gen.InputAudioPart;
 pub const ContentPart = gen.ContentPart;
 pub const Content = gen.Content;
 pub const FunctionCall = gen.FunctionCall;

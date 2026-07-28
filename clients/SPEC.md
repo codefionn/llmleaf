@@ -39,6 +39,17 @@ double-encode it as a string). On decode, capture the sub-object back as a raw J
 ### POST /v1/chat/completions
 Body = `ChatRequest`. Notes:
 - `content` is `string` when the message has plain text, else an array of content parts.
+- Inline audio is an `input_audio` part:
+  `{"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}`.
+  `data` is opaque base64 and `format` is a provider-supported lowercase format. The gateway does
+  not transcode audio. OpenAI, OpenRouter, Gemini, and Vertex support this mapping; other
+  OpenAI-compatible targets can opt in with `settings.audio_input = true`. Unsupported targets
+  return an `unsupported` error so normal route fallback can continue.
+- `settings.chat_with_audio_input_api = "chat_completions"` selects Chat Completions only for
+  requests containing `input_audio`, while ordinary chat can remain on the API selected by
+  `settings.chat_api`. The audio-specific setting also accepts `"responses"`; because the current
+  Responses mapping cannot represent chat audio, that combination returns `unsupported` instead of
+  dropping the audio.
 - `stop` serialises as a bare string if it has one element, else an array (either is accepted; emitting an array is fine).
 - Prefer `max_completion_tokens`; still send `max_tokens` if the caller set only that.
 - `tool_choice` is a bare string (`"auto"`/`"none"`/`"required"`) or the named object.

@@ -186,6 +186,25 @@ fn parse_content_part(value: Value) -> Result<ContentPart, ModelError> {
                 .map(str::to_owned);
             Ok(ContentPart::ImageUrl { url, detail })
         }
+        Some("input_audio") => {
+            let audio = obj
+                .get("input_audio")
+                .and_then(Value::as_object)
+                .ok_or_else(|| mapping("input_audio part missing `input_audio` object"))?;
+            let data = audio
+                .get("data")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| mapping("input_audio part missing non-empty `input_audio.data`"))?
+                .to_string();
+            let format = audio
+                .get("format")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| mapping("input_audio part missing non-empty `input_audio.format`"))?
+                .to_string();
+            Ok(ContentPart::InputAudio { data, format })
+        }
         other => Err(mapping(format!("unsupported content part type {other:?}"))),
     }
 }
@@ -876,6 +895,43 @@ mod tests {
         assert_eq!(req.messages[0].content.len(), 2);
         assert_eq!(req.tools[0].name, "get_weather");
         assert_eq!(req.tool_choice, Some(ToolChoice::Required));
+    }
+
+    #[test]
+    fn parses_input_audio_content_part() {
+        let req = parse_chat_request(json!({
+            "model": "gpt-audio",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "transcribe this" },
+                    { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(req.messages[0].content.len(), 2);
+        assert!(matches!(
+            &req.messages[0].content[1],
+            ContentPart::InputAudio { data, format }
+                if data == "UklGRg==" && format == "wav"
+        ));
+    }
+
+    #[test]
+    fn rejects_incomplete_input_audio_content_part() {
+        for part in [
+            json!({ "type": "input_audio" }),
+            json!({ "type": "input_audio", "input_audio": { "format": "wav" } }),
+            json!({ "type": "input_audio", "input_audio": { "data": "UklGRg==" } }),
+        ] {
+            let err = parse_chat_request(json!({
+                "model": "gpt-audio",
+                "messages": [{ "role": "user", "content": [part] }]
+            }))
+            .unwrap_err();
+            assert!(matches!(err, ModelError::Mapping(_)));
+        }
     }
 
     #[test]

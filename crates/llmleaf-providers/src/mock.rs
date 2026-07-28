@@ -21,6 +21,11 @@ impl Provider for EchoProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.has_input_audio() {
+            return Err(ModelError::Unsupported(
+                "provider 'echo' does not support audio input in chat".into(),
+            ));
+        }
         let last_user = req
             .messages
             .iter()

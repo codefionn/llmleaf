@@ -119,10 +119,16 @@ pub const ImageUrlPart = struct {
     detail: ?[]const u8 = null, // "auto" | "low" | "high"
 };
 
+pub const InputAudioPart = struct {
+    data: []const u8, // base64-encoded audio bytes
+    format: []const u8, // provider-supported lowercase format
+};
+
 /// One content part of a multimodal message.
 pub const ContentPart = union(enum) {
     text: TextPart,
     image_url: ImageUrlPart,
+    input_audio: InputAudioPart,
 };
 
 /// Wire `content`: a plain string, or an array of content parts.

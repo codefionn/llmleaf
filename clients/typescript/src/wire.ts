@@ -136,6 +136,12 @@ function encodeContentPart(p: ContentPart): Json {
   if (p.type === "text") {
     return { type: "text", text: p.text };
   }
+  if (p.type === "input_audio") {
+    return {
+      type: "input_audio",
+      input_audio: { data: p.inputAudio.data, format: p.inputAudio.format },
+    };
+  }
   const imageUrl: Json = { url: p.imageUrl.url };
   put(imageUrl, "detail", p.imageUrl.detail);
   return { type: "image_url", image_url: imageUrl };
@@ -288,6 +294,15 @@ function decodeContent(v: unknown): MessageContent | undefined {
         parts.push({
           type: "image_url",
           imageUrl: { url: str(iu["url"]), detail: optStr(iu["detail"]) },
+        });
+      } else if (type === "input_audio") {
+        const audio = obj(p["input_audio"]) ?? {};
+        parts.push({
+          type: "input_audio",
+          inputAudio: {
+            data: str(audio["data"]),
+            format: str(audio["format"]),
+          },
         });
       } else {
         parts.push({ type: "text", text: str(p["text"]) });

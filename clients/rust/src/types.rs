@@ -129,16 +129,25 @@ pub struct ImageUrl {
     pub detail: Option<String>,
 }
 
+/// Inline base64-encoded audio.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InputAudio {
+    pub data: String,
+    pub format: String,
+}
+
 /// A single content part of a multimodal message.
 ///
 /// Serialises to the tagged OpenAI shapes:
 /// `{"type":"text","text":"..."}` and
-/// `{"type":"image_url","image_url":{...}}`.
+/// `{"type":"image_url","image_url":{...}}` and
+/// `{"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
     Text { text: String },
     ImageUrl { image_url: ImageUrl },
+    InputAudio { input_audio: InputAudio },
 }
 
 impl ContentPart {
@@ -153,6 +162,16 @@ impl ContentPart {
             image_url: ImageUrl {
                 url: url.into(),
                 detail: None,
+            },
+        }
+    }
+
+    /// Convenience constructor for inline base64 audio.
+    pub fn input_audio(data: impl Into<String>, format: impl Into<String>) -> Self {
+        ContentPart::InputAudio {
+            input_audio: InputAudio {
+                data: data.into(),
+                format: format.into(),
             },
         }
     }

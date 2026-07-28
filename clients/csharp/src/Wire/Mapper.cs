@@ -147,6 +147,7 @@ internal static class Mapper
     private static WireContentPart ContentPartToWire(ContentPart p) => p switch
     {
         ImageUrlPart img => new WireContentPart { ImageUrl = new WireImageUrl { Url = img.Url, Detail = img.Detail } },
+        InputAudioPart audio => new WireContentPart { InputAudio = new WireInputAudio { Data = audio.Data, Format = audio.Format } },
         TextPart txt => new WireContentPart { Text = txt.Text },
         _ => new WireContentPart { Text = "" },
     };
@@ -237,7 +238,9 @@ internal static class Mapper
                     }
                     parts.Add(wp.ImageUrl is { } iu
                         ? new ImageUrlPart(iu.Url, iu.Detail)
-                        : new TextPart(wp.Text ?? ""));
+                        : wp.InputAudio is { } audio
+                            ? new InputAudioPart(audio.Data, audio.Format)
+                            : new TextPart(wp.Text ?? ""));
                 }
                 return MessageContent.FromParts(parts);
             }

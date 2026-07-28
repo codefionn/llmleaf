@@ -100,6 +100,11 @@ impl Provider for AnthropicProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.has_input_audio() {
+            return Err(ModelError::Unsupported(
+                "provider 'anthropic' does not support audio input in chat".into(),
+            ));
+        }
         let endpoint = cx
             .endpoint
             .as_deref()
@@ -133,6 +138,11 @@ impl Provider for AnthropicProvider {
         req: BatchSpec,
         cx: &ProviderCx,
     ) -> Result<BatchHandle, ModelError> {
+        if req.items.iter().any(|item| item.request.has_input_audio()) {
+            return Err(ModelError::Unsupported(
+                "provider 'anthropic' does not support audio input in chat batches".into(),
+            ));
+        }
         let url = format!("{}/v1/messages/batches", self.endpoint(cx));
         let cache = prompt_cache(cx);
         let requests: Vec<Value> = req
@@ -334,6 +344,9 @@ fn message_to_anthropic(msg: &Message) -> Value {
             ContentPart::ImageUrl { url, .. } => {
                 json!({ "type": "image", "source": { "type": "url", "url": url } })
             }
+            // Guarded before request mapping; this arm keeps the mapper exhaustive for tests and makes
+            // accidental direct use visibly invalid rather than converting audio into another type.
+            ContentPart::InputAudio { .. } => Value::Null,
             // Reasoning blocks ride before the text/tool_use they precede in `content` (the canonical
             // order Anthropic requires). The `signature` is replayed verbatim — without it Anthropic
             // rejects the turn — and is omitted only when the block never carried one.

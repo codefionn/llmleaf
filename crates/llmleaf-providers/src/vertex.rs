@@ -31,7 +31,7 @@ use serde_json::{json, Map, Value};
 
 use std::sync::Arc;
 
-use crate::gemini::{gemini_sse_to_stream, request_to_gemini};
+use crate::gemini::{ensure_audio_input_supported, gemini_sse_to_stream, request_to_gemini};
 use crate::http::{post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
@@ -139,6 +139,7 @@ impl Provider for VertexProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        ensure_audio_input_supported(&req, self.name())?;
         let url = format!(
             "{}:streamGenerateContent?alt=sse",
             self.resource_base(cx, &req.model)?

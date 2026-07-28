@@ -63,11 +63,22 @@ type wireImagePart struct {
 	ImageURL wireImageURL `json:"image_url"`
 }
 
+type wireInputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"`
+}
+
+type wireAudioPart struct {
+	Type       string         `json:"type"`
+	InputAudio wireInputAudio `json:"input_audio"`
+}
+
 // wireContentPart marshals to one of the OpenAI content-part shapes depending on
 // which oneof arm is set.
 type wireContentPart struct {
 	text  *pb.TextPart
 	image *pb.ImageUrlPart
+	audio *pb.InputAudioPart
 }
 
 func (p wireContentPart) MarshalJSON() ([]byte, error) {
@@ -80,6 +91,13 @@ func (p wireContentPart) MarshalJSON() ([]byte, error) {
 			iu.Detail = p.image.Detail
 		}
 		return json.Marshal(wireImagePart{Type: "image_url", ImageURL: iu})
+	case p.audio != nil:
+		return json.Marshal(wireAudioPart{
+			Type: "input_audio",
+			InputAudio: wireInputAudio{
+				Data: p.audio.GetData(), Format: p.audio.GetFormat(),
+			},
+		})
 	default:
 		return []byte("null"), nil
 	}
@@ -93,6 +111,10 @@ func (p *wireContentPart) UnmarshalJSON(data []byte) error {
 			URL    string  `json:"url"`
 			Detail *string `json:"detail"`
 		} `json:"image_url"`
+		InputAudio *struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		} `json:"input_audio"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
@@ -101,6 +123,12 @@ func (p *wireContentPart) UnmarshalJSON(data []byte) error {
 	case "image_url":
 		if probe.ImageURL != nil {
 			p.image = &pb.ImageUrlPart{Url: probe.ImageURL.URL, Detail: probe.ImageURL.Detail}
+		}
+	case "input_audio":
+		if probe.InputAudio != nil {
+			p.audio = &pb.InputAudioPart{
+				Data: probe.InputAudio.Data, Format: probe.InputAudio.Format,
+			}
 		}
 	default: // "text" or unknown -> treat as text
 		p.text = &pb.TextPart{Text: probe.Text}
@@ -112,6 +140,8 @@ func partToPB(p *wireContentPart) *pb.ContentPart {
 	switch {
 	case p.image != nil:
 		return &pb.ContentPart{Part: &pb.ContentPart_ImageUrl{ImageUrl: p.image}}
+	case p.audio != nil:
+		return &pb.ContentPart{Part: &pb.ContentPart_InputAudio{InputAudio: p.audio}}
 	default:
 		t := p.text
 		if t == nil {
@@ -122,7 +152,9 @@ func partToPB(p *wireContentPart) *pb.ContentPart {
 }
 
 func partFromPB(p *pb.ContentPart) wireContentPart {
-	return wireContentPart{text: p.GetText(), image: p.GetImageUrl()}
+	return wireContentPart{
+		text: p.GetText(), image: p.GetImageUrl(), audio: p.GetInputAudio(),
+	}
 }
 
 // ---------------------------------------------------------------------------

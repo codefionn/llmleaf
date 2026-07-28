@@ -85,7 +85,17 @@ export interface ImageUrlPart {
   };
 }
 
-export type ContentPart = TextPart | ImageUrlPart;
+export interface InputAudioPart {
+  type: "input_audio";
+  inputAudio: {
+    /** Base64-encoded audio bytes. */
+    data: string;
+    /** Provider-supported lowercase format, for example "wav" or "mp3". */
+    format: string;
+  };
+}
+
+export type ContentPart = TextPart | ImageUrlPart | InputAudioPart;
 
 /** Wire `content` is either a plain string or an array of content parts. */
 export type MessageContent = string | ContentPart[];
