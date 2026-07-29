@@ -69,6 +69,11 @@ pwhash = "1"
 # Pure crypto, no HTTP — signature verification must never be hand-rolled, so this is a justified dep,
 # gated off by default so the lean core stays lean (the shipped binary turns it on).
 jsonwebtoken = "9"
+# HMAC-SHA256 (RustCrypto, pure Rust): signs the opaque batch ids ([server].batch_id_secret) so a
+# batch is bound to the key that created it, and digests the admin token so it is never held in
+# memory as plaintext. Never hand-rolled — same rule as JWT signature verification.
+hmac = "0.12"
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

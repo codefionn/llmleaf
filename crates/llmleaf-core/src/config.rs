@@ -56,7 +56,37 @@ impl Config {
     pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
         let cfg: Config = toml::from_str(s)?;
         cfg.control.validate()?;
+        cfg.validate_keys()?;
         Ok(cfg)
+    }
+
+    /// Post-parse integrity check on `[[keys]]`: key ids are unique, and so are the *display* ids
+    /// (`name` if set, else the key id). Display-id uniqueness is load-bearing, not cosmetic:
+    /// events, `/v1/models` scoping, and the signed batch-id owner binding
+    /// (`[server].batch_id_secret`) all address a key by its display id, so two keys sharing one
+    /// would be indistinguishable — including for cross-tenant batch ownership. Caught at load so a
+    /// duplicated `name` fails fast rather than silently aliasing one key to another's scope.
+    fn validate_keys(&self) -> Result<(), ConfigError> {
+        let mut ids = HashSet::with_capacity(self.keys.len());
+        let mut displays = HashSet::with_capacity(self.keys.len());
+        for k in &self.keys {
+            if !ids.insert(k.id.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "duplicate key id '{}'; ids must be unique",
+                    k.id
+                )));
+            }
+            let display = k.name.as_deref().unwrap_or(&k.id);
+            if !displays.insert(display) {
+                return Err(ConfigError::Invalid(format!(
+                    "duplicate key display id '{display}' (key '{}' collides); `name` values must \
+                     be unique across [[keys]] — events, model scoping, and batch ownership address \
+                     keys by display id",
+                    k.id
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -75,8 +105,18 @@ pub struct ServerConfig {
     /// Socket address the consumer + admin + event surfaces bind to.
     pub listen: String,
     /// Token guarding the admin API and event stream. `None` ⇒ those surfaces are disabled
-    /// (config-only operation is still fully possible — principle 6).
+    /// (config-only operation is still fully possible — principle 6). Held in memory only as a
+    /// SHA-256 digest, never as the plaintext token.
     pub admin_token: Option<Secret>,
+    /// Secret keying the HMAC signature on opaque batch ids (`[batch_id](crate::batch_id)`). When
+    /// set, a batch id embeds its creating key's id and a tamper-evident tag, so the
+    /// retrieve/cancel/results surfaces (which authenticate identity only) can refuse any key but
+    /// the owner — a learned or guessed upstream id is then useless to another tenant. Every node of
+    /// a deployment must share the SAME secret (via `env:` indirection) so an id minted on one node
+    /// verifies on all of them (principle 9). `None` ⇒ legacy unsigned ids: batches are protected
+    /// only by the unguessability of the upstream id (the engine warns at startup).
+    #[serde(default)]
+    pub batch_id_secret: Option<Secret>,
     /// Capacity of the in-memory event broadcast ring. Bounded on purpose: the core never stores
     /// events, it relays them; slow consumers lose the oldest, they never back-pressure the hot path.
     pub event_buffer: usize,
@@ -104,6 +144,7 @@ impl Default for ServerConfig {
         ServerConfig {
             listen: "127.0.0.1:8080".to_string(),
             admin_token: None,
+            batch_id_secret: None,
             event_buffer: 1024,
             include_payloads: false,
             fallback_cooldown_secs: 15,
@@ -955,6 +996,72 @@ mod tests {
         assert_eq!(intro.url, "https://idp.example.com/introspect");
         assert_eq!(intro.cache_ttl_secs, 15);
         assert_eq!(intro.timeout_ms, 2000); // default
+    }
+
+    #[test]
+    fn duplicate_key_ids_are_rejected_at_load() {
+        let toml = r#"
+            [[keys]]
+            id = "dup"
+            pw_hash = "$2y$04$abc"
+
+            [[keys]]
+            id = "dup"
+            pw_hash = "$2y$04$def"
+        "#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid(ref m) if m.contains("duplicate key id 'dup'")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_key_display_names_are_rejected_at_load() {
+        // Distinct ids but the same effective display id (`name` wins over id) — the ambiguity the
+        // startup check exists to catch.
+        let toml = r#"
+            [[keys]]
+            id = "a"
+            pw_hash = "$2y$04$abc"
+            name = "team"
+
+            [[keys]]
+            id = "b"
+            pw_hash = "$2y$04$def"
+            name = "team"
+        "#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid(ref m) if m.contains("duplicate key display id 'team'")),
+            "{err}"
+        );
+
+        // A `name` colliding with another key's *id* is the same display-id clash.
+        let toml = r#"
+            [[keys]]
+            id = "team"
+            pw_hash = "$2y$04$abc"
+
+            [[keys]]
+            id = "b"
+            pw_hash = "$2y$04$def"
+            name = "team"
+        "#;
+        assert!(Config::from_toml_str(toml).is_err());
+
+        // Distinct display ids pass.
+        let toml = r#"
+            [[keys]]
+            id = "a"
+            pw_hash = "$2y$04$abc"
+            name = "team-a"
+
+            [[keys]]
+            id = "b"
+            pw_hash = "$2y$04$def"
+        "#;
+        assert!(Config::from_toml_str(toml).is_ok());
     }
 
     #[test]

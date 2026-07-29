@@ -13,9 +13,25 @@
 //! (no `Box`/`Arc<dyn>` is introduced on any request path).
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::keys::KeyView;
 use crate::server::AppState;
+
+/// Digest an admin token for storage/comparison. The configured token is hashed at startup and the
+/// plaintext dropped, so memory (state dumps, debug output, core dumps) never holds it; each
+/// presented token is digested the same way and the digests compared in constant time.
+pub(crate) fn token_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Constant-time equality over two digests — no early exit on a prefix match.
+fn digest_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
 
 /// The outcome of the admin token check — transport-agnostic. The HTTP edge maps this to status codes
 /// (`Disabled` → 404, `Unauthorized` → 401); the simulation matches on it directly. There is no
@@ -101,7 +117,8 @@ impl Observability for AppState {
             return AdminAccess::Disabled;
         };
         match presented {
-            Some(t) if t == expected.as_str() => AdminAccess::Authorized,
+            // Compare digests, never the plaintext token, and in constant time.
+            Some(t) if digest_eq(&token_digest(t), expected.as_ref()) => AdminAccess::Authorized,
             _ => AdminAccess::Unauthorized,
         }
     }

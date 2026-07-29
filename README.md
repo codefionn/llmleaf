@@ -96,7 +96,7 @@ Consumer endpoints (OpenAI-compatible unless noted):
 | `POST /v1/audio/speech`, `GET /v1/audio/voices` | Text-to-speech |
 | `POST /v1/audio/transcriptions` | Speech-to-text |
 | `GET /v1/realtime` | OpenAI Realtime (WebSocket) |
-| `POST /v1/batches`, `GET /v1/batches/{id}[/results]` | Batch jobs |
+| `POST /v1/batches`, `GET /v1/batches/{id}[/results]` | Batch jobs (ids HMAC-signed + owner-bound with `[server].batch_id_secret`) |
 | `GET /v1/models`, `GET /v1/openapi.json`, `GET /healthz` | Discovery & health |
 
 Read-only admin (optional token): `GET /admin/routes`, `/admin/health`, `/admin/keys`.

@@ -258,9 +258,9 @@ async fn create_returns_opaque_provider_encoding_id() {
 
     // The id decodes to (provider instance, upstream id) — the routing the later calls rely on lives
     // entirely inside the id, not in any node's memory.
-    let (provider, upstream) = llmleaf_core::batch_id::decode_batch(id).unwrap();
-    assert_eq!(provider, "mocka");
-    assert_eq!(upstream, "up-batch");
+    let d = llmleaf_core::batch_id::decode_batch(id, None).unwrap();
+    assert_eq!(d.provider, "mocka");
+    assert_eq!(d.upstream, "up-batch");
 }
 
 #[tokio::test]
@@ -453,6 +453,158 @@ async fn create_gates_every_model_against_the_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Same shape as [`CONFIG`] but with `[server].batch_id_secret`: ids are signed and owner-bound.
+const SIGNED_CONFIG: &str = r#"
+[server]
+listen = "127.0.0.1:0"
+batch_id_secret = "test-batch-secret"
+
+[[providers]]
+name = "mocka"
+kind = "mocka"
+
+[[providers]]
+name = "mockb"
+kind = "mockb"
+
+[[routes]]
+model = "demo"
+targets = [{ provider = "mocka" }]
+
+[[routes]]
+model = "other"
+targets = [{ provider = "mockb" }]
+
+[[keys]]
+id = "local"
+pw_hash = "$2y$04$IcVq6nhz5Tf85lBpWclgKeDjWxWMHlIXLE696.T7m9Eg12HekWFJO"
+name = "local"
+
+[[keys]]
+id = "restricted"
+pw_hash = "$2y$04$IcVq6nhz5Tf85lBpWclgKeDjWxWMHlIXLE696.T7m9Eg12HekWFJO"
+allowed_models = ["demo"]
+"#;
+
+fn signed_app() -> axum::Router {
+    let config = Config::from_toml_str(SIGNED_CONFIG).unwrap();
+    let mut registry = ProviderRegistry::new();
+    registry.register("mocka", Arc::new(MockBatchProvider { name: "mocka" }));
+    registry.register("mockb", Arc::new(MockBatchProvider { name: "mockb" }));
+    build_router(build_state(&config, Arc::new(registry)).unwrap())
+}
+
+#[tokio::test]
+async fn signed_ids_bind_the_batch_to_its_creating_key() {
+    let app = signed_app();
+
+    // `local` creates a batch.
+    let v = body_json(
+        app.clone()
+            .oneshot(create_req(LOCAL_TOKEN, &["demo"]))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = v["id"].as_str().unwrap().to_string();
+
+    // The owner can poll, read results, and cancel.
+    for uri in [
+        format!("/v1/batches/{id}"),
+        format!("/v1/batches/{id}/results"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(get_req(LOCAL_TOKEN, &uri))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "owner GET {uri}");
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/batches/{id}/cancel"))
+                .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "owner cancel");
+
+    // Another valid key — fully authenticated, even allowed on the same model — gets 404 on every
+    // surface: the batch is invisible to non-owners (no existence leak, no cross-tenant read).
+    for uri in [
+        format!("/v1/batches/{id}"),
+        format!("/v1/batches/{id}/results"),
+        format!("/v1/batches/{id}/cancel"),
+    ] {
+        let method = if uri.ends_with("cancel") {
+            "POST"
+        } else {
+            "GET"
+        };
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header("authorization", format!("Bearer {RESTRICTED_TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "non-owner {method} {uri} must be 404"
+        );
+    }
+}
+
+#[tokio::test]
+async fn signed_ids_reject_forged_and_legacy_tokens() {
+    let app = signed_app();
+    // A hand-crafted legacy (unsigned) id naming a real provider must not decode: with a secret
+    // configured, only signed ids are accepted.
+    let legacy = llmleaf_core::batch_id::encode_batch("mocka", "up-batch", "forged-owner", None);
+    for id in [legacy.as_str(), "batch_bogus"] {
+        let resp = app
+            .clone()
+            .oneshot(get_req(LOCAL_TOKEN, &format!("/v1/batches/{id}")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "id {id} must be 404");
+    }
+
+    // Cross-node still works: a second node from the same config (same secret) serves the id.
+    let node_a = signed_app();
+    let node_b = signed_app();
+    let id = body_json(
+        node_a
+            .oneshot(create_req(LOCAL_TOKEN, &["demo"]))
+            .await
+            .unwrap(),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = node_b
+        .oneshot(get_req(LOCAL_TOKEN, &format!("/v1/batches/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "node B serves node A's batch"
+    );
 }
 
 #[tokio::test]

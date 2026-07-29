@@ -218,6 +218,11 @@ pub struct Engine {
     /// The optional in-flight sync interceptor (`[control.intercept]`), wired by the binary. `None` ⇒
     /// no hot-path insertion at all.
     interceptor: Option<Arc<dyn Interceptor>>,
+    /// Signs opaque batch ids (`[server].batch_id_secret`): a signed id embeds its creating key, so
+    /// the identity-only batch surfaces can bind every caller to the batch's owner. `None` ⇒ legacy
+    /// unsigned ids (warned about at startup — batches are then guarded only by upstream-id
+    /// unguessability).
+    batch_signer: Option<Arc<crate::batch_id::BatchIdSigner>>,
 }
 
 impl Engine {
@@ -242,6 +247,19 @@ impl Engine {
             dynamic_routes: HashMap::new(),
             dynamic_instances: HashMap::new(),
         };
+        let batch_signer = config
+            .server
+            .batch_id_secret
+            .as_ref()
+            .and_then(|s| s.resolve())
+            .map(|secret| Arc::new(crate::batch_id::BatchIdSigner::new(&secret)));
+        if batch_signer.is_none() {
+            tracing::warn!(
+                "[server].batch_id_secret is not set: batch ids are unsigned and not bound to \
+                 their creating key — any authenticated key that learns a batch id can poll, \
+                 cancel, or read its results. Set a shared secret to bind batches to their owner."
+            );
+        }
         Engine {
             topology: RwLock::new(Arc::new(base)),
             base_registry: registry,
@@ -254,6 +272,22 @@ impl Engine {
             include_payloads: config.server.include_payloads,
             cooldown_secs: config.server.fallback_cooldown_secs,
             interceptor,
+            batch_signer,
+        }
+    }
+
+    /// Refuse `key` access to a batch owned by someone else. A signed id carries its owner; an
+    /// owner mismatch is reported as not-found (never revealing that the id was genuine). Unsigned
+    /// ids carry no owner and pass (the legacy posture — see `batch_id` module docs).
+    fn check_batch_owner(
+        &self,
+        owner: Option<&str>,
+        key: &str,
+        batch_id: &str,
+    ) -> Result<(), EngineError> {
+        match owner {
+            Some(owner) if owner != key => Err(EngineError::BatchNotFound(batch_id.to_string())),
+            _ => Ok(()),
         }
     }
 
@@ -838,7 +872,7 @@ impl Engine {
 
         self.events.emit(Event::RequestStarted {
             id: request_id.clone(),
-            key,
+            key: key.clone(),
             model: routing_model,
             request: self.payload(&spec),
         });
@@ -850,7 +884,12 @@ impl Engine {
                     provider: provider_name.clone(),
                     upstream_model: handle.endpoint.clone().unwrap_or_default(),
                 });
-                handle.id = batch_id::encode_batch(&provider_name, &handle.id);
+                handle.id = batch_id::encode_batch(
+                    &provider_name,
+                    &handle.id,
+                    &key,
+                    self.batch_signer.as_deref(),
+                );
                 self.events.emit(Event::RequestCompleted {
                     id: request_id,
                     finish: None,
@@ -870,37 +909,53 @@ impl Engine {
     /// Poll a batch's status. Decodes the owning provider from the opaque id and forwards directly —
     /// no router, no fallback (only that instance holds the job). Deliberately event-free: status is
     /// polled frequently and the core keeps the poll a thin proxy (principle 1). The returned handle's
-    /// id is re-wrapped into the opaque token so the consumer keeps seeing a stable id.
+    /// id is re-wrapped into the opaque token so the consumer keeps seeing a stable id. `key` is the
+    /// authenticated caller: a signed id admits only its owner (see [`Self::check_batch_owner`]).
     pub async fn batch_retrieve(
         &self,
         batch_id: &str,
+        key: &str,
         request_id: String,
     ) -> Result<BatchHandle, EngineError> {
         let topo = self.topology();
-        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
-        let cx = topo.build_cx(&provider_name, &request_id);
+        let (provider, decoded) = self.batch_target(&topo, batch_id)?;
+        self.check_batch_owner(decoded.owner.as_deref(), key, batch_id)?;
+        let cx = topo.build_cx(&decoded.provider, &request_id);
         let mut handle = provider
-            .batch_retrieve(&upstream_id, &cx)
+            .batch_retrieve(&decoded.upstream, &cx)
             .await
             .map_err(EngineError::AllTargetsFailed)?;
-        handle.id = batch_id::encode_batch(&provider_name, &handle.id);
+        handle.id = batch_id::encode_batch(
+            &decoded.provider,
+            &handle.id,
+            key,
+            self.batch_signer.as_deref(),
+        );
         Ok(handle)
     }
 
-    /// Request cancellation of a batch. Like [`Self::batch_retrieve`], routed by the opaque id.
+    /// Request cancellation of a batch. Like [`Self::batch_retrieve`], routed by the opaque id and
+    /// bound to the owning key.
     pub async fn batch_cancel(
         &self,
         batch_id: &str,
+        key: &str,
         request_id: String,
     ) -> Result<BatchHandle, EngineError> {
         let topo = self.topology();
-        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
-        let cx = topo.build_cx(&provider_name, &request_id);
+        let (provider, decoded) = self.batch_target(&topo, batch_id)?;
+        self.check_batch_owner(decoded.owner.as_deref(), key, batch_id)?;
+        let cx = topo.build_cx(&decoded.provider, &request_id);
         let mut handle = provider
-            .batch_cancel(&upstream_id, &cx)
+            .batch_cancel(&decoded.upstream, &cx)
             .await
             .map_err(EngineError::AllTargetsFailed)?;
-        handle.id = batch_id::encode_batch(&provider_name, &handle.id);
+        handle.id = batch_id::encode_batch(
+            &decoded.provider,
+            &handle.id,
+            key,
+            self.batch_signer.as_deref(),
+        );
         Ok(handle)
     }
 
@@ -908,6 +963,7 @@ impl Engine {
     /// instrumented so each succeeded line's provider-reported usage is priced and pushed as a `Usage`
     /// event (principle 5: relay, never compute). Because results may be fetched more than once, those
     /// events repeat — downstream dedupes by the event id, which is `"<batch-id>:<custom-id>"`.
+    /// `key` is the authenticated caller: a signed id admits only its owner.
     pub async fn batch_results(
         &self,
         batch_id: &str,
@@ -915,10 +971,11 @@ impl Engine {
         request_id: String,
     ) -> Result<BatchResultStream, EngineError> {
         let topo = self.topology();
-        let (provider, provider_name, upstream_id) = Self::batch_target(&topo, batch_id)?;
-        let cx = topo.build_cx(&provider_name, &request_id);
+        let (provider, decoded) = self.batch_target(&topo, batch_id)?;
+        self.check_batch_owner(decoded.owner.as_deref(), &key, batch_id)?;
+        let cx = topo.build_cx(&decoded.provider, &request_id);
         let stream = provider
-            .batch_results(&upstream_id, &cx)
+            .batch_results(&decoded.upstream, &cx)
             .await
             .map_err(EngineError::AllTargetsFailed)?;
         Ok(self.instrument_batch(stream, batch_id.to_string(), key))
@@ -958,21 +1015,24 @@ impl Engine {
         ))
     }
 
-    /// Decode the opaque batch id into `(provider, provider_instance_name, upstream_id)`. A decode
-    /// failure or an instance no longer in this node's registry is reported as not-found (the id is
-    /// opaque and may be stale or foreign — never a 5xx). The provider name is the one we encoded into
-    /// the id at create time, i.e. the config instance name `build_cx` expects.
+    /// Decode the opaque batch id, verifying the HMAC tag when ids are signed (a forged or tampered
+    /// id never reaches a provider). A decode failure or an instance no longer in this node's
+    /// registry is reported as not-found (the id is opaque and may be stale or foreign — never a
+    /// 5xx). The decoded provider name is the one we encoded into the id at create time, i.e. the
+    /// config instance name `build_cx` expects; the decoded owner is the creating key for signed
+    /// ids, `None` for legacy unsigned ones.
     fn batch_target(
+        &self,
         topo: &Topology,
         batch_id: &str,
-    ) -> Result<(Arc<dyn Provider>, String, String), EngineError> {
-        let (provider_name, upstream_id) = batch_id::decode_batch(batch_id)
+    ) -> Result<(Arc<dyn Provider>, batch_id::DecodedBatch), EngineError> {
+        let decoded = batch_id::decode_batch(batch_id, self.batch_signer.as_deref())
             .map_err(|_| EngineError::BatchNotFound(batch_id.to_string()))?;
         let provider = topo
             .registry
-            .get(&provider_name)
+            .get(&decoded.provider)
             .ok_or_else(|| EngineError::BatchNotFound(batch_id.to_string()))?;
-        Ok((provider, provider_name, upstream_id))
+        Ok((provider, decoded))
     }
 
     /// Wrap a provider batch-result stream so each succeeded line's usage is priced and emitted as a

@@ -9,7 +9,22 @@
 listen = "0.0.0.0:8080"
 # Guards the read-only admin GETs (/admin/routes, /admin/health, /admin/keys). `env:VAR` reads the
 # environment. Omit entirely to disable those read-only surfaces (the proxy still serves consumers).
+# Held in memory only as a SHA-256 digest — the plaintext token is never kept around.
 admin_token = "env:LLMLEAF_ADMIN_TOKEN"
+# Signs the opaque batch ids handed out by POST /v1/batches. When set, a batch id embeds its creating
+# key and an HMAC tag, and the poll/cancel/results surfaces (which authenticate identity only — the
+# id names no model to gate on) refuse every key but the owner: a learned or guessed batch id is
+# then useless to another tenant. Omit ⇒ legacy unsigned ids: batches are protected only by the
+# unguessability of the upstream id (a startup warning is logged).
+#
+# Generate a fresh secret (any high-entropy string works — it is an HMAC key, never a password):
+#   openssl rand -base64 32        # or: openssl rand -hex 32
+#   head -c 32 /dev/urandom | base64
+# Then distribute the SAME value to every node behind the load balancer (via env:, never committed
+# to a shared file) so an id minted on one node verifies on all of them. Rotate by deploying the new
+# secret everywhere — note ids minted under the old secret stop verifying (in-flight batches 404),
+# so rotate only when no unfinished batches matter.
+batch_id_secret = "env:LLMLEAF_BATCH_ID_SECRET"
 # Set true to include full canonical payloads in lifecycle events (for archival/replay bolt-ons via
 # the [control.usage] push sink below).
 include_payloads = false

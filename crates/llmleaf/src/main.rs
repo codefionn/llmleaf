@@ -36,6 +36,7 @@ const DEV_CONFIG: &str = r#"
 [server]
 listen = "127.0.0.1:8080"
 admin_token = "dev-admin"
+batch_id_secret = "dev-batch-secret"
 
 [[providers]]
 name = "echo"

@@ -31,6 +31,10 @@ pwhash.workspace = true
 # consumers are URL-safe base64 of `<provider-instance>\x1f<upstream-id>`, so any node can decode which
 # provider owns a batch straight from the id — no node-local batch state (principle 9). See `batch_id`.
 base64.workspace = true
+# Signs batch ids (binds a batch to its creating key) and digests the admin token at rest. RustCrypto
+# HMAC-SHA256, pure Rust — never hand-rolled.
+hmac.workspace = true
+sha2.workspace = true
 # Optional: JWT/JWKS validation for the OAuth2 resource-server surface. Crypto only — HTTP (JWKS
 # fetch, introspection) lives in llmleaf-control, keeping the core HTTP-client-free (principle 2).
 jsonwebtoken = { workspace = true, optional = true }

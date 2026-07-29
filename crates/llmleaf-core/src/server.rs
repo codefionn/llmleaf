@@ -58,8 +58,9 @@ pub struct AppState {
     #[cfg(feature = "oauth")]
     pub oauth: Option<Arc<crate::oauth::OAuthVerifier>>,
     pub events: EventBus,
-    /// Resolved admin token. `None` ⇒ the read-only admin surface is disabled.
-    pub admin_token: Option<Arc<String>>,
+    /// SHA-256 digest of the resolved admin token — the plaintext token is never held in memory.
+    /// `None` ⇒ the read-only admin surface is disabled.
+    pub admin_token: Option<Arc<[u8; 32]>>,
     /// Maximum inbound request body size in bytes (`[server].max_body_bytes`), applied as the router's
     /// body limit so base64-inlined multimodal images don't 413 against axum's 2 MiB default.
     max_body_bytes: usize,
@@ -99,7 +100,7 @@ pub fn build_state_with(
         .admin_token
         .as_ref()
         .and_then(|s| s.resolve())
-        .map(Arc::new);
+        .map(|t| Arc::new(crate::admin::token_digest(&t)));
 
     // OAuth2 resource-server verifier (`[oauth]`), built crypto-only here; the control plane installs
     // its JWKS roster and introspector afterwards (mirrors how it feeds the key store).
@@ -214,6 +215,13 @@ async fn chat_completions(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+
+    // Authenticate identity BEFORE parsing the body: a bad token never reaches the parser (a malformed
+    // body must not mask the 401, and no work is spent on unauthenticated requests).
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
 
     // Map in (principle 3: dialect → canonical at the edge).
     let req = match openai::parse_chat_request(body) {
@@ -222,9 +230,8 @@ async fn chat_completions(
     };
     let logical_model = req.model.clone();
     let stream_requested = req.stream;
-    let now = now_secs();
 
-    // Authenticate: a verdict lookup, never arithmetic (principle 5).
+    // Authorize the model: a verdict lookup, never arithmetic (principle 5).
     let key = match authorize_token(&state, &token, &logical_model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -303,6 +310,12 @@ async fn anthropic_messages(
             "missing x-api-key",
         );
     };
+    let now = now_secs();
+
+    // Authenticate identity BEFORE parsing the body: a bad token never reaches the parser.
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return anthropic_auth_error(e);
+    }
 
     // Map in (principle 3: dialect → canonical at the edge).
     let req = match anthropic::parse_messages_request(body) {
@@ -317,10 +330,9 @@ async fn anthropic_messages(
     };
     let logical_model = req.model.clone();
     let stream_requested = req.stream;
-    let now = now_secs();
 
-    // Authenticate: a verdict lookup, never arithmetic (principle 5). The same key store and verdict
-    // overlay serve every surface — the dialect changes, the identity model does not.
+    // Authorize the model: a verdict lookup, never arithmetic (principle 5). The same key store and
+    // verdict overlay serve every surface — the dialect changes, the identity model does not.
     let key = match authorize_token(&state, &token, &logical_model, now).await {
         Ok(id) => id,
         Err(e) => return anthropic_auth_error(e),
@@ -408,6 +420,12 @@ async fn responses_create(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+
+    // Authenticate identity BEFORE parsing the body: a bad token never reaches the parser.
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
 
     // Map in (principle 3: dialect → canonical at the edge).
     let req = match responses::parse_responses_request(body) {
@@ -418,9 +436,8 @@ async fn responses_create(
     let stream_requested = req.stream;
     // Capture what the response echoes from the request before the request is consumed by the engine.
     let echo = responses::RequestEcho::from_request(&req);
-    let now = now_secs();
 
-    // Authenticate: a verdict lookup, never arithmetic (principle 5).
+    // Authorize the model: a verdict lookup, never arithmetic (principle 5).
     let key = match authorize_token(&state, &token, &logical_model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -846,13 +863,17 @@ async fn embeddings_handler(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+    // Authenticate identity before parsing (a bad token never reaches the parser).
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
     let req = match embeddings::parse_embedding_request(body) {
         Ok(r) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
     };
     let model = req.model.clone();
     let encoding_format = req.encoding_format.clone();
-    let now = now_secs();
     let key = match authorize_token(&state, &token, &model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -881,12 +902,16 @@ async fn rerank_handler(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+    // Authenticate identity before parsing (a bad token never reaches the parser).
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
     let req = match rerank::parse_rerank_request(body) {
         Ok(r) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
     };
     let model = req.model.clone();
-    let now = now_secs();
     let key = match authorize_token(&state, &token, &model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -911,13 +936,17 @@ async fn audio_speech(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+    // Authenticate identity before parsing (a bad token never reaches the parser).
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
     let req = match speech::parse_speech_request(body) {
         Ok(r) => r,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
     };
     let model = req.model.clone();
     let response_format = req.response_format.clone();
-    let now = now_secs();
     let key = match authorize_token(&state, &token, &model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -1484,6 +1513,13 @@ async fn audio_transcriptions(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+    // Authenticate identity BEFORE consuming the multipart body: an unauthenticated request must
+    // never get its (potentially huge) upload buffered into memory — the model gate happens after
+    // parsing, when the model field is known.
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
 
     let mut form = transcription::TranscriptionForm::default();
     loop {
@@ -1525,7 +1561,6 @@ async fn audio_transcriptions(
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
     };
     let model = req.model.clone();
-    let now = now_secs();
     let key = match authorize_token(&state, &token, &model, now).await {
         Ok(id) => id,
         Err(e) => return auth_error(e),
@@ -1557,11 +1592,15 @@ async fn create_batch(
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
+    let now = now_secs();
+    // Authenticate identity before parsing (a bad token never reaches the parser).
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
     let spec = match batch::parse_batch_create(body) {
         Ok(s) => s,
         Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
     };
-    let now = now_secs();
 
     // Gate on identity and on each distinct model. `parse_batch_create` guarantees ≥1 item, so the
     // loop authorizes at least once and `key` is always set.
@@ -1589,7 +1628,7 @@ async fn create_batch(
 }
 
 /// `GET /v1/batches/{id}` — poll a batch's status. Routed by the opaque id; identity-only auth (no
-/// model to gate on).
+/// model to gate on). A signed id additionally binds the caller to the batch's owning key.
 async fn retrieve_batch(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1599,17 +1638,19 @@ async fn retrieve_batch(
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
     let now = now_secs();
-    if let Err(e) = authorize_token_identity(&state, &token, now).await {
-        return auth_error(e);
-    }
+    let key = match authorize_token_identity(&state, &token, now).await {
+        Ok(id) => id,
+        Err(e) => return auth_error(e),
+    };
     let request_id = next_request_id(&state.request_seq);
-    match state.engine.batch_retrieve(&id, request_id).await {
+    match state.engine.batch_retrieve(&id, &key, request_id).await {
         Ok(handle) => Json(batch::handle_to_json(&handle)).into_response(),
         Err(e) => engine_error(e),
     }
 }
 
 /// `POST /v1/batches/{id}/cancel` — request cancellation. Routed by the opaque id; identity-only auth.
+/// A signed id additionally binds the caller to the batch's owning key.
 async fn cancel_batch(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1619,11 +1660,12 @@ async fn cancel_batch(
         return error(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
     let now = now_secs();
-    if let Err(e) = authorize_token_identity(&state, &token, now).await {
-        return auth_error(e);
-    }
+    let key = match authorize_token_identity(&state, &token, now).await {
+        Ok(id) => id,
+        Err(e) => return auth_error(e),
+    };
     let request_id = next_request_id(&state.request_seq);
-    match state.engine.batch_cancel(&id, request_id).await {
+    match state.engine.batch_cancel(&id, &key, request_id).await {
         Ok(handle) => Json(batch::handle_to_json(&handle)).into_response(),
         Err(e) => engine_error(e),
     }
