@@ -95,8 +95,19 @@ impl Provider for OllamaProvider {
             ));
         }
         let url = format!("{}/api/chat", self.endpoint(cx));
-        let body = request_to_ollama(&req, cx.setting_str("keep_alive"));
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
+        let body = request_to_ollama(&req, cx.setting_str("keep_alive"), use_stream);
         let http_req = self.auth(HttpRequest::post(&url).json(body), cx);
+        if !use_stream {
+            let value = post_json(&*self.http, http_req).await?;
+            let mut seen_start = false;
+            let mut saw_tool = false;
+            return Ok(Box::pin(stream::iter(
+                ollama_chunk_to_canonical(&value, &mut seen_start, &mut saw_tool)
+                    .into_iter()
+                    .map(Ok),
+            )));
+        }
         let resp = send_checked(&*self.http, http_req).await?;
 
         // Parse the NDJSON stream incrementally: one JSON object per line, tokens flowing as they
@@ -187,9 +198,9 @@ impl Provider for OllamaProvider {
 
 /// Canonical request → Ollama `/api/chat` body. Sampling is flattened into `options`; the consumer's
 /// `keep_alive` knob (operator config) rides through when set; anything unmodeled passes verbatim via
-/// `extra` (principle 7). `stream` is forced on — the internal representation is always a stream
-/// (principle 4); a single non-streamed object would still parse, but streaming is the point.
-fn request_to_ollama(req: &ChatRequest, keep_alive: Option<&str>) -> Value {
+/// `extra` (principle 7). `stream` is selected by the provider instance's upstream-streaming policy;
+/// either response shape is converted back to the canonical stream boundary.
+fn request_to_ollama(req: &ChatRequest, keep_alive: Option<&str>, stream: bool) -> Value {
     let mut obj = Map::new();
     obj.insert("model".into(), json!(req.model));
     obj.insert(
@@ -253,8 +264,7 @@ fn request_to_ollama(req: &ChatRequest, keep_alive: Option<&str>) -> Value {
     for (k, v) in &req.extra {
         obj.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    // The internal boundary is a stream; force NDJSON streaming regardless of what `extra` carried.
-    obj.insert("stream".into(), json!(true));
+    obj.insert("stream".into(), json!(stream));
     Value::Object(obj)
 }
 
@@ -617,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn flattens_sampling_into_options_and_forces_stream() {
+    fn flattens_sampling_into_options_and_sets_selected_stream_mode() {
         let req = ChatRequest {
             model: "qwen3".into(),
             messages: vec![user("hi")],
@@ -631,7 +641,7 @@ mod tests {
             thinking: None,
             extra: Default::default(),
         };
-        let wire = request_to_ollama(&req, Some("5m"));
+        let wire = request_to_ollama(&req, Some("5m"), true);
         assert_eq!(wire["model"], "qwen3");
         assert_eq!(wire["messages"][0]["content"], "hi");
         // Sampling is nested under `options`, not top-level; max_tokens → num_predict.
@@ -640,7 +650,7 @@ mod tests {
         assert_eq!(wire["options"]["num_predict"], 256);
         assert_eq!(wire["options"]["stop"][0], "</s>");
         assert!(wire.get("temperature").is_none());
-        // keep_alive from settings, and streaming forced on.
+        // keep_alive from settings, and the selected upstream stream mode.
         assert_eq!(wire["keep_alive"], "5m");
         assert_eq!(wire["stream"], true);
         // No thinking requested → no `think` field.
@@ -668,7 +678,7 @@ mod tests {
             thinking: None,
             extra,
         };
-        let wire = request_to_ollama(&req, None);
+        let wire = request_to_ollama(&req, None, true);
         // Consumer runner options survive (would be dropped by a naive top-level `or_insert`)...
         assert_eq!(wire["options"]["num_ctx"], 8192);
         assert_eq!(wire["options"]["seed"], 42);
@@ -695,7 +705,7 @@ mod tests {
                 extra: Default::default(),
             };
             req.thinking = Some(t);
-            request_to_ollama(&req, None)["think"].clone()
+            request_to_ollama(&req, None, true)["think"].clone()
         };
         assert_eq!(mk(Thinking::Low), "low");
         assert_eq!(mk(Thinking::Med), "medium");
@@ -735,7 +745,7 @@ mod tests {
             thinking: None,
             extra: Default::default(),
         };
-        let wire = request_to_ollama(&req, None);
+        let wire = request_to_ollama(&req, None, true);
         assert_eq!(wire["tools"][0]["type"], "function");
         assert_eq!(wire["tools"][0]["function"]["name"], "get_weather");
         // Arguments are a real JSON object on the wire, not OpenAI's stringified blob.

@@ -6,6 +6,7 @@
 //! `usage` object in v2). Mapped here.
 
 use async_trait::async_trait;
+use futures::stream;
 use llmleaf_model::{
     ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse, FinishReason, Message, Modality,
     ModelError, ModelInfo, RerankDocument, RerankRequest, RerankResponse, RerankResult,
@@ -83,18 +84,29 @@ impl Provider for CohereProvider {
             .unwrap_or(DEFAULT_ENDPOINT)
             .trim_end_matches('/');
         let url = format!("{endpoint}/v2/chat");
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
         let mut body = request_to_cohere(&req);
-        body["stream"] = json!(true);
+        body["stream"] = json!(use_stream);
 
-        let mut http_req = HttpRequest::post(&url)
-            .header("Accept", "text/event-stream")
-            .json(body);
+        let accept = if use_stream {
+            "text/event-stream"
+        } else {
+            "application/json"
+        };
+        let mut http_req = HttpRequest::post(&url).header("Accept", accept).json(body);
         if let Some(cred) = &cx.credential {
             http_req = http_req.bearer(cred);
         }
 
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(cohere_sse_to_stream(resp.body, req.model.clone()))
+        if use_stream {
+            let resp = send_checked(&*self.http, http_req).await?;
+            Ok(cohere_sse_to_stream(resp.body, req.model.clone()))
+        } else {
+            let value = post_json(&*self.http, http_req).await?;
+            Ok(Box::pin(stream::iter(
+                cohere_to_chunks(value, &req.model).into_iter().map(Ok),
+            )))
+        }
     }
 
     async fn embed(
@@ -453,7 +465,6 @@ fn tool_choice_to_cohere(tc: &ToolChoice) -> Option<Value> {
     }
 }
 
-#[cfg(test)]
 fn cohere_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
     let id = value
         .get("id")

@@ -20,7 +20,9 @@ different apis and converts it to a single api surface (enhanced
 - One stable endpoint in front of every provider — consumers speak OpenAI,
   OpenRouter, or Anthropic dialects; llmleaf maps them to one internal model
   and back.
-- Streaming-first (SSE); a non-streaming response is just a collected stream.
+- Streaming-first (SSE): `settings.upstream_streaming = "always"` is the default, so chat calls use
+  the provider's incremental upstream transport even when the consumer requests a non-streaming
+  response. Set the per-provider policy to `"when_requested"` or `"never"` to opt out.
 - Modalities: chat, embeddings, rerank, text-to-speech, speech-to-text,
   realtime (WebSocket), batch jobs.
 - Per-model fallback chains with node-local, health-aware switchover — no

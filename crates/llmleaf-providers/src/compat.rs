@@ -584,9 +584,9 @@ impl OpenAiCompatProvider {
                 .unwrap_or(false)
     }
 
-    /// The classic `/chat/completions` chat path — the original two branches: a brand that doesn't stream
-    /// cleanly collects the whole response and re-chunks it; a streaming brand parses SSE incrementally so
-    /// tokens flow as they arrive (principle 4). The canonical boundary is a stream either way.
+    /// The classic `/chat/completions` chat path. A collected upstream call is re-chunked; an incremental
+    /// call parses SSE so tokens flow as they arrive (principle 4). The provider policy chooses the
+    /// upstream mode, and the canonical boundary is a stream either way.
     ///
     /// Takes `&ChatRequest` (it only reads it): this lets [`Provider::chat`] borrow one request across
     /// both wire paths so the Responses→Completions endpoint downgrade needs no clone of the whole
@@ -598,7 +598,7 @@ impl OpenAiCompatProvider {
         cx: &ProviderCx,
     ) -> Result<ResponseStream, ModelError> {
         let url = self.build_url(cx, &req.model);
-        if !self.brand.supports_stream {
+        if !cx.use_upstream_streaming(req.stream, self.brand.supports_stream) {
             let body = request_to_openai(req, self.brand.max_tokens_field, false);
             let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
             let value = post_json(&*self.http, http_req).await?;
@@ -651,9 +651,10 @@ impl OpenAiCompatProvider {
     }
 
     /// The OpenAI Responses API (`POST /responses`) chat path — the mirror of [`Self::chat_completions`]
-    /// over the Responses wire ([`crate::openai_responses_wire`]), with the same non-streaming/streaming
-    /// split. The URL comes from [`Self::responses_url`] — for [`UrlStyle::Azure`] that is the
-    /// resource-scoped v1 surface, not the deployment shape chat completions uses.
+    /// over the Responses wire ([`crate::openai_responses_wire`]), with the same policy-selected
+    /// collected/incremental split. The URL comes from [`Self::responses_url`] — for
+    /// [`UrlStyle::Azure`] that is the resource-scoped v1 surface, not the deployment shape chat
+    /// completions uses.
     ///
     /// Borrows `&ChatRequest` for the same reason as [`Self::chat_completions`]: one request served over
     /// either wire with no per-retry clone.
@@ -664,7 +665,7 @@ impl OpenAiCompatProvider {
     ) -> Result<ResponseStream, ModelError> {
         let url = self.responses_url(cx);
         let flavor = self.brand.responses_flavor;
-        if !self.brand.supports_stream {
+        if !cx.use_upstream_streaming(req.stream, self.brand.supports_stream) {
             let body = request_to_openai_responses(req, false, flavor);
             let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
             let value = post_json(&*self.http, http_req).await?;

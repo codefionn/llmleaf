@@ -62,12 +62,23 @@ max_body_bytes = 33554432
 #   local/testing     : echo
 # The `endpoint` is optional for most kinds — each has a sensible default (the OpenAI-wire vendors'
 # public hosts; localhost for the ollama/lmstudio local runtimes).
+#
+# Upstream chat streaming policy (optional, per provider instance):
+#   settings.upstream_streaming = "always"          # default: always use SSE/incremental upstream
+#   settings.upstream_streaming = "when_requested"  # only when the consumer requests streaming
+#   settings.upstream_streaming = "never"           # always use the provider's collected response
+# Keep the default where possible: some providers disable thinking or impose much smaller output limits
+# on collected calls. `when_requested` avoids the extra SSE parsing/collection work for non-streaming
+# consumers; `never` is useful for providers or gateways whose streaming path is broken or undesirable.
+# Combine this key with any other keys already present in the provider's inline `settings` table.
 
 [[providers]]
 name = "openai-main"
 kind = "openai"
 credential = "env:OPENAI_API_KEY"
 settings = { organization = "org-xxxx" }
+# Example benchmark-oriented opt-out:
+# settings = { organization = "org-xxxx", upstream_streaming = "when_requested" }
 # Chat API: `kind = "openai"` speaks the Responses API (`POST /responses`) by default, transparently
 # falling back to `/chat/completions` per-request when the request carries chat-only fields (`stop`,
 # `response_format`, `logit_bias`, …). A brand opted into Responses whose upstream turns out not to

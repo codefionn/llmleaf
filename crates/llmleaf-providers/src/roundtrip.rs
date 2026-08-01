@@ -111,6 +111,90 @@ async fn openai_chat_sse_roundtrips_to_canonical_stream() {
     assert_eq!(resp.usage.total_tokens, 12);
 }
 
+#[tokio::test]
+async fn openai_chat_when_requested_uses_collected_upstream_for_collected_consumer() {
+    let http = FakeHttpTransport::new(|request| {
+        assert!(request.url.ends_with("/chat/completions"));
+        let body = json_body(request);
+        assert_eq!(body["stream"], false);
+        assert!(body.get("stream_options").is_none());
+        Ok(FakeResponse::ok_json(&json!({
+            "id": "chatcmpl-collected",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "Hello" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5 }
+        })))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+    let cx = ProviderCx {
+        settings: serde_json::from_value(json!({
+            "chat_api": "chat_completions",
+            "upstream_streaming": "when_requested"
+        }))
+        .unwrap(),
+        ..cx()
+    };
+
+    let response = collect(
+        provider
+            .chat(user_chat("gpt-4o", "hi"), &cx)
+            .await
+            .expect("chat returns a canonical stream"),
+    )
+    .await
+    .expect("collected upstream response maps cleanly");
+
+    assert_eq!(response.id, "chatcmpl-collected");
+    assert_eq!(response.choices[0].text, "Hello");
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+    assert_eq!(response.usage.total_tokens, 5);
+}
+
+#[tokio::test]
+async fn openai_chat_never_uses_collected_upstream_for_streaming_consumer() {
+    let http = FakeHttpTransport::new(|request| {
+        let body = json_body(request);
+        assert_eq!(body["stream"], false);
+        Ok(FakeResponse::ok_json(&json!({
+            "id": "chatcmpl-never",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "One chunk" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6 }
+        })))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+    let cx = ProviderCx {
+        settings: serde_json::from_value(json!({
+            "chat_api": "chat_completions",
+            "upstream_streaming": "never"
+        }))
+        .unwrap(),
+        ..cx()
+    };
+    let mut request = user_chat("gpt-4o", "hi");
+    request.stream = true;
+
+    let response = collect(
+        provider
+            .chat(request, &cx)
+            .await
+            .expect("chat returns a canonical stream"),
+    )
+    .await
+    .expect("collected upstream response maps cleanly");
+
+    assert_eq!(response.id, "chatcmpl-never");
+    assert_eq!(response.choices[0].text, "One chunk");
+}
+
 // ---------------------------------------------------------------------------------------------
 // 2. Embeddings success — openai-compat
 // ---------------------------------------------------------------------------------------------
@@ -223,6 +307,47 @@ async fn openai_chat_posts_responses_shape_and_parses_responses_sse() {
     ));
     assert_eq!(resp.usage.prompt_tokens, 9);
     assert_eq!(resp.usage.total_tokens, 12);
+}
+
+#[tokio::test]
+async fn openai_responses_when_requested_uses_collected_upstream() {
+    let http = FakeHttpTransport::new(|request| {
+        assert!(request.url.ends_with("/responses"));
+        let body = json_body(request);
+        assert_eq!(body["stream"], false);
+        Ok(FakeResponse::ok_json(&json!({
+            "id": "resp_collected",
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Hello" }]
+            }],
+            "usage": { "input_tokens": 9, "output_tokens": 3, "total_tokens": 12 }
+        })))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openai", &http_transports(http)).unwrap();
+    let cx = ProviderCx {
+        settings: serde_json::from_value(json!({
+            "upstream_streaming": "when_requested"
+        }))
+        .unwrap(),
+        ..cx()
+    };
+
+    let response = collect(
+        provider
+            .chat(user_chat("gpt-5", "hi"), &cx)
+            .await
+            .expect("chat returns a canonical stream"),
+    )
+    .await
+    .expect("collected Responses payload maps cleanly");
+
+    assert_eq!(response.id, "resp_collected");
+    assert_eq!(response.choices[0].text, "Hello");
+    assert_eq!(response.usage.total_tokens, 12);
 }
 
 #[tokio::test]
@@ -768,6 +893,43 @@ async fn anthropic_chat_roundtrips_to_canonical_stream() {
     assert_eq!(resp.usage.prompt_tokens, 11);
     assert_eq!(resp.usage.completion_tokens, 4);
     assert_eq!(resp.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn anthropic_when_requested_uses_collected_messages_response() {
+    let transports = http_transports(FakeHttpTransport::new(|request| {
+        assert_eq!(request.url, "https://example.test/v1/messages");
+        let body = json_body(request);
+        assert_eq!(body["stream"], false);
+        Ok(FakeResponse::ok_json(&json!({
+            "id": "msg_collected",
+            "model": "claude-sonnet-4",
+            "content": [{ "type": "text", "text": "Bonjour" }],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 11, "output_tokens": 4 }
+        })))
+    }));
+    let provider = AnthropicProvider::new(&transports);
+    let cx = ProviderCx {
+        settings: serde_json::from_value(json!({
+            "upstream_streaming": "when_requested"
+        }))
+        .unwrap(),
+        ..cx()
+    };
+
+    let response = collect(
+        provider
+            .chat(user_chat("claude-sonnet-4", "bonjour"), &cx)
+            .await
+            .expect("chat returns a canonical stream"),
+    )
+    .await
+    .expect("collected Messages payload maps cleanly");
+
+    assert_eq!(response.id, "msg_collected");
+    assert_eq!(response.choices[0].text, "Bonjour");
+    assert_eq!(response.usage.total_tokens, 15);
 }
 
 #[tokio::test]

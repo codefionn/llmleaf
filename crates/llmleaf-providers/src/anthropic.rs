@@ -23,6 +23,7 @@
 //! defaults to Anthropic's own 5-minute window and can be extended to 1 hour ([`CacheTtl`]).
 
 use async_trait::async_trait;
+use futures::stream;
 use llmleaf_model::{
     collect_chunks, BatchCounts, BatchHandle, BatchOutcome, BatchResult, BatchResultStream,
     BatchSpec, BatchStatus, ChatRequest, ContentPart, FinishReason, Message, Modality, ModelError,
@@ -114,10 +115,9 @@ impl Provider for AnthropicProvider {
         let version = cx
             .setting_str("anthropic_version")
             .unwrap_or(DEFAULT_VERSION);
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
         let mut body = request_to_anthropic(&req, prompt_cache(cx));
-        // The canonical provider boundary is incremental. Force Messages SSE even when the consumer
-        // ultimately wants a collected response; collection happens downstream from this stream.
-        body["stream"] = json!(true);
+        body["stream"] = json!(use_stream);
 
         let mut http_req = HttpRequest::post(&url)
             .header("anthropic-version", version)
@@ -126,8 +126,15 @@ impl Provider for AnthropicProvider {
             http_req = http_req.header("x-api-key", cred);
         }
 
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(anthropic_sse_to_stream(resp.body, req.model.clone()))
+        if use_stream {
+            let resp = send_checked(&*self.http, http_req).await?;
+            Ok(anthropic_sse_to_stream(resp.body, req.model.clone()))
+        } else {
+            let value = post_json(&*self.http, http_req).await?;
+            Ok(Box::pin(stream::iter(
+                anthropic_to_chunks(value, &req.model).into_iter().map(Ok),
+            )))
+        }
     }
 
     /// Submit a Message Batch. Anthropic takes the requests *inline* (no file step), so each canonical

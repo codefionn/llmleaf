@@ -90,10 +90,13 @@ impl Provider for GeminiProvider {
             .as_deref()
             .unwrap_or(DEFAULT_ENDPOINT)
             .trim_end_matches('/');
-        let url = format!(
-            "{endpoint}/models/{}:streamGenerateContent?alt=sse",
-            req.model
-        );
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
+        let method = if use_stream {
+            "streamGenerateContent?alt=sse"
+        } else {
+            "generateContent"
+        };
+        let url = format!("{endpoint}/models/{}:{method}", req.model);
         let body = request_to_gemini(&req);
 
         let mut http_req = HttpRequest::post(&url).json(body);
@@ -102,8 +105,15 @@ impl Provider for GeminiProvider {
             http_req = http_req.header("x-goog-api-key", cred);
         }
 
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
+        if use_stream {
+            let resp = send_checked(&*self.http, http_req).await?;
+            Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
+        } else {
+            let value = post_json(&*self.http, http_req).await?;
+            Ok(Box::pin(stream::iter(
+                gemini_to_chunks(value, &req.model).into_iter().map(Ok),
+            )))
+        }
     }
 
     async fn embed(

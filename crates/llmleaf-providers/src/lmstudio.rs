@@ -19,6 +19,7 @@
 //! sent as `Authorization: Bearer` so a token-protected instance works through the same path.
 
 use async_trait::async_trait;
+use futures::stream;
 use llmleaf_model::{
     ChatRequest, EmbeddingRequest, EmbeddingResponse, Modality, ModelError, ModelInfo,
     ResponseStream,
@@ -30,7 +31,8 @@ use std::sync::Arc;
 
 use crate::http::{post_json, send_checked};
 use crate::openai_wire::{
-    embedding_request_to_openai, openai_sse_to_stream, openai_to_embeddings, request_to_openai,
+    embedding_request_to_openai, openai_sse_to_stream, openai_to_chunks, openai_to_embeddings,
+    request_to_openai,
 };
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
@@ -83,10 +85,18 @@ impl Provider for LmStudioProvider {
         // and SSE streaming core so tokens flow live (principle 4). `max_tokens` is the cap field
         // (LM Studio accepts it; `-1` would mean unlimited, but the canonical cap is always a count).
         let url = format!("{}/chat/completions", self.endpoint(cx));
-        let body = request_to_openai(&req, "max_tokens", true);
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
+        let body = request_to_openai(&req, "max_tokens", use_stream);
         let http_req = self.auth(HttpRequest::post(&url).json(body), cx);
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(openai_sse_to_stream(resp.body, req.model.clone()))
+        if use_stream {
+            let resp = send_checked(&*self.http, http_req).await?;
+            Ok(openai_sse_to_stream(resp.body, req.model.clone()))
+        } else {
+            let value = post_json(&*self.http, http_req).await?;
+            Ok(Box::pin(stream::iter(
+                openai_to_chunks(value, &req.model).into_iter().map(Ok),
+            )))
+        }
     }
 
     async fn embed(

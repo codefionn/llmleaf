@@ -368,6 +368,12 @@ Response:
 Each rate-limit object supports optional `requests_per_min` (integer), `tokens_per_min` (integer),
 and `max_concurrent` (integer). Omitted dimensions are unlimited.
 
+For network-backed chat providers, `settings.upstream_streaming` controls the upstream call mode. It
+accepts `"always"` (the default), `"when_requested"` (stream only when the consumer requested it), or
+`"never"` (always request a collected upstream response). Keep `"always"` where possible because some
+providers disable thinking or enforce smaller output limits for collected calls. The policy applies
+equally to providers delivered through pulled topology and providers declared in the local TOML.
+
 The built-in binary recognizes the provider kinds listed by
 `llmleaf-providers::known_kinds`; common canonical values include `openai`, `openrouter`,
 `anthropic`, `gemini`, `vertex`, `cohere`, `ollama`, `lmstudio`, and `echo`. See

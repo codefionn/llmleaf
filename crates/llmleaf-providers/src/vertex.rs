@@ -22,6 +22,7 @@
 //! listing.
 
 use async_trait::async_trait;
+use futures::stream;
 use llmleaf_model::{
     ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse, ModelError, ModelInfo,
     ResponseStream, Usage,
@@ -31,7 +32,9 @@ use serde_json::{json, Map, Value};
 
 use std::sync::Arc;
 
-use crate::gemini::{ensure_audio_input_supported, gemini_sse_to_stream, request_to_gemini};
+use crate::gemini::{
+    ensure_audio_input_supported, gemini_sse_to_stream, gemini_to_chunks, request_to_gemini,
+};
 use crate::http::{post_json, send_checked};
 use crate::transport::{HttpRequest, HttpTransport, Transports};
 
@@ -140,15 +143,25 @@ impl Provider for VertexProvider {
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
         ensure_audio_input_supported(&req, self.name())?;
-        let url = format!(
-            "{}:streamGenerateContent?alt=sse",
-            self.resource_base(cx, &req.model)?
-        );
+        let use_stream = cx.use_upstream_streaming(req.stream, true);
+        let method = if use_stream {
+            "streamGenerateContent?alt=sse"
+        } else {
+            "generateContent"
+        };
+        let url = format!("{}:{method}", self.resource_base(cx, &req.model)?);
         // Same body the live Gemini chat path builds — Vertex's generateContent schema is identical.
         let body = request_to_gemini(&req);
         let http_req = self.auth(HttpRequest::post(&url).json(body), cx);
-        let resp = send_checked(&*self.http, http_req).await?;
-        Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
+        if use_stream {
+            let resp = send_checked(&*self.http, http_req).await?;
+            Ok(gemini_sse_to_stream(resp.body, req.model.clone()))
+        } else {
+            let value = post_json(&*self.http, http_req).await?;
+            Ok(Box::pin(stream::iter(
+                gemini_to_chunks(value, &req.model).into_iter().map(Ok),
+            )))
+        }
     }
 
     async fn embed(

@@ -226,6 +226,62 @@ impl ProviderCx {
     pub fn setting_str(&self, key: &str) -> Option<&str> {
         self.settings.get(key).and_then(Value::as_str)
     }
+
+    /// Decide whether one chat call should use the provider's incremental upstream transport.
+    ///
+    /// `settings.upstream_streaming` is a per-provider-instance policy:
+    /// - `always` (default): stream upstream even for a consumer that wants a collected response;
+    /// - `when_requested`: stream upstream only when the consumer requested streaming;
+    /// - `never`: use the provider's collected upstream endpoint for every request.
+    ///
+    /// `supported` is the implementation/brand capability floor: configuration can decline a
+    /// capability, never invent one. An absent or unrecognised setting keeps the safe historical
+    /// default (`always`) so a typo cannot silently disable thinking or reduce an upstream output cap.
+    pub fn use_upstream_streaming(&self, requested: bool, supported: bool) -> bool {
+        if !supported {
+            return false;
+        }
+        match self.setting_str("upstream_streaming") {
+            Some("never") => false,
+            Some("when_requested") => requested,
+            Some("always") | None | Some(_) => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn cx(policy: Option<&str>) -> ProviderCx {
+        let mut cx = ProviderCx::default();
+        if let Some(policy) = policy {
+            cx.settings
+                .insert("upstream_streaming".into(), json!(policy));
+        }
+        cx
+    }
+
+    #[test]
+    fn upstream_streaming_defaults_to_always_when_supported() {
+        assert!(cx(None).use_upstream_streaming(false, true));
+        assert!(cx(Some("always")).use_upstream_streaming(false, true));
+        assert!(!cx(None).use_upstream_streaming(true, false));
+    }
+
+    #[test]
+    fn upstream_streaming_can_follow_the_consumer_or_be_disabled() {
+        let conditional = cx(Some("when_requested"));
+        assert!(!conditional.use_upstream_streaming(false, true));
+        assert!(conditional.use_upstream_streaming(true, true));
+        assert!(!cx(Some("never")).use_upstream_streaming(true, true));
+    }
+
+    #[test]
+    fn invalid_upstream_streaming_policy_fails_safe_to_always() {
+        assert!(cx(Some("sometimes")).use_upstream_streaming(false, true));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
