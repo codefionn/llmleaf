@@ -134,8 +134,5 @@ This project is being developed with AI assistance.
 
 Copyright (C) 2026 Fionn Langhans <fionnlanghans@codefionn.eu>.
 
-llmleaf is free software licensed under the GNU Lesser General Public License,
-version 3 or later (`LGPL-3.0-or-later`). The full text is in [`COPYING.LESSER`](COPYING.LESSER)
-(the LGPLv3 terms) together with [`COPYING`](COPYING) (the GPLv3 it builds on).
-
-Clients are licensed under MIT and APACHE-2.0 license.
+llmleaf and its clients are dual-licensed under either the
+[MIT License](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), at your option.

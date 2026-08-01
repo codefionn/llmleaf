@@ -164,5 +164,5 @@ diff aid, never a drop-in.
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT). Copyright (C) 2026
-Fionn Langhans.
+Dual-licensed under either the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option. Copyright (C) 2026 Fionn Langhans.

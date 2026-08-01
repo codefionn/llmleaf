@@ -22,7 +22,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2021"
 authors = ["Fionn Langhans <fionnlanghans@codefionn.eu>"]
-license = "LGPL-3.0-or-later"
+license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 repository = "https://github.com/codefionn/llmleaf"
 

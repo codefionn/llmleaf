@@ -146,5 +146,6 @@ Codegen is wired into `build.rs`, so a build *is* a regeneration — after editi
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at your option.
+Dual-licensed under either the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option.
 Copyright (C) 2026 Fionn Langhans.
