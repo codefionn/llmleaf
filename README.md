@@ -127,6 +127,9 @@ flowchart LR
   Ev -. "push usage" .-> Ctrl
 ```
 
+## AI Disclosure
+This project is being developed with AI assistance.
+
 ## License
 
 Copyright (C) 2026 Fionn Langhans <fionnlanghans@codefionn.eu>.
