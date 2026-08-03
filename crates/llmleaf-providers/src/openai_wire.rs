@@ -802,8 +802,9 @@ pub fn mistral_voices_to_canonical(value: Value) -> Vec<VoiceInfo> {
 /// `active` flag the provider layer filters on, preserved here verbatim); Cerebras's public catalog nests
 /// the caps under `limits` (`max_context_length`/`max_completion_tokens`) and prices per-TOKEN under
 /// `pricing.prompt`/`completion`; some surfaces wrap the list under a `models[]` array and key items by
-/// `key`. This reads the *union* of those shapes and leaves every field a given response omits as
-/// `None` — it never guesses (SOUL). Gaps are enhanced downstream from the bundled dataset.
+/// `key`; DeepInfra returns a bare array keyed by `model_name`; NIM may report `max_model_len`. This
+/// reads the *union* of those shapes and leaves every field a given response omits as `None` — it never
+/// guesses (SOUL). Gaps are enhanced downstream from the bundled dataset.
 pub fn openai_wire_models_to_canonical(value: Value) -> Vec<ModelInfo> {
     // Wrapper: a bare array (Together), else `data` (OpenAI family), else a `models` array (tolerated).
     let items = match value {
@@ -826,8 +827,11 @@ fn model_item_to_info(item: Value) -> Option<ModelInfo> {
     let Value::Object(mut obj) = item else {
         return None;
     };
-    // id: `id` (OpenAI family) else `key` (tolerated alternative). Required — never fabricated.
-    let id = wire_take_str(&mut obj, "id").or_else(|| wire_take_str(&mut obj, "key"))?;
+    // id: `id` (OpenAI family), `key` (tolerated alternative), or DeepInfra's documented
+    // `model_name`. Required — never fabricated.
+    let id = wire_take_str(&mut obj, "id")
+        .or_else(|| wire_take_str(&mut obj, "key"))
+        .or_else(|| wire_take_str(&mut obj, "model_name"))?;
     let mut info = ModelInfo::new(id);
     info.name = wire_take_str(&mut obj, "name").or_else(|| wire_take_str(&mut obj, "display_name"));
     info.modality = wire_modality(&obj);
@@ -837,7 +841,12 @@ fn model_item_to_info(item: Value) -> Option<ModelInfo> {
     // reports a cap at top level (or under OpenRouter's `top_provider`) still wins.
     info.max_context = wire_first_u32(
         &obj,
-        &["context_window", "context_length", "max_context_length"],
+        &[
+            "context_window",
+            "context_length",
+            "max_context_length",
+            "max_model_len",
+        ],
     )
     .or_else(|| wire_nested_u32(&obj, "top_provider", "context_length"))
     .or_else(|| wire_nested_u32(&obj, "limits", "max_context_length"));
@@ -1415,6 +1424,54 @@ mod tests {
         let m = &openai_wire_models_to_canonical(v)[0];
         assert_eq!(m.id, "qwen3");
         assert_eq!(m.max_context, Some(32768));
+    }
+
+    #[test]
+    fn models_deepinfra_public_shape_keeps_rich_metadata() {
+        let v = json!([{
+            "model_name": "meta-llama/Llama-3.3-70B-Instruct",
+            "type": "text-generation",
+            "reported_type": "chat",
+            "description": "A model",
+            "max_tokens": 131072,
+            "pricing": { "type": "tokens", "input": 0.23, "output": 0.40 },
+            "tags": ["featured"],
+            "quantization": "fp8",
+            "deprecated": false,
+            "private": false
+        }]);
+        let m = &openai_wire_models_to_canonical(v)[0];
+        assert_eq!(m.id, "meta-llama/Llama-3.3-70B-Instruct");
+        assert!((m.input_per_mtok.unwrap() - 0.23).abs() < 1e-9);
+        assert!((m.output_per_mtok.unwrap() - 0.40).abs() < 1e-9);
+        // DeepInfra does not define `max_tokens` as a cross-provider context/output field here, so it
+        // remains vendor metadata rather than being guessed into a typed cap.
+        assert_eq!(m.max_context, None);
+        assert_eq!(m.extra.get("max_tokens"), Some(&json!(131072)));
+        assert_eq!(m.extra.get("reported_type"), Some(&json!("chat")));
+        assert_eq!(m.extra.get("quantization"), Some(&json!("fp8")));
+        assert_eq!(m.extra.get("tags"), Some(&json!(["featured"])));
+    }
+
+    #[test]
+    fn models_nim_shape_lifts_max_model_len_and_keeps_runtime_metadata() {
+        let v = json!({ "object": "list", "data": [{
+            "id": "meta/llama-3.1-8b-instruct",
+            "object": "model",
+            "created": 1720000000,
+            "owned_by": "nvidia",
+            "root": "meta/llama-3.1-8b-instruct",
+            "parent": null,
+            "max_model_len": 131072
+        }]});
+        let m = &openai_wire_models_to_canonical(v)[0];
+        assert_eq!(m.max_context, Some(131072));
+        assert_eq!(m.extra.get("owned_by"), Some(&json!("nvidia")));
+        assert_eq!(
+            m.extra.get("root"),
+            Some(&json!("meta/llama-3.1-8b-instruct"))
+        );
+        assert_eq!(m.extra.get("parent"), Some(&Value::Null));
     }
 
     #[test]

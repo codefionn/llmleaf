@@ -49,6 +49,10 @@ max_body_bytes = 33554432
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
 #   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
+#                       bedrock (amazon-bedrock, aws-bedrock), huggingface (hugging-face, hf),
+#                       deepinfra (deep-infra), cloudflare (workers-ai, cloudflare-workers-ai),
+#                       oci (oracle, oci-generative-ai), databricks (databricks-model-serving),
+#                       nvidia-nim (nim),
 #                       moonshot (kimi, kimi-k2; tool JSON schemas are rewritten into the upstream's
 #                       restricted "moonshot flavored" subset — see the moonshot provider docs),
 #                       minimax (minimax-coding, minimax-token-plan), azure-openai (azure)
@@ -195,6 +199,69 @@ kind = "requesty"
 credential = "env:REQUESTY_API_KEY"
 prefix = "rq"  # e.g. `rq/openai/gpt-4o` -> requesty with model `openai/gpt-4o`
 settings = { http_referer = "https://your.app", x_title = "your-app" }
+
+# Amazon Bedrock's OpenAI-compatible Mantle endpoint. Region is part of the URL, so `endpoint` is
+# required. Bedrock API keys are bearer tokens; IAM/SigV4 and native Converse are not used by this kind.
+# `GET <endpoint>/models` is supported and returns the models available on Mantle in that region.
+[[providers]]
+name = "bedrock"
+kind = "bedrock"
+endpoint = "https://bedrock-mantle.eu-central-1.api.aws/v1"
+credential = "env:AWS_BEDROCK_API_KEY"
+
+# Hugging Face Inference Providers. Model suffixes can select routing policy/backends, for example
+# `:fastest`, `:cheapest`, `:preferred`, or a specific inference provider. Its `/models` response
+# carries provider availability, optional pricing/performance, architecture, and capability metadata;
+# llmleaf preserves that vendor data in each catalog entry's `extra` object.
+[[providers]]
+name = "huggingface"
+kind = "huggingface"
+credential = "env:HF_TOKEN"
+prefix = "hf"
+
+# DeepInfra's OpenAI-compatible inference base. Model listing uses its separate public rich catalog
+# (`https://api.deepinfra.com/models/list`); model type, pricing, tags, quantization, availability,
+# deprecation, and other vendor metadata are preserved where reported.
+[[providers]]
+name = "deepinfra"
+kind = "deepinfra"
+credential = "env:DEEPINFRA_API_KEY"
+prefix = "di"
+
+# Cloudflare Workers AI. The account id is part of the compatible inference URL, so `endpoint` is
+# required. Cloudflare's model search is a separate account control-plane API, not `/ai/v1/models`;
+# this kind therefore does not claim runtime model listing.
+[[providers]]
+name = "cloudflare"
+kind = "cloudflare"
+endpoint = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1"
+credential = "env:CLOUDFLARE_API_TOKEN"
+
+# OCI Generative AI's regional OpenAI-compatible endpoint using a service API key. OCI's model catalog
+# requires IAM signing plus a compartment id, so it intentionally remains separate/unsupported here.
+[[providers]]
+name = "oci"
+kind = "oci"
+endpoint = "https://inference.generativeai.eu-frankfurt-1.oci.oraclecloud.com/openai/v1"
+credential = "env:OCI_GENERATIVE_AI_API_KEY"
+
+# Databricks Unity AI Gateway / Model Serving OpenAI client base. Listing serving endpoints is a
+# workspace control-plane operation rather than an OpenAI `/models` call, so catalog listing is not
+# advertised by this provider kind.
+[[providers]]
+name = "databricks"
+kind = "databricks"
+endpoint = "https://WORKSPACE.cloud.databricks.com/ai-gateway/mlflow/v1"
+credential = "env:DATABRICKS_TOKEN"
+
+# NVIDIA NIM's OpenAI-compatible vLLM surface. The default is `http://localhost:8000/v1`; override it
+# for a remote deployment. `/models` is enabled and preserves optional NIM fields such as owned_by,
+# root/parent, permissions, and max_model_len.
+[[providers]]
+name = "nim"
+kind = "nim"
+endpoint = "http://localhost:8000/v1"
+# credential = "env:NVIDIA_NIM_API_KEY" # only when the deployment/proxy requires one
 
 # A local, always-up fallback so a route never hard-fails in dev.
 [[providers]]

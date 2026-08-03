@@ -9,7 +9,9 @@
 //! Two shapes of provider live here:
 //!   - the **OpenAI-compatible family** ([`compat`]) — one config-driven provider over a quirk table,
 //!     covering OpenAI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Perplexity,
-//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), MiniMax (incl. the Token Plan), and Azure OpenAI.
+//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), MiniMax (incl. the Token Plan), Amazon Bedrock,
+//!     Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,
+//!     Databricks Model Serving, NVIDIA NIM, and Azure OpenAI.
 //!     Moonshot (Kimi, incl. Kimi for Coding) rides the same table for endpoint/auth/batch but is
 //!     wrapped by [`moonshot`], which rewrites tool JSON schemas into the upstream's "flavored"
 //!     subset;

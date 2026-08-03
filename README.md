@@ -49,7 +49,9 @@ of prompt caching actually working.
 
 - **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Ollama, LM Studio.
 - **OpenAI-wire family:** OpenAI, OpenRouter, Requesty, Groq, DeepSeek, xAI (Grok), Mistral,
-  Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Azure OpenAI.
+  Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Amazon Bedrock,
+  Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,
+  Databricks Model Serving, NVIDIA NIM, Azure OpenAI.
   Moonshot additionally gets a dedicated provider layer that rewrites tool JSON schemas into the
   upstream's restricted "moonshot flavored JSON schema" (standard Pydantic/zod output otherwise 400s).
   Subscription plans ride dedicated kinds where the vendor gives them their own endpoint:

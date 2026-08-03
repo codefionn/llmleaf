@@ -101,6 +101,10 @@ pub enum ChatApi {
 /// It is on a different host path than the chat base, so it is a fixed URL rather than `<endpoint>/models`.
 const CEREBRAS_PUBLIC_MODELS_URL: &str = "https://api.cerebras.ai/public/v1/models";
 
+/// DeepInfra's public rich catalog is not mounted below its OpenAI-compatible `/v1/openai` base.
+/// It needs no authentication and returns a bare array whose model identifier is `model_name`.
+const DEEPINFRA_PUBLIC_MODELS_URL: &str = "https://api.deepinfra.com/models/list";
+
 /// The per-brand quirk table. Endpoints are *defaults*: an operator may override `endpoint` in config.
 #[derive(Clone, Copy, Debug)]
 pub struct Brand {
@@ -138,11 +142,10 @@ pub struct Brand {
     /// rather than guessing a catalog.
     pub models_api: bool,
     /// A fixed, brand-specific list-models URL that overrides the default `<endpoint>/models`. Used for
-    /// Cerebras, whose richest catalog is its *unauthenticated* public endpoint
-    /// ([`CEREBRAS_PUBLIC_MODELS_URL`]) — pricing, context/output limits, capability flags — on a
-    /// different path than its chat base (the authed `/v1/models` reports ids only). `None` (the
-    /// default) builds the standard per-endpoint URL ([`OpenAiCompatProvider::models_url`]). Only
-    /// consulted when `models_api` is `true`.
+    /// unauthenticated public catalogs on a different host/path than inference: Cerebras's rich public
+    /// endpoint ([`CEREBRAS_PUBLIC_MODELS_URL`]) and DeepInfra's ([`DEEPINFRA_PUBLIC_MODELS_URL`]).
+    /// `None` (the default) builds the standard per-endpoint URL
+    /// ([`OpenAiCompatProvider::models_url`]). Only consulted when `models_api` is `true`.
     pub models_url_override: Option<&'static str>,
     /// Extra query string appended to the default `<endpoint>/models` URL (no leading `?`/`&` — the
     /// builder picks the right separator). Needed for brands whose `GET /models` hides part of the
@@ -279,6 +282,55 @@ impl Brand {
                 "https://router.requesty.ai/v1",
                 AuthStyle::Bearer,
             ),
+            // Amazon Bedrock's OpenAI-compatible "Mantle" data-plane surface. The endpoint is
+            // regional, so operators supply the full `/v1` base (for example
+            // `https://bedrock-mantle.us-east-1.api.aws/v1`). Bedrock API keys authenticate as plain
+            // bearer tokens; IAM/SigV4 and the native Converse dialect are deliberately separate
+            // future transport work.
+            "bedrock" | "amazon-bedrock" | "aws-bedrock" => Brand {
+                models_api: true,
+                ..b("bedrock", "", AuthStyle::Bearer)
+            },
+            // Hugging Face's multi-backend router is OpenAI-compatible and uses provider-selection
+            // suffixes in the model id (`:fastest`, `:cheapest`, or an explicit backend).
+            "huggingface" | "hugging-face" | "hf" => Brand {
+                models_api: true,
+                ..b(
+                    "huggingface",
+                    "https://router.huggingface.co/v1",
+                    AuthStyle::Bearer,
+                )
+            },
+            // DeepInfra's OpenAI facade covers chat and embeddings. Its public catalog lives outside
+            // this `/v1/openai` base, returns a bare array, and keys entries by `model_name`; the shared
+            // tolerant catalog parser understands that shape and preserves its rich vendor fields.
+            "deepinfra" | "deep-infra" => Brand {
+                models_api: true,
+                models_url_override: Some(DEEPINFRA_PUBLIC_MODELS_URL),
+                ..b(
+                    "deepinfra",
+                    "https://api.deepinfra.com/v1/openai",
+                    AuthStyle::Bearer,
+                )
+            },
+            // Workers AI's compatible URL contains the customer's account id, so the endpoint is
+            // required in config: `https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1`.
+            "cloudflare" | "workers-ai" | "cloudflare-workers-ai" => {
+                b("cloudflare", "", AuthStyle::Bearer)
+            }
+            // OCI's compatible surface is regional; use the full regional `/openai/v1` endpoint and
+            // a Generative AI service API key. OCI IAM request signing is later transport work.
+            "oci" | "oracle" | "oci-generative-ai" => b("oci", "", AuthStyle::Bearer),
+            // A Databricks workspace is tenant-specific. The configured endpoint is its OpenAI client
+            // base (currently `https://<workspace>/ai-gateway/mlflow/v1`), immediately preceding
+            // `/chat/completions`.
+            "databricks" | "databricks-model-serving" => b("databricks", "", AuthStyle::Bearer),
+            // NIM 2.x exposes the vLLM OpenAI-compatible surface. Local deployments conventionally
+            // listen on :8000; an endpoint override addresses remote or differently bound instances.
+            "nvidia-nim" | "nim" => Brand {
+                models_api: true,
+                ..b("nvidia-nim", "http://localhost:8000/v1", AuthStyle::Bearer)
+            },
             // Groq lists models at `<base>/models` (its base already carries `/openai/v1`, so the
             // standard `<endpoint>/models` shape resolves to `https://api.groq.com/openai/v1/models`) and
             // mirrors OpenAI's batch shape. Its listing is the one that flags retired-but-still-listed
@@ -434,6 +486,24 @@ impl Brand {
             "openai",
             "openrouter",
             "requesty",
+            "bedrock",
+            "amazon-bedrock",
+            "aws-bedrock",
+            "huggingface",
+            "hugging-face",
+            "hf",
+            "deepinfra",
+            "deep-infra",
+            "cloudflare",
+            "workers-ai",
+            "cloudflare-workers-ai",
+            "oci",
+            "oracle",
+            "oci-generative-ai",
+            "databricks",
+            "databricks-model-serving",
+            "nvidia-nim",
+            "nim",
             "groq",
             "deepseek",
             "xai",
@@ -743,11 +813,11 @@ impl OpenAiCompatProvider {
         Ok(voices)
     }
 
-    /// The list-models URL: a fixed brand-specific override when set (Cerebras's public catalog,
-    /// [`CEREBRAS_PUBLIC_MODELS_URL`], which lives on a different host path than the chat base and so
-    /// ignores any `endpoint` override); otherwise `<endpoint>/models` for standard brands, or — for
-    /// Azure — the resource root (`<endpoint>/openai/models?api-version=`), NOT under a deployment like
-    /// `url_for` would (the same resource-scoped shape `batch_collection` uses).
+    /// The list-models URL: a fixed public-catalog override when set (Cerebras and DeepInfra, both on a
+    /// different host/path than chat and therefore independent of `endpoint`); otherwise
+    /// `<endpoint>/models` for standard brands, or — for Azure — the resource root
+    /// (`<endpoint>/openai/models?api-version=`), NOT under a deployment like `url_for` would (the same
+    /// resource-scoped shape `batch_collection` uses).
     fn models_url(&self, cx: &ProviderCx) -> String {
         if let Some(url) = self.brand.models_url_override {
             return url.to_string();
@@ -776,10 +846,10 @@ impl OpenAiCompatProvider {
     /// the brand reports and leaves the rest `None`.
     async fn fetch_models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
         let url = self.models_url(cx);
-        // A `models_url_override` is, by its documented contract, the brand's *unauthenticated* public
-        // catalog (Cerebras's `/public/v1/models`) — fetch it anonymously; sending a stray bearer to a
-        // documented no-auth endpoint is pointless at best. The standard `<endpoint>/models` still
-        // authenticates like every other call.
+        // A `models_url_override` is, by its documented contract, an *unauthenticated* public catalog
+        // (Cerebras or DeepInfra) — fetch it anonymously; sending a stray bearer to a documented
+        // no-auth endpoint is pointless at best. Standard `<endpoint>/models` still authenticates like
+        // every other call.
         let request = HttpRequest::get(&url);
         let request = if self.brand.models_url_override.is_some() {
             request
@@ -2019,6 +2089,129 @@ mod tests {
             .unwrap();
         let url = p.build_url(&ProviderCx::default(), "openai/gpt-4o");
         assert_eq!(url, "https://router.requesty.ai/v1/chat/completions");
+    }
+
+    #[test]
+    fn additional_openai_wire_providers_build_their_documented_urls() {
+        let transports = crate::transport::Transports::fake();
+
+        let hf = OpenAiCompatProvider::for_kind("huggingface", &transports).unwrap();
+        assert_eq!(
+            hf.build_url(&ProviderCx::default(), "openai/gpt-oss-120b:fastest"),
+            "https://router.huggingface.co/v1/chat/completions"
+        );
+        assert_eq!(
+            hf.models_url(&ProviderCx::default()),
+            "https://router.huggingface.co/v1/models"
+        );
+
+        let deepinfra = OpenAiCompatProvider::for_kind("deepinfra", &transports).unwrap();
+        assert_eq!(
+            deepinfra.build_url(&ProviderCx::default(), "meta-llama/Llama-3.3-70B-Instruct"),
+            "https://api.deepinfra.com/v1/openai/chat/completions"
+        );
+        assert_eq!(
+            deepinfra.models_url(&ProviderCx::default()),
+            "https://api.deepinfra.com/models/list"
+        );
+
+        let nim = OpenAiCompatProvider::for_kind("nim", &transports).unwrap();
+        assert_eq!(
+            nim.build_url(&ProviderCx::default(), "meta/llama-3.1-8b-instruct"),
+            "http://localhost:8000/v1/chat/completions"
+        );
+        assert_eq!(
+            nim.models_url(&ProviderCx::default()),
+            "http://localhost:8000/v1/models"
+        );
+    }
+
+    #[test]
+    fn account_and_region_scoped_providers_use_the_configured_endpoint() {
+        let transports = crate::transport::Transports::fake();
+        let cases = [
+            ("bedrock", "https://bedrock-mantle.eu-central-1.api.aws/v1"),
+            (
+                "cloudflare",
+                "https://api.cloudflare.com/client/v4/accounts/account-id/ai/v1",
+            ),
+            (
+                "oci",
+                "https://inference.generativeai.eu-frankfurt-1.oci.oraclecloud.com/openai/v1",
+            ),
+            (
+                "databricks",
+                "https://workspace.cloud.databricks.com/ai-gateway/mlflow/v1",
+            ),
+        ];
+        for (kind, endpoint) in cases {
+            let p = OpenAiCompatProvider::for_kind(kind, &transports).unwrap();
+            let cx = ProviderCx {
+                endpoint: Some(endpoint.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                p.build_url(&cx, "model"),
+                format!("{endpoint}/chat/completions"),
+                "{kind}"
+            );
+            assert!(matches!(
+                Brand::for_kind(kind).unwrap().auth,
+                AuthStyle::Bearer
+            ));
+        }
+    }
+
+    #[test]
+    fn additional_provider_aliases_resolve_to_canonical_names() {
+        for (alias, canonical) in [
+            ("amazon-bedrock", "bedrock"),
+            ("aws-bedrock", "bedrock"),
+            ("hugging-face", "huggingface"),
+            ("hf", "huggingface"),
+            ("deep-infra", "deepinfra"),
+            ("workers-ai", "cloudflare"),
+            ("cloudflare-workers-ai", "cloudflare"),
+            ("oracle", "oci"),
+            ("oci-generative-ai", "oci"),
+            ("databricks-model-serving", "databricks"),
+            ("nim", "nvidia-nim"),
+        ] {
+            assert_eq!(Brand::for_kind(alias).unwrap().name, canonical, "{alias}");
+        }
+    }
+
+    #[tokio::test]
+    async fn deepinfra_fetches_its_public_rich_catalog_without_inference_auth() {
+        let http = crate::fake::FakeHttpTransport::new(|req| {
+            assert_eq!(req.url, "https://api.deepinfra.com/models/list");
+            assert!(
+                req.headers.iter().all(|(name, _)| name != "Authorization"),
+                "the documented public catalog must not receive the inference bearer token"
+            );
+            Ok(crate::fake::FakeResponse::ok_json(&json!([{
+                "model_name": "meta-llama/Llama-3.3-70B-Instruct",
+                "type": "text-generation",
+                "pricing": { "type": "tokens", "input": 0.23, "output": 0.40 },
+                "max_tokens": 131072,
+                "deprecated": false
+            }])))
+        });
+        let transports = crate::transport::Transports {
+            http: std::sync::Arc::new(http),
+            realtime: std::sync::Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
+        };
+        let p = OpenAiCompatProvider::for_kind("deepinfra", &transports).unwrap();
+        let models = p
+            .models(&ProviderCx {
+                credential: Some("secret-inference-key".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "meta-llama/Llama-3.3-70B-Instruct");
+        assert_eq!(models[0].extra.get("max_tokens"), Some(&json!(131072)));
     }
 
     #[test]
