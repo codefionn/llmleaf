@@ -46,6 +46,7 @@ max_body_bytes = 33554432
 #
 # Known kinds:
 #   distinct dialects : anthropic (claude), gemini (google), vertex (vertex-ai, google-vertex), cohere,
+#                       meta (llama-api, meta-llama; hosted Llama API),
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
 #   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
@@ -136,6 +137,15 @@ credential = "env:ANTHROPIC_API_KEY"
 name = "gemini-main"
 kind = "gemini"
 credential = "env:GEMINI_API_KEY"
+
+# Meta's hosted Llama API. Despite its `/chat/completions` path, its collected and streaming response
+# envelopes are Meta-native (`completion_message` / `event.delta`), so this uses the dedicated kind.
+# Chat, vision input, tool calling, SSE streaming, and `GET /v1/models` are supported. Native request
+# additions (`top_k`, `repetition_penalty`, `response_format`, `user`) pass through request `extra`.
+[[providers]]
+name = "meta-llama"
+kind = "meta"
+credential = "env:LLAMA_API_KEY"
 
 # Google Vertex AI — the enterprise Gemini surface (same generateContent dialect as `gemini`, but on
 # *-aiplatform.googleapis.com under your GCP project). Differences from `gemini`:

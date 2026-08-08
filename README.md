@@ -47,7 +47,7 @@ of prompt caching actually working.
 
 ### Supported providers
 
-- **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Ollama, LM Studio.
+- **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Meta Llama API, Ollama, LM Studio.
 - **OpenAI-wire family:** OpenAI, OpenRouter, Requesty, Groq, DeepSeek, xAI (Grok), Mistral,
   Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Amazon Bedrock,
   Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,

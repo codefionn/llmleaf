@@ -15,12 +15,12 @@
 //!     Moonshot (Kimi, incl. Kimi for Coding) rides the same table for endpoint/auth/batch but is
 //!     wrapped by [`moonshot`], which rewrites tool JSON schemas into the upstream's "flavored"
 //!     subset;
-//!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Ollama (its
-//!     native `/api/*` surface), and LM Studio (its native `/api/v0/*` surface) — each a native mapping
-//!     module because its wire format is its own thing. (Vertex reuses Gemini's body mapping but owns its
-//!     own transport: OAuth2 bearer, a project/location publisher URL, and the `:predict` embeddings
-//!     dialect. LM Studio reuses the OpenAI-wire chat/embeddings mapping but owns its `/api/v0` transport
-//!     and rich model catalog.)
+//!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Meta's
+//!     hosted Llama API, Ollama (its native `/api/*` surface), and LM Studio (its native `/api/v0/*`
+//!     surface) — each a native mapping module because its wire format is its own thing. (Vertex reuses
+//!     Gemini's body mapping but owns its own transport: OAuth2 bearer, a project/location publisher
+//!     URL, and the `:predict` embeddings dialect. LM Studio reuses the OpenAI-wire chat/embeddings
+//!     mapping but owns its `/api/v0` transport and rich model catalog.)
 
 use std::sync::Arc;
 
@@ -33,6 +33,7 @@ mod compat;
 mod gemini;
 mod http;
 mod lmstudio;
+mod meta;
 mod mock;
 mod moonshot;
 mod ollama;
@@ -62,6 +63,7 @@ pub use cohere::CohereProvider;
 pub use compat::{Brand, ChatApi, OpenAiCompatProvider};
 pub use gemini::GeminiProvider;
 pub use lmstudio::LmStudioProvider;
+pub use meta::MetaProvider;
 pub use mock::EchoProvider;
 pub use moonshot::MoonshotProvider;
 pub use ollama::OllamaProvider;
@@ -82,6 +84,7 @@ pub fn build(kind: &str, transports: &Transports) -> Option<Arc<dyn Provider>> {
         // Vertex AI: the enterprise Gemini surface (OAuth2 bearer, project/location publisher path).
         "vertex" | "vertex-ai" | "google-vertex" => Some(Arc::new(VertexProvider::new(transports))),
         "cohere" => Some(Arc::new(CohereProvider::new(transports))),
+        "meta" | "llama-api" | "meta-llama" => Some(Arc::new(MetaProvider::new(transports))),
         // Local runtimes with their own native APIs (NOT the OpenAI-compat shims): Ollama's `/api/*`
         // (NDJSON streaming, native model management) and LM Studio's `/api/v0/*` (rich catalog).
         "ollama" => Some(Arc::new(OllamaProvider::new(transports))),
@@ -110,6 +113,9 @@ pub fn known_kinds() -> Vec<&'static str> {
         "vertex-ai",
         "google-vertex",
         "cohere",
+        "meta",
+        "llama-api",
+        "meta-llama",
         "ollama",
         "lmstudio",
         "lm-studio",
