@@ -46,9 +46,9 @@ max_body_bytes = 33554432
 #
 # Known kinds:
 #   distinct dialects : anthropic (claude), gemini (google), vertex (vertex-ai, google-vertex), cohere,
-#                       meta (llama-api, meta-llama; hosted Llama API),
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
-#   OpenAI-wire family: openai, openrouter, requesty, groq, deepseek, xai (grok), mistral, together,
+#   OpenAI-wire family: openai, meta (meta-ai, meta-model-api, muse), openrouter, requesty, groq,
+#                       deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
 #                       bedrock (amazon-bedrock, aws-bedrock), huggingface (hugging-face, hf),
 #                       deepinfra (deep-infra), cloudflare (workers-ai, cloudflare-workers-ai),
@@ -138,14 +138,15 @@ name = "gemini-main"
 kind = "gemini"
 credential = "env:GEMINI_API_KEY"
 
-# Meta's hosted Llama API. Despite its `/chat/completions` path, its collected and streaming response
-# envelopes are Meta-native (`completion_message` / `event.delta`), so this uses the dedicated kind.
-# Chat, vision input, tool calling, SSE streaming, and `GET /v1/models` are supported. Native request
-# additions (`top_k`, `repetition_penalty`, `response_format`, `user`) pass through request `extra`.
+# Meta Model API (`api.meta.ai`), which superseded the retired hosted Llama API. The Responses API is
+# the default chat surface; set `settings = { chat_api = "chat_completions" }` to use Meta's compatible
+# Chat Completions endpoint instead. Chat, vision input, reasoning controls, tool calling, SSE streaming,
+# and authenticated `GET /v1/models` discovery are supported. Meta may attach client-specific model
+# `metadata`; llmleaf preserves it verbatim when the catalog returns it.
 [[providers]]
-name = "meta-llama"
+name = "meta-model-api"
 kind = "meta"
-credential = "env:LLAMA_API_KEY"
+credential = "env:MODEL_API_KEY"
 
 # Google Vertex AI — the enterprise Gemini surface (same generateContent dialect as `gemini`, but on
 # *-aiplatform.googleapis.com under your GCP project). Differences from `gemini`:
@@ -237,6 +238,15 @@ name = "deepinfra"
 kind = "deepinfra"
 credential = "env:DEEPINFRA_API_KEY"
 prefix = "di"
+
+# Baidu AI Cloud Qianfan. The mainland `/v2` endpoint is the default and supports chat (including
+# SSE/tool calls), embeddings, rerank, model listing, and batch jobs with a bearer API key. For the
+# international service, set `endpoint = "https://api.baiduqianfan.ai/v1"`.
+[[providers]]
+name = "qianfan"
+kind = "baidu-qianfan" # aliases: baidu, qianfan, baidu-ai-cloud
+credential = "env:QIANFAN_API_KEY"
+prefix = "qianfan"
 
 # Cloudflare Workers AI. The account id is part of the compatible inference URL, so `endpoint` is
 # required. Cloudflare's model search is a separate account control-plane API, not `/ai/v1/models`;

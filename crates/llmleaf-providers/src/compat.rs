@@ -62,6 +62,10 @@ pub enum BatchFlavor {
     /// omits `completion_window`, the create *response* wraps the batch under a `job` key, and there is
     /// no `request_counts` object. Per-request bodies and result lines are OpenAI-shaped.
     Together,
+    /// Baidu AI Cloud Qianfan's OpenAI-shaped batch API. Its transport and result objects match the
+    /// OpenAI flavor, but JSONL request lines and the create body's `endpoint` name the versioned
+    /// `/v2/chat/completions` path (or `/v1` when an international endpoint override is used).
+    Qianfan,
     /// Azure OpenAI's shape: OpenAI-wire result/line bodies, but batch is resource-scoped at
     /// `/openai/batches` (never deployment-scoped) with an `?api-version=` query, files at
     /// `/openai/files`, and the create `endpoint` is `/chat/completions` (no `/v1`). Per-line
@@ -180,8 +184,8 @@ pub struct Brand {
     pub rerank_api: bool,
     /// Which batch dialect this brand speaks (default [`BatchFlavor::Unsupported`]).
     pub batch_flavor: BatchFlavor,
-    /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for all but OpenAI and
-    /// xAI, whose primary chat surface is now the Responses API). Overridable per instance via
+    /// Which chat wire this brand serves by default ([`ChatApi::Completions`] for most brands;
+    /// OpenAI, Meta, and xAI use the Responses API as their primary surface). Overridable per instance via
     /// `settings.chat_api`, with `settings.chat_with_audio_input_api` taking precedence for audio.
     pub chat_api: ChatApi,
     /// Which Responses-wire flavor the brand's `POST /responses` endpoint speaks (see
@@ -250,6 +254,15 @@ impl Brand {
                 chat_api: ChatApi::Responses,
                 audio_input: true,
                 ..bc("openai", "https://api.openai.com/v1", AuthStyle::Bearer)
+            },
+            // Meta Model API superseded the retired hosted Llama API. Its primary surface is the
+            // OpenAI-compatible Responses API, with Chat Completions available as an operator override.
+            // The authenticated `/models` catalog is OpenAI-shaped and may additionally carry an
+            // optional `metadata` object; the tolerant shared parser preserves that object verbatim.
+            "meta" | "meta-ai" | "meta-model-api" | "muse" => Brand {
+                models_api: true,
+                chat_api: ChatApi::Responses,
+                ..bc("meta", "https://api.meta.ai/v1", AuthStyle::Bearer)
             },
             // OpenRouter's `/audio/transcriptions` takes a JSON body with base64 audio, not the OpenAI
             // multipart upload every other brand uses — flag it so `transcribe` sends the right shape.
@@ -348,6 +361,21 @@ impl Brand {
             },
             // DeepSeek's base has no `/v1` segment (verified against official docs).
             "deepseek" => b("deepseek", "https://api.deepseek.com", AuthStyle::Bearer),
+            // Baidu AI Cloud Qianfan's current mainland API is OpenAI-compatible at `/v2`: API keys
+            // use bearer auth, chat streams accept `stream_options.include_usage`, embeddings and
+            // the rich model catalog use the standard paths, and `/rerank` uses the shared
+            // Jina/Cohere-shaped request/response mapping. The international service exposes the
+            // same core wire at `https://api.baiduqianfan.ai/v1` via an `endpoint` override.
+            "baidu" | "qianfan" | "baidu-qianfan" | "baidu-ai-cloud" => Brand {
+                models_api: true,
+                rerank_api: true,
+                batch_flavor: BatchFlavor::Qianfan,
+                ..b(
+                    "baidu-qianfan",
+                    "https://qianfan.baidubce.com/v2",
+                    AuthStyle::Bearer,
+                )
+            },
             // xAI deprecates max_tokens in favor of max_completion_tokens. Its Responses API
             // (`https://api.x.ai/v1/responses`) is its documented-preferred chat surface ("the preferred
             // way of interacting with our models via API") and speaks the stock OpenAI flavor — `store`
@@ -484,6 +512,10 @@ impl Brand {
     pub fn kinds() -> &'static [&'static str] {
         &[
             "openai",
+            "meta",
+            "meta-ai",
+            "meta-model-api",
+            "muse",
             "openrouter",
             "requesty",
             "bedrock",
@@ -506,6 +538,10 @@ impl Brand {
             "nim",
             "groq",
             "deepseek",
+            "baidu",
+            "qianfan",
+            "baidu-qianfan",
+            "baidu-ai-cloud",
             "xai",
             "grok",
             "mistral",
@@ -927,16 +963,34 @@ impl OpenAiCompatProvider {
         }
     }
 
+    /// The endpoint recorded inside OpenAI-shaped JSONL lines and the create request. Qianfan's
+    /// mainland API uses `/v2`; its international OpenAI-compatible base uses `/v1`, so preserve the
+    /// version from an operator endpoint override instead of hard-coding one market's path.
+    fn batch_chat_path(&self, cx: &ProviderCx) -> String {
+        match self.brand.batch_flavor {
+            BatchFlavor::Qianfan => {
+                let version = if self.batch_endpoint(cx).ends_with("/v1") {
+                    "v1"
+                } else {
+                    "v2"
+                };
+                format!("/{version}/chat/completions")
+            }
+            BatchFlavor::AzureOpenAi => "/chat/completions".to_string(),
+            _ => "/v1/chat/completions".to_string(),
+        }
+    }
+
     /// One canonical item → this flavor's JSONL input line. The request body is built by the very same
     /// [`request_to_openai`] the live chat path uses; only the line envelope differs (OpenAI/Azure wrap
     /// it with `method`/`url`; Mistral/Together carry just `custom_id` + `body`).
-    fn batch_line(&self, item: &BatchItem) -> Value {
+    fn batch_line(&self, item: &BatchItem, cx: &ProviderCx) -> Value {
         let body = request_to_openai(&item.request, self.brand.max_tokens_field, false);
         match self.brand.batch_flavor {
-            BatchFlavor::OpenAi | BatchFlavor::AzureOpenAi => json!({
+            BatchFlavor::OpenAi | BatchFlavor::Qianfan | BatchFlavor::AzureOpenAi => json!({
                 "custom_id": item.custom_id,
                 "method": "POST",
-                "url": "/v1/chat/completions",
+                "url": self.batch_chat_path(cx),
                 "body": body,
             }),
             _ => json!({ "custom_id": item.custom_id, "body": body }),
@@ -1081,11 +1135,11 @@ fn map_batch_status(s: &str) -> BatchStatus {
         "validating" => BatchStatus::Validating,
         "in_progress" | "running" | "queued" => BatchStatus::InProgress,
         "finalizing" => BatchStatus::Finalizing,
-        "completed" | "success" => BatchStatus::Completed,
+        "completed" | "success" | "done" => BatchStatus::Completed,
         "failed" => BatchStatus::Failed,
         "expired" | "timeout_exceeded" => BatchStatus::Expired,
-        "cancelling" | "cancellation_requested" => BatchStatus::Canceling,
-        "cancelled" | "canceled" => BatchStatus::Canceled,
+        "cancelling" | "cancellation_requested" | "stopping" => BatchStatus::Canceling,
+        "cancelled" | "canceled" | "stopped" => BatchStatus::Canceled,
         _ => BatchStatus::InProgress,
     }
 }
@@ -1487,13 +1541,13 @@ impl Provider for OpenAiCompatProvider {
                 self.brand.name
             )));
         }
-        let jsonl = build_jsonl(req.items.iter().map(|item| self.batch_line(item)));
+        let jsonl = build_jsonl(req.items.iter().map(|item| self.batch_line(item, cx)));
         let file_id = self.upload_batch_file(cx, jsonl).await?;
         let url = format!("{}{}", self.batch_collection(cx), self.batch_query(cx));
         let body = match self.brand.batch_flavor {
-            BatchFlavor::OpenAi => json!({
+            BatchFlavor::OpenAi | BatchFlavor::Qianfan => json!({
                 "input_file_id": file_id,
-                "endpoint": "/v1/chat/completions",
+                "endpoint": self.batch_chat_path(cx),
                 "completion_window": "24h",
             }),
             // Azure's create `endpoint` drops the `/v1` segment; the deployment is per-line in the file.
@@ -2033,6 +2087,10 @@ mod tests {
             "max_completion_tokens"
         );
         assert_eq!(
+            Brand::for_kind("meta").unwrap().max_tokens_field,
+            "max_completion_tokens"
+        );
+        assert_eq!(
             Brand::for_kind("xai").unwrap().max_tokens_field,
             "max_completion_tokens"
         );
@@ -2061,6 +2119,9 @@ mod tests {
 
     #[test]
     fn aliases_resolve_to_canonical_brand() {
+        assert_eq!(Brand::for_kind("meta-ai").unwrap().name, "meta");
+        assert_eq!(Brand::for_kind("meta-model-api").unwrap().name, "meta");
+        assert_eq!(Brand::for_kind("muse").unwrap().name, "meta");
         assert_eq!(Brand::for_kind("z.ai").unwrap().name, "zai");
         assert_eq!(Brand::for_kind("glm").unwrap().name, "zai");
         assert_eq!(Brand::for_kind("kimi").unwrap().name, "moonshot");
@@ -2124,6 +2185,16 @@ mod tests {
             nim.models_url(&ProviderCx::default()),
             "http://localhost:8000/v1/models"
         );
+
+        let qianfan = OpenAiCompatProvider::for_kind("baidu-qianfan", &transports).unwrap();
+        assert_eq!(
+            qianfan.build_url(&ProviderCx::default(), "ernie-4.5-turbo-32k"),
+            "https://qianfan.baidubce.com/v2/chat/completions"
+        );
+        assert_eq!(
+            qianfan.models_url(&ProviderCx::default()),
+            "https://qianfan.baidubce.com/v2/models"
+        );
     }
 
     #[test]
@@ -2176,6 +2247,9 @@ mod tests {
             ("oci-generative-ai", "oci"),
             ("databricks-model-serving", "databricks"),
             ("nim", "nvidia-nim"),
+            ("baidu", "baidu-qianfan"),
+            ("qianfan", "baidu-qianfan"),
+            ("baidu-ai-cloud", "baidu-qianfan"),
         ] {
             assert_eq!(Brand::for_kind(alias).unwrap().name, canonical, "{alias}");
         }
@@ -2221,6 +2295,35 @@ mod tests {
             OpenAiCompatProvider::for_kind("zai", &crate::transport::Transports::fake()).unwrap();
         let url = p.build_url(&ProviderCx::default(), "glm-4.6");
         assert_eq!(url, "https://api.z.ai/api/paas/v4/chat/completions");
+    }
+
+    #[test]
+    fn qianfan_brand_exposes_documented_openai_wire_capabilities() {
+        for kind in ["baidu", "qianfan", "baidu-qianfan", "baidu-ai-cloud"] {
+            let brand = Brand::for_kind(kind).unwrap();
+            assert_eq!(brand.name, "baidu-qianfan", "{kind}");
+            assert_eq!(
+                brand.default_endpoint, "https://qianfan.baidubce.com/v2",
+                "{kind}"
+            );
+            assert!(matches!(brand.auth, AuthStyle::Bearer), "{kind}");
+            assert_eq!(brand.max_tokens_field, "max_tokens", "{kind}");
+            assert!(brand.supports_stream, "{kind}");
+            assert!(brand.models_api, "{kind}");
+            assert!(brand.rerank_api, "{kind}");
+            assert_eq!(brand.batch_flavor, BatchFlavor::Qianfan, "{kind}");
+            assert_eq!(brand.chat_api, ChatApi::Completions, "{kind}");
+        }
+    }
+
+    #[test]
+    fn qianfan_batch_statuses_map_to_the_canonical_ladder() {
+        assert_eq!(map_batch_status("Running"), BatchStatus::InProgress);
+        assert_eq!(map_batch_status("Done"), BatchStatus::Completed);
+        assert_eq!(map_batch_status("Stopping"), BatchStatus::Canceling);
+        assert_eq!(map_batch_status("Stopped"), BatchStatus::Canceled);
+        assert_eq!(map_batch_status("Failed"), BatchStatus::Failed);
+        assert_eq!(map_batch_status("Expired"), BatchStatus::Expired);
     }
 
     #[test]
@@ -2351,6 +2454,7 @@ mod tests {
         assert_eq!(f("moonshot"), OpenAi);
         assert_eq!(f("mistral"), MistralJobs);
         assert_eq!(f("together"), Together);
+        assert_eq!(f("qianfan"), Qianfan);
         assert_eq!(f("azure"), AzureOpenAi);
         // Brands with no batch API stay unsupported.
         assert_eq!(f("deepseek"), Unsupported);
@@ -2388,6 +2492,21 @@ mod tests {
             ms.batch_collection(&cx),
             "https://api.mistral.ai/v1/batch/jobs"
         );
+
+        // Qianfan: OpenAI-shaped resources under its current `/v2` base.
+        let qf = OpenAiCompatProvider::for_kind("qianfan", &crate::transport::Transports::fake())
+            .unwrap();
+        assert_eq!(
+            qf.batch_collection(&cx),
+            "https://qianfan.baidubce.com/v2/batches"
+        );
+        assert_eq!(qf.batch_files(&cx), "https://qianfan.baidubce.com/v2/files");
+        assert_eq!(qf.batch_chat_path(&cx), "/v2/chat/completions");
+        let intl_cx = ProviderCx {
+            endpoint: Some("https://api.baiduqianfan.ai/v1".into()),
+            ..Default::default()
+        };
+        assert_eq!(qf.batch_chat_path(&intl_cx), "/v1/chat/completions");
 
         // Azure: resource-scoped /openai/batches with ?api-version, operator endpoint.
         let az =
@@ -2429,7 +2548,7 @@ mod tests {
         // OpenAI/Azure wrap with method + url.
         let oa = OpenAiCompatProvider::for_kind("openai", &crate::transport::Transports::fake())
             .unwrap()
-            .batch_line(&item);
+            .batch_line(&item, &ProviderCx::default());
         assert_eq!(oa["method"], "POST");
         assert_eq!(oa["url"], "/v1/chat/completions");
         assert_eq!(oa["custom_id"], "x");
@@ -2437,10 +2556,18 @@ mod tests {
         // Together/Mistral carry just custom_id + body.
         let tg = OpenAiCompatProvider::for_kind("together", &crate::transport::Transports::fake())
             .unwrap()
-            .batch_line(&item);
+            .batch_line(&item, &ProviderCx::default());
         assert!(tg.get("method").is_none());
         assert_eq!(tg["custom_id"], "x");
         assert_eq!(tg["body"]["model"], "m");
+
+        // Qianfan keeps the OpenAI envelope but names its documented `/v2` operation.
+        let qf = OpenAiCompatProvider::for_kind("qianfan", &crate::transport::Transports::fake())
+            .unwrap()
+            .batch_line(&item, &ProviderCx::default());
+        assert_eq!(qf["method"], "POST");
+        assert_eq!(qf["url"], "/v2/chat/completions");
+        assert_eq!(qf["body"]["model"], "m");
     }
 
     #[test]
@@ -2487,8 +2614,8 @@ mod tests {
 
     #[test]
     fn openai_defaults_to_responses_others_to_completions() {
-        // OpenAI and xAI document the Responses API as their primary chat surface — brand default.
-        for kind in ["openai", "xai", "grok"] {
+        // OpenAI, Meta, and xAI document the Responses API as their primary chat surface — brand default.
+        for kind in ["openai", "meta", "meta-ai", "muse", "xai", "grok"] {
             assert_eq!(
                 Brand::for_kind(kind).unwrap().chat_api,
                 ChatApi::Responses,
@@ -2516,7 +2643,7 @@ mod tests {
             Brand::for_kind("groq").unwrap().responses_flavor,
             ResponsesFlavor::Groq
         );
-        for kind in ["openai", "xai", "together", "deepseek", "azure"] {
+        for kind in ["openai", "meta", "xai", "together", "deepseek", "azure"] {
             assert_eq!(
                 Brand::for_kind(kind).unwrap().responses_flavor,
                 ResponsesFlavor::OpenAi,

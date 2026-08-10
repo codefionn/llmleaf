@@ -8,25 +8,26 @@
 //!
 //! Two shapes of provider live here:
 //!   - the **OpenAI-compatible family** ([`compat`]) — one config-driven provider over a quirk table,
-//!     covering OpenAI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Perplexity,
-//!     Cerebras, Z.AI (GLM, incl. the Coding Plan), MiniMax (incl. the Token Plan), Amazon Bedrock,
-//!     Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,
-//!     Databricks Model Serving, NVIDIA NIM, and Azure OpenAI.
+//!     covering OpenAI, Meta Model API, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks,
+//!     Perplexity, Cerebras, Z.AI (GLM, incl. the Coding Plan), MiniMax (incl. the Token Plan), Amazon
+//!     Bedrock, Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,
+//!     Databricks Model Serving, NVIDIA NIM, Baidu AI Cloud Qianfan, and Azure OpenAI.
 //!     Moonshot (Kimi, incl. Kimi for Coding) rides the same table for endpoint/auth/batch but is
 //!     wrapped by [`moonshot`], which rewrites tool JSON schemas into the upstream's "flavored"
 //!     subset;
-//!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Meta's
-//!     hosted Llama API, Ollama (its native `/api/*` surface), and LM Studio (its native `/api/v0/*`
-//!     surface) — each a native mapping module because its wire format is its own thing. (Vertex reuses
-//!     Gemini's body mapping but owns its own transport: OAuth2 bearer, a project/location publisher
-//!     URL, and the `:predict` embeddings dialect. LM Studio reuses the OpenAI-wire chat/embeddings
-//!     mapping but owns its `/api/v0` transport and rich model catalog.)
+//!   - **distinct-dialect providers** — Anthropic, Google Gemini, Google Vertex AI, Cohere, Ollama (its
+//!     native `/api/*` surface), and LM Studio (its native `/api/v0/*` surface) — each a native mapping
+//!     module because its wire format is its own thing. (Vertex reuses Gemini's body mapping but owns
+//!     its own transport: OAuth2 bearer, a project/location publisher URL, and the `:predict`
+//!     embeddings dialect. LM Studio reuses the OpenAI-wire chat/embeddings mapping but owns its
+//!     `/api/v0` transport and rich model catalog.)
 
 use std::sync::Arc;
 
 use llmleaf_provider::Provider;
 
 mod anthropic;
+mod baidu;
 mod batch;
 mod cohere;
 mod compat;
@@ -59,6 +60,7 @@ pub mod fake;
 mod roundtrip;
 
 pub use anthropic::AnthropicProvider;
+pub use baidu::BaiduProvider;
 pub use cohere::CohereProvider;
 pub use compat::{Brand, ChatApi, OpenAiCompatProvider};
 pub use gemini::GeminiProvider;
@@ -84,16 +86,23 @@ pub fn build(kind: &str, transports: &Transports) -> Option<Arc<dyn Provider>> {
         // Vertex AI: the enterprise Gemini surface (OAuth2 bearer, project/location publisher path).
         "vertex" | "vertex-ai" | "google-vertex" => Some(Arc::new(VertexProvider::new(transports))),
         "cohere" => Some(Arc::new(CohereProvider::new(transports))),
-        "meta" | "llama-api" | "meta-llama" => Some(Arc::new(MetaProvider::new(transports))),
+        "meta" | "meta-ai" | "meta-model-api" | "muse" => {
+            Some(Arc::new(MetaProvider::new(transports)))
+        }
         // Local runtimes with their own native APIs (NOT the OpenAI-compat shims): Ollama's `/api/*`
         // (NDJSON streaming, native model management) and LM Studio's `/api/v0/*` (rich catalog).
         "ollama" => Some(Arc::new(OllamaProvider::new(transports))),
         "lmstudio" | "lm-studio" => Some(Arc::new(LmStudioProvider::new(transports))),
-        // Moonshot (Kimi) kinds resolve to the compat table's brand rows *wrapped* in the Moonshot
-        // provider, which rewrites tool JSON schemas into the upstream's "flavored" subset first.
-        // Everything else falls through to the OpenAI-compatible family table.
-        other => MoonshotProvider::for_kind(other, transports)
+        // Baidu and Moonshot kinds resolve to thin provider-edge wrappers around their compat rows:
+        // Baidu normalizes CNY catalog pricing and blocks incompatible audio dialects; Moonshot
+        // rewrites tool JSON schemas into the upstream's "flavored" subset. Everything else falls
+        // through to the plain OpenAI-compatible family table.
+        other => BaiduProvider::for_kind(other, transports)
             .map(|p| Arc::new(p) as Arc<dyn Provider>)
+            .or_else(|| {
+                MoonshotProvider::for_kind(other, transports)
+                    .map(|p| Arc::new(p) as Arc<dyn Provider>)
+            })
             .or_else(|| {
                 OpenAiCompatProvider::for_kind(other, transports)
                     .map(|p| Arc::new(p) as Arc<dyn Provider>)
@@ -113,9 +122,6 @@ pub fn known_kinds() -> Vec<&'static str> {
         "vertex-ai",
         "google-vertex",
         "cohere",
-        "meta",
-        "llama-api",
-        "meta-llama",
         "ollama",
         "lmstudio",
         "lm-studio",
