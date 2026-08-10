@@ -33,6 +33,8 @@ pub struct ModelPricing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_per_mtok: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modality: Option<Modality>,
@@ -44,6 +46,19 @@ pub struct ModelPricing {
     pub max_thinking: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning: Option<bool>,
+    /// Published input media accepted by the model (`text`, `image`, `file`, `audio`, `video`).
+    /// This refines the coarse output-oriented [`Modality`] used by `?type=` filtering.
+    #[serde(default, skip_serializing_if = "opt_vec_is_none_or_empty")]
+    pub input_modalities: Option<Vec<String>>,
+    /// Published output media produced by the model (normally `text` for an LLM).
+    #[serde(default, skip_serializing_if = "opt_vec_is_none_or_empty")]
+    pub output_modalities: Option<Vec<String>>,
+    /// Provider service tier, when the model id selects one (for example `standard` or `contributor`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    /// Whether prompts and completions may be used to train future provider models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts_used_for_training: Option<bool>,
     /// Canonical sampling parameters this model rejects. `None` means none were collected.
     #[serde(default, skip_serializing_if = "opt_vec_is_none_or_empty")]
     pub unsupported_parameters: Option<Vec<String>>,
@@ -72,8 +87,13 @@ pub struct ModelCard {
     pub max_output: Option<u32>,
     pub max_thinking: Option<u32>,
     pub supports_reasoning: Option<bool>,
+    pub input_modalities: Option<Vec<String>>,
+    pub output_modalities: Option<Vec<String>>,
     pub input_per_mtok: Option<f64>,
+    pub cached_input_per_mtok: Option<f64>,
     pub output_per_mtok: Option<f64>,
+    pub tier: Option<String>,
+    pub prompts_used_for_training: Option<bool>,
     pub unsupported_parameters: Option<Vec<String>>,
     pub default_parameters: Option<Map<String, Value>>,
 }
@@ -87,8 +107,13 @@ impl ModelPricing {
             max_output: self.max_output,
             max_thinking: self.max_thinking,
             supports_reasoning: self.supports_reasoning,
+            input_modalities: self.input_modalities.clone(),
+            output_modalities: self.output_modalities.clone(),
             input_per_mtok: self.input_per_mtok,
+            cached_input_per_mtok: self.cached_input_per_mtok,
             output_per_mtok: self.output_per_mtok,
+            tier: self.tier.clone(),
+            prompts_used_for_training: self.prompts_used_for_training,
             unsupported_parameters: self.unsupported_parameters.clone(),
             default_parameters: self.default_parameters.clone(),
         }
@@ -116,10 +141,20 @@ impl Pricing {
     /// present, the missing side is priced as zero.
     pub fn cost_usd(&self, model: &str, usage: &Usage) -> Option<f64> {
         let rate = self.models.get(model)?;
-        if rate.input_per_mtok.is_none() && rate.output_per_mtok.is_none() {
+        if rate.input_per_mtok.is_none()
+            && rate.cached_input_per_mtok.is_none()
+            && rate.output_per_mtok.is_none()
+        {
             return None;
         }
-        let input = usage.prompt_tokens as f64 / 1_000_000.0 * rate.input_per_mtok.unwrap_or(0.0);
+        let cached_tokens = usage.cache_read_tokens.min(usage.prompt_tokens);
+        let uncached_tokens = usage.prompt_tokens - cached_tokens;
+        let input = uncached_tokens as f64 / 1_000_000.0 * rate.input_per_mtok.unwrap_or(0.0)
+            + cached_tokens as f64 / 1_000_000.0
+                * rate
+                    .cached_input_per_mtok
+                    .or(rate.input_per_mtok)
+                    .unwrap_or(0.0);
         let output =
             usage.completion_tokens as f64 / 1_000_000.0 * rate.output_per_mtok.unwrap_or(0.0);
         Some(input + output)
@@ -161,6 +196,64 @@ mod tests {
     }
 
     #[test]
+    fn bundled_dataset_classifies_meta_muse_models() {
+        let pricing = Pricing::bundled().unwrap();
+        let v11 = pricing.card("muse-spark-1.1").unwrap();
+        assert_eq!(v11.modality, Some(Modality::Llm));
+        assert_eq!(v11.max_context, Some(1_048_576));
+        assert_eq!(v11.supports_reasoning, Some(true));
+        assert_eq!(v11.input_per_mtok, Some(1.25));
+        assert_eq!(v11.cached_input_per_mtok, Some(0.15));
+        assert_eq!(v11.output_per_mtok, Some(4.25));
+        assert_eq!(v11.tier.as_deref(), Some("standard"));
+        assert_eq!(v11.prompts_used_for_training, Some(false));
+        assert_eq!(
+            v11.unsupported_parameters.as_ref().unwrap().join(","),
+            "stop"
+        );
+        assert_eq!(
+            v11.input_modalities.as_ref().unwrap().join(","),
+            "text,image,video,file"
+        );
+        assert_eq!(v11.output_modalities.as_ref().unwrap().join(","), "text");
+
+        let v12 = pricing.card("muse-spark-1.2").unwrap();
+        assert_eq!(v12.modality, Some(Modality::Llm));
+        assert_eq!(v12.max_context, Some(1_048_576));
+        assert_eq!(v12.supports_reasoning, Some(true));
+        assert_eq!(v12.input_per_mtok, Some(1.25));
+        assert_eq!(v12.cached_input_per_mtok, Some(0.15));
+        assert_eq!(v12.output_per_mtok, Some(4.25));
+        assert_eq!(
+            v12.input_modalities.as_ref().unwrap().join(","),
+            "text,image,video,file"
+        );
+
+        let contributor = pricing.card("muse-spark-1.2-contributor").unwrap();
+        assert_eq!(contributor.input_per_mtok, Some(0.10));
+        assert_eq!(contributor.cached_input_per_mtok, Some(0.002));
+        assert_eq!(contributor.output_per_mtok, Some(0.20));
+        assert_eq!(contributor.tier.as_deref(), Some("contributor"));
+        assert_eq!(contributor.prompts_used_for_training, Some(true));
+    }
+
+    #[test]
+    fn bundled_dataset_has_current_openai_gpt_5_6_prices() {
+        let pricing = Pricing::bundled().unwrap();
+        for (id, input, cached_input, output) in [
+            ("gpt-5.6", 5.0, 0.5, 30.0),
+            ("gpt-5.6-sol", 5.0, 0.5, 30.0),
+            ("gpt-5.6-terra", 2.0, 0.2, 12.0),
+            ("gpt-5.6-luna", 0.2, 0.02, 1.2),
+        ] {
+            let card = pricing.card(id).unwrap();
+            assert_eq!(card.input_per_mtok, Some(input), "{id}");
+            assert_eq!(card.cached_input_per_mtok, Some(cached_input), "{id}");
+            assert_eq!(card.output_per_mtok, Some(output), "{id}");
+        }
+    }
+
+    #[test]
     fn cost_is_lookup_times_tokens() {
         let pricing = Pricing::bundled().unwrap();
         let usage = Usage {
@@ -173,6 +266,24 @@ mod tests {
         };
         let cost = pricing.cost_usd("gpt-4o", &usage).unwrap();
         assert!((cost - 12.5).abs() < 1e-9, "got {cost}");
+    }
+
+    #[test]
+    fn cached_input_uses_the_models_discounted_rate() {
+        let pricing = Pricing::bundled().unwrap();
+        let usage = Usage {
+            prompt_tokens: 1_000_000,
+            completion_tokens: 1_000_000,
+            total_tokens: 2_000_000,
+            cost_usd: None,
+            cache_read_tokens: 400_000,
+            cache_creation_tokens: 0,
+        };
+        let cost = pricing
+            .cost_usd("muse-spark-1.2-contributor", &usage)
+            .unwrap();
+        let expected = 0.6 * 0.10 + 0.4 * 0.002 + 0.20;
+        assert!((cost - expected).abs() < 1e-9, "got {cost}");
     }
 
     #[test]

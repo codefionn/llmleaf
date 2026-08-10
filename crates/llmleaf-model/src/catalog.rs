@@ -38,6 +38,9 @@ pub struct ModelInfo {
     /// USD per 1,000,000 input tokens, when the catalog prices the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_mtok: Option<f64>,
+    /// USD per 1,000,000 cached input tokens, when the catalog publishes a distinct cache-read rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_per_mtok: Option<f64>,
     /// USD per 1,000,000 output tokens, when the catalog prices the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_mtok: Option<f64>,
@@ -78,6 +81,7 @@ impl ModelInfo {
             max_thinking: None,
             supports_reasoning: None,
             input_per_mtok: None,
+            cached_input_per_mtok: None,
             output_per_mtok: None,
             supported_parameters: None,
             unsupported_parameters: Vec::new(),

@@ -1239,13 +1239,54 @@ async fn list_models(
 /// "provider-specific enhancement" for upstreams whose list-models API does not report limits/pricing.
 fn enrich(mut info: ModelInfo, card: Option<ModelCard>) -> ModelInfo {
     if let Some(c) = card {
+        let provider_has_architecture = info
+            .extra
+            .get("architecture")
+            .and_then(Value::as_object)
+            .is_some_and(|architecture| {
+                ["input_modalities", "output_modalities"].iter().any(|key| {
+                    architecture
+                        .get(*key)
+                        .and_then(Value::as_array)
+                        .is_some_and(|values| !values.is_empty())
+                })
+            });
+        if !provider_has_architecture {
+            if let (Some(inputs), Some(outputs)) =
+                (c.input_modalities.as_ref(), c.output_modalities.as_ref())
+            {
+                let modality = format!("{}->{}", inputs.join("+"), outputs.join("+"));
+                info.extra.insert(
+                    "architecture".into(),
+                    json!({
+                        "modality": modality,
+                        "input_modalities": inputs,
+                        "output_modalities": outputs,
+                        "tokenizer": "Other",
+                        "instruct_type": Value::Null,
+                    }),
+                );
+            }
+        }
         info.modality = info.modality.or(c.modality);
         info.max_context = info.max_context.or(c.max_context);
         info.max_output = info.max_output.or(c.max_output);
         info.max_thinking = info.max_thinking.or(c.max_thinking);
         info.supports_reasoning = info.supports_reasoning.or(c.supports_reasoning);
         info.input_per_mtok = info.input_per_mtok.or(c.input_per_mtok);
+        info.cached_input_per_mtok = info.cached_input_per_mtok.or(c.cached_input_per_mtok);
         info.output_per_mtok = info.output_per_mtok.or(c.output_per_mtok);
+        if !info.extra.contains_key("tier") {
+            if let Some(tier) = c.tier {
+                info.extra.insert("tier".into(), Value::from(tier));
+            }
+        }
+        if !info.extra.contains_key("prompts_used_for_training") {
+            if let Some(used) = c.prompts_used_for_training {
+                info.extra
+                    .insert("prompts_used_for_training".into(), Value::from(used));
+            }
+        }
         // Param metadata: the provider's own report wins (a non-empty value), the dataset only fills a
         // gap — same "provider knows its deployment" rule as the scalars above.
         if info.unsupported_parameters.is_empty() {
@@ -1323,6 +1364,11 @@ fn render_model(id: &str, entry: &ModelEntry, admin: bool, engine: &Engine, now:
     obj.insert("pricing".into(), pricing_json(meta));
     obj.insert("top_provider".into(), Value::Object(top_provider));
     obj.insert("per_request_limits".into(), Value::Null);
+    for key in ["tier", "prompts_used_for_training"] {
+        if let Some(value) = meta.and_then(|m| m.extra.get(key)) {
+            obj.insert(key.into(), value.clone());
+        }
+    }
     // `supported_parameters`: a provider's OWN positive list (e.g. an OpenRouter passthrough that
     // reports one) is authoritative and passes through verbatim; otherwise we compute it from the
     // modality baseline minus the model's `unsupported_parameters`. The negative list and recommended
@@ -1408,13 +1454,28 @@ fn pricing_json(meta: Option<&ModelInfo>) -> Value {
     let Some(meta) = meta else {
         return Value::Null;
     };
-    if meta.input_per_mtok.is_none() && meta.output_per_mtok.is_none() {
+    if meta.input_per_mtok.is_none()
+        && meta.cached_input_per_mtok.is_none()
+        && meta.output_per_mtok.is_none()
+    {
         return Value::Null;
     }
-    json!({
-        "prompt": per_token_str(meta.input_per_mtok.unwrap_or(0.0)),
-        "completion": per_token_str(meta.output_per_mtok.unwrap_or(0.0)),
-    })
+    let mut pricing = serde_json::Map::new();
+    pricing.insert(
+        "prompt".into(),
+        Value::from(per_token_str(meta.input_per_mtok.unwrap_or(0.0))),
+    );
+    pricing.insert(
+        "completion".into(),
+        Value::from(per_token_str(meta.output_per_mtok.unwrap_or(0.0))),
+    );
+    if let Some(cached) = meta.cached_input_per_mtok {
+        pricing.insert(
+            "input_cache_read".into(),
+            Value::from(per_token_str(cached)),
+        );
+    }
+    Value::Object(pricing)
 }
 
 /// Format a per-million-token rate as an OpenRouter-style per-TOKEN price string: fixed-decimal (never
@@ -1994,7 +2055,8 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod architecture_tests {
-    use super::{architecture_value, Modality, ModelInfo};
+    use super::{architecture_value, enrich, Modality, ModelInfo};
+    use llmleaf_pricing::Pricing;
     use serde_json::json;
 
     #[test]
@@ -2015,6 +2077,25 @@ mod architecture_tests {
         let arch = architecture_value(Some(&info), Some(Modality::Llm));
         assert_eq!(arch["input_modalities"], json!(["text", "image"]));
         assert_eq!(arch["output_modalities"], json!(["text"]));
+    }
+
+    #[test]
+    fn bundled_meta_architecture_enriches_sparse_upstream_catalog() {
+        let card = Pricing::bundled().unwrap().card("muse-spark-1.2").unwrap();
+        let info = enrich(ModelInfo::new("muse-spark-1.2"), Some(card));
+        let arch = architecture_value(Some(&info), info.modality);
+
+        assert_eq!(
+            arch["input_modalities"],
+            json!(["text", "image", "video", "file"])
+        );
+        assert_eq!(arch["output_modalities"], json!(["text"]));
+        assert_eq!(info.max_context, Some(1_048_576));
+        assert_eq!(info.input_per_mtok, Some(1.25));
+        assert_eq!(info.cached_input_per_mtok, Some(0.15));
+        assert_eq!(info.output_per_mtok, Some(4.25));
+        assert_eq!(info.extra["tier"], "standard");
+        assert_eq!(info.extra["prompts_used_for_training"], false);
     }
 
     #[test]

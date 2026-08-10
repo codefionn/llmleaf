@@ -16,7 +16,7 @@ pub mod collect {
     use super::*;
 
     const COMMENT: &str = "Bundled pricing dataset. Generated OFFLINE by the llmleaf-pricing-collector crate; the runtime llmleaf-pricing library only reads this bundled information. Rates are USD per 1,000,000 tokens.";
-    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank), published limits max_context/max_output/max_thinking, and supports_reasoning when a provider publishes that capability without a numeric budget. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
+    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank), exact input_modalities/output_modalities where published, limits max_context/max_output/max_thinking, reasoning support, provider tier, and training-data policy. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
     const COMMENT_PARAMS: &str = "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.";
 
     /// The default location of the committed dataset when the collector is run from the workspace root.
@@ -81,8 +81,9 @@ pub mod collect {
         /// Environment variable containing the provider credential.
         pub credential_env: Option<String>,
         pub settings: Map<String, Value>,
-        /// `auto` chooses a provider-specific pricing page when one is known, otherwise a priced list
-        /// endpoint. `list-endpoint` is only accepted when returned rows include token prices.
+        /// `auto` chooses a provider-specific pricing page when one is known, otherwise a model-list
+        /// endpoint. Generic list endpoints must include token prices; provider-specific collectors may
+        /// also accept an availability catalog when they can add documented capability metadata.
         #[serde(default)]
         pub source: CollectorSource,
         /// Override the provider pricing page URL. Used only by `pricing-page` collectors.
@@ -178,11 +179,32 @@ pub mod collect {
         if let Some(v) = info.supports_reasoning {
             rate.supports_reasoning = Some(v);
         }
+        if let Some(architecture) = info.extra.get("architecture").and_then(Value::as_object) {
+            if let Some(v) = string_array(architecture.get("input_modalities")) {
+                rate.input_modalities = Some(v);
+            }
+            if let Some(v) = string_array(architecture.get("output_modalities")) {
+                rate.output_modalities = Some(v);
+            }
+        }
         if let Some(v) = info.input_per_mtok {
             rate.input_per_mtok = Some(v);
         }
+        if let Some(v) = info.cached_input_per_mtok {
+            rate.cached_input_per_mtok = Some(v);
+        }
         if let Some(v) = info.output_per_mtok {
             rate.output_per_mtok = Some(v);
+        }
+        if let Some(v) = info.extra.get("tier").and_then(Value::as_str) {
+            rate.tier = Some(v.to_string());
+        }
+        if let Some(v) = info
+            .extra
+            .get("prompts_used_for_training")
+            .and_then(Value::as_bool)
+        {
+            rate.prompts_used_for_training = Some(v);
         }
         if !info.unsupported_parameters.is_empty() {
             rate.unsupported_parameters = Some(info.unsupported_parameters);
@@ -203,7 +225,7 @@ pub mod collect {
             comment: COMMENT,
             comment_metadata: COMMENT_METADATA,
             comment_params: COMMENT_PARAMS,
-            version: 5,
+            version: 7,
             models: sorted,
         };
         let text = serde_json::to_string_pretty(&out)?;
@@ -297,18 +319,22 @@ pub mod collect {
             req = req.bearer_auth(credential);
         }
         let value: Value = req.send().await?.error_for_status()?.json().await?;
-        let priced = parse_priced_list_endpoint(value);
-        if priced.is_empty() {
+        let infos = if normalized_kind(&p.kind) == "meta" {
+            parse_meta_model_api(value)
+        } else {
+            parse_priced_list_endpoint(value)
+        };
+        if infos.is_empty() {
             return Err(format!(
-                "{name} ({}) list endpoint returned no token-priced rows; use source = \"pricing-page\" with pricing_url or add a provider-specific page collector",
+                "{name} ({}) list endpoint returned no collectable model rows; generic catalogs must include token prices, while provider-specific collectors require documented capability metadata",
                 p.kind
             )
             .into());
         }
-        Ok((format!("list-endpoint:{url}"), priced))
+        Ok((format!("list-endpoint:{url}"), infos))
     }
 
-    fn list_endpoint_url(p: &CollectorProvider) -> Option<String> {
+    pub(crate) fn list_endpoint_url(p: &CollectorProvider) -> Option<String> {
         if let Some(url) = &p.list_url {
             return Some(url.clone());
         }
@@ -316,6 +342,7 @@ pub mod collect {
             return Some(format!("{}/models", endpoint.trim_end_matches('/')));
         }
         match normalized_kind(&p.kind).as_str() {
+            "meta" => Some("https://api.meta.ai/v1/models".to_string()),
             "openrouter" => Some("https://openrouter.ai/api/v1/models".to_string()),
             "together" => Some("https://api.together.ai/v1/models".to_string()),
             "cerebras" => Some("https://api.cerebras.ai/public/v1/models".to_string()),
@@ -375,6 +402,9 @@ pub mod collect {
                     .into());
                 }
             };
+            if normalized_kind(&p.kind) == "openai" {
+                enrich_openai_model_details(http, &mut page_infos).await?;
+            }
             infos.append(&mut page_infos);
         }
         let infos = dedup_model_infos(infos);
@@ -420,7 +450,78 @@ pub mod collect {
     }
 
     pub(crate) fn parse_priced_list_endpoint(value: Value) -> Vec<ModelInfo> {
-        let items = match value {
+        list_endpoint_items(value)
+            .into_iter()
+            .filter_map(list_item_to_model_info)
+            .filter(|m| m.input_per_mtok.is_some() || m.output_per_mtok.is_some())
+            .collect()
+    }
+
+    /// Parse Meta Model API's authenticated availability catalog. Meta's `/models` response currently
+    /// carries ids and ownership but no modality, limits, or prices, so the generic priced-list parser
+    /// correctly rejects it. The model family itself is documented as a multimodal *reasoning model*
+    /// exposed through text-generation APIs; in llmleaf's coarse output-modality taxonomy that is an
+    /// LLM. Meta publishes the exact context, text/image/video/PDF input family, prices, tier, and
+    /// training-data policy for three ids. The live result validates that this is Meta's catalog, while
+    /// the documented Contributor card is bundled even when a particular account's listing omits that
+    /// tier; the runtime still advertises only ids returned by that account's live `/models` call.
+    /// Public source: <https://dev.meta.ai/docs/models>.
+    pub(crate) fn parse_meta_model_api(value: Value) -> Vec<ModelInfo> {
+        let is_meta_catalog = list_endpoint_items(value).iter().any(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("muse-spark-"))
+        });
+        if !is_meta_catalog {
+            return Vec::new();
+        }
+
+        [
+            ("muse-spark-1.1", "standard", 1.25, 0.15, 4.25, false),
+            ("muse-spark-1.2", "standard", 1.25, 0.15, 4.25, false),
+            (
+                "muse-spark-1.2-contributor",
+                "contributor",
+                0.10,
+                0.002,
+                0.20,
+                true,
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(id, tier, input, cached_input, output, prompts_used_for_training)| {
+                let mut info = ModelInfo::new(id);
+                info.modality = Some(Modality::Llm);
+                info.max_context = Some(1_048_576);
+                info.supports_reasoning = Some(true);
+                info.input_per_mtok = Some(input);
+                info.cached_input_per_mtok = Some(cached_input);
+                info.output_per_mtok = Some(output);
+                info.unsupported_parameters.push("stop".into());
+                info.extra.insert("tier".into(), Value::from(tier));
+                info.extra.insert(
+                    "prompts_used_for_training".into(),
+                    Value::from(prompts_used_for_training),
+                );
+                info.extra.insert(
+                    "architecture".into(),
+                    serde_json::json!({
+                        "modality": "text+image+video+file->text",
+                        "input_modalities": ["text", "image", "video", "file"],
+                        "output_modalities": ["text"],
+                        "tokenizer": "Other",
+                        "instruct_type": null
+                    }),
+                );
+                info
+            },
+        )
+        .collect()
+    }
+
+    fn list_endpoint_items(value: Value) -> Vec<Value> {
+        match value {
             Value::Array(arr) => arr,
             Value::Object(mut obj) => obj
                 .remove("data")
@@ -431,12 +532,7 @@ pub mod collect {
                 })
                 .unwrap_or_default(),
             _ => Vec::new(),
-        };
-        items
-            .into_iter()
-            .filter_map(list_item_to_model_info)
-            .filter(|m| m.input_per_mtok.is_some() || m.output_per_mtok.is_some())
-            .collect()
+        }
     }
 
     fn list_item_to_model_info(item: Value) -> Option<ModelInfo> {
@@ -468,6 +564,8 @@ pub mod collect {
             .or_else(|| nested_u32(&obj, "limits", "max_completion_tokens"));
         if let Some(p) = obj.get("pricing").and_then(Value::as_object) {
             info.input_per_mtok = per_token_or_mtok_price(p, "prompt", "input");
+            info.cached_input_per_mtok =
+                per_token_or_mtok_price(p, "input_cache_read", "cached_input");
             info.output_per_mtok = per_token_or_mtok_price(p, "completion", "output");
         }
         if let Some(Value::Array(params)) = obj.get("supported_parameters") {
@@ -543,6 +641,16 @@ pub mod collect {
     fn json_f64(v: &Value) -> Option<f64> {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    }
+
+    fn string_array(value: Option<&Value>) -> Option<Vec<String>> {
+        let values = value?.as_array()?;
+        let strings: Vec<String> = values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        (!strings.is_empty()).then_some(strings)
     }
 
     /// Parse Moonshot's official MDX pricing rows. Current families use either three prices
@@ -636,6 +744,7 @@ pub mod collect {
             let mut info = ModelInfo::new(id.clone());
             info.modality = Some(Modality::Llm);
             info.input_per_mtok = input;
+            info.cached_input_per_mtok = labeled_price(window, "Cached input price");
             info.output_per_mtok = output;
             info.max_context = labeled_token_count(window, "Context window");
             info.max_output = labeled_token_count(window, "Max output");
@@ -678,12 +787,65 @@ pub mod collect {
             let mut info = ModelInfo::new(id);
             info.modality = Some(Modality::Llm);
             info.input_per_mtok = input;
+            info.cached_input_per_mtok = labeled_price(window, "Cached input:")
+                .or_else(|| labeled_price(window, "Cached input price"));
             info.output_per_mtok = output;
             info.max_context = labeled_token_count(window, "Context window");
             info.max_output = labeled_token_count(window, "Max output");
             out.push(info);
         }
         out
+    }
+
+    /// Fetch the individual official model cards for the ids discovered on OpenAI's overview. The
+    /// overview is the current-model authority and carries context/output limits, but the detail cards
+    /// are the source that also exposes cached-input pricing. Keeping discovery on the overview means
+    /// a new model is picked up without maintaining a second hard-coded id list.
+    async fn enrich_openai_model_details(
+        http: &reqwest::Client,
+        infos: &mut [ModelInfo],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for info in infos {
+            let url = format!("https://developers.openai.com/api/docs/models/{}", info.id);
+            let body = http
+                .get(&url)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            let lines = html_lines(&body);
+            let Some((input, cached_input, output)) = parse_openai_detail_pricing_lines(&lines)
+            else {
+                return Err(format!(
+                    "OpenAI model detail page exposed no text-token prices: {url}"
+                )
+                .into());
+            };
+            info.input_per_mtok = Some(input);
+            info.cached_input_per_mtok = Some(cached_input);
+            info.output_per_mtok = Some(output);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn parse_openai_detail_pricing_lines(lines: &[String]) -> Option<(f64, f64, f64)> {
+        Some((
+            openai_detail_price(lines, "Input")?,
+            openai_detail_price(lines, "Cached input")?,
+            openai_detail_price(lines, "Output")?,
+        ))
+    }
+
+    fn openai_detail_price(lines: &[String], label: &str) -> Option<f64> {
+        // The model page repeats these labels in its navigation, summary, pricing cards, and
+        // comparison controls. Only a pricing-card occurrence is immediately followed by a dollar
+        // amount, so keep looking instead of accepting the first matching label on the page.
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.as_str() == label)
+            .find_map(|(pos, _)| prices_in_lines(&lines[pos + 1..], 3).into_iter().next())
     }
 
     fn is_openai_api_model_id(id: &str) -> bool {
@@ -1164,6 +1326,7 @@ pub mod collect {
     fn normalized_kind(kind: &str) -> String {
         match kind {
             "claude" => "anthropic",
+            "meta-ai" | "meta-model-api" | "muse" => "meta",
             other => other,
         }
         .to_ascii_lowercase()
@@ -1247,7 +1410,11 @@ mod tests {
                 {
                     "id": "openrouter/model-a",
                     "context_length": 128000,
-                    "pricing": { "prompt": "0.000003", "completion": "0.000015" },
+                    "pricing": {
+                        "prompt": "0.000003",
+                        "input_cache_read": "0.0000005",
+                        "completion": "0.000015"
+                    },
                     "architecture": { "output_modalities": ["text"] }
                 },
                 { "id": "id-only" }
@@ -1257,9 +1424,84 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "openrouter/model-a");
         assert_eq!(rows[0].input_per_mtok, Some(3.0));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.5));
         assert_eq!(rows[0].output_per_mtok, Some(15.0));
         assert_eq!(rows[0].max_context, Some(128_000));
         assert_eq!(rows[0].modality, Some(Modality::Llm));
+    }
+
+    #[test]
+    fn meta_catalog_parser_enriches_sparse_muse_rows_with_documented_capabilities() {
+        let rows = collect::parse_meta_model_api(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "muse-spark-1.1",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "meta",
+                    "metadata": null
+                },
+                {
+                    "id": "muse-spark-1.2",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "meta",
+                    "metadata": null
+                },
+                { "id": "unrelated-model" }
+            ]
+        }));
+
+        assert_eq!(rows.len(), 3);
+        let v11 = rows.iter().find(|row| row.id == "muse-spark-1.1").unwrap();
+        assert_eq!(v11.modality, Some(Modality::Llm));
+        assert_eq!(v11.supports_reasoning, Some(true));
+        assert_eq!(v11.max_context, Some(1_048_576));
+        assert_eq!(v11.input_per_mtok, Some(1.25));
+        assert_eq!(v11.cached_input_per_mtok, Some(0.15));
+        assert_eq!(v11.output_per_mtok, Some(4.25));
+        assert_eq!(v11.extra["tier"], "standard");
+        assert_eq!(v11.extra["prompts_used_for_training"], false);
+        assert_eq!(v11.unsupported_parameters, ["stop"]);
+        assert_eq!(
+            v11.extra["architecture"]["input_modalities"],
+            serde_json::json!(["text", "image", "video", "file"])
+        );
+        assert_eq!(
+            v11.extra["architecture"]["output_modalities"],
+            serde_json::json!(["text"])
+        );
+        let v12 = rows.iter().find(|row| row.id == "muse-spark-1.2").unwrap();
+        assert_eq!(v12.modality, Some(Modality::Llm));
+        assert_eq!(v12.supports_reasoning, Some(true));
+        assert_eq!(v12.max_context, Some(1_048_576));
+        assert_eq!(v12.input_per_mtok, Some(1.25));
+        assert_eq!(v12.cached_input_per_mtok, Some(0.15));
+        assert_eq!(v12.output_per_mtok, Some(4.25));
+        let contributor = rows
+            .iter()
+            .find(|row| row.id == "muse-spark-1.2-contributor")
+            .unwrap();
+        assert_eq!(contributor.input_per_mtok, Some(0.10));
+        assert_eq!(contributor.cached_input_per_mtok, Some(0.002));
+        assert_eq!(contributor.output_per_mtok, Some(0.20));
+        assert_eq!(contributor.extra["tier"], "contributor");
+        assert_eq!(contributor.extra["prompts_used_for_training"], true);
+    }
+
+    #[test]
+    fn meta_aliases_use_the_model_api_catalog() {
+        for kind in ["meta", "meta-ai", "meta-model-api", "muse"] {
+            let provider = CollectorProvider {
+                kind: kind.to_string(),
+                ..CollectorProvider::default()
+            };
+            assert_eq!(
+                collect::list_endpoint_url(&provider).as_deref(),
+                Some("https://api.meta.ai/v1/models")
+            );
+        }
     }
 
     #[test]
@@ -1313,9 +1555,9 @@ mod tests {
             "Reasoning",
             "none",
             "Input price",
-            "$2.50 / Input MTok",
+            "$2 / Input MTok",
             "Output price",
-            "$15 / Output MTok",
+            "$12 / Output MTok",
             "Max output",
             "128K tokens",
             "Context window",
@@ -1337,8 +1579,34 @@ mod tests {
         assert_eq!(alias.input_per_mtok, Some(5.0));
         assert_eq!(alias.max_context, Some(1_050_000));
         let terra = rows.iter().find(|row| row.id == "gpt-5.6-terra").unwrap();
-        assert_eq!(terra.input_per_mtok, Some(2.5));
-        assert_eq!(terra.output_per_mtok, Some(15.0));
+        assert_eq!(terra.input_per_mtok, Some(2.0));
+        assert_eq!(terra.output_per_mtok, Some(12.0));
+    }
+
+    #[test]
+    fn openai_detail_parser_reads_standard_and_cached_token_prices() {
+        let lines = vec![
+            "GPT-5.6 Terra",
+            "Pricing",
+            "Pricing is based on the number of tokens used.",
+            "Text tokens",
+            "Per 1M tokens",
+            "Input",
+            "$2.00",
+            "Cached input",
+            "$0.20",
+            "Output",
+            "$12.00",
+            "Modalities",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            collect::parse_openai_detail_pricing_lines(&lines),
+            Some((2.0, 0.2, 12.0))
+        );
     }
 
     #[test]
