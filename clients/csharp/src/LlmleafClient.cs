@@ -144,7 +144,7 @@ public sealed class LlmleafClient : IDisposable
     /// <summary>
     /// Non-streaming Responses call (POST /v1/responses) — the OpenAI Responses dialect. The wire
     /// <c>stream</c> flag is forced false; use <see cref="CreateResponseStreamAsync"/> for streaming.
-    /// llmleaf is stateless, so the response always reports <c>store:false</c>.
+    /// <c>store:true</c> and <c>PreviousResponseId</c> enable upstream-managed continuation.
     /// </summary>
     public async Task<ResponsesResponse> CreateResponseAsync(ResponsesRequest request, CancellationToken cancellationToken = default)
     {

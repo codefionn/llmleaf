@@ -521,8 +521,8 @@ export interface BatchResultLine {
 // Responses (POST /v1/responses) — the OpenAI Responses dialect
 // ---------------------------------------------------------------------------
 //
-// llmleaf serves this dialect statelessly: `store` is accepted but always answered
-// `false`, `previousResponseId`/`background:true` are rejected (400), and there is no
+// llmleaf defaults to stateless encrypted-reasoning replay. `store:true` and
+// `previousResponseId` are proxied upstream; `background:true` is rejected, and there is no
 // retrieval call (`GET /v1/responses/{id}` is an explained 404). Dialect vocabulary
 // that would collide with the chat enums (statuses "completed"/"in_progress"/…, roles
 // incl. "developer") stays a plain wire string here rather than an enum.
@@ -673,8 +673,9 @@ export interface ResponsesRequest {
   tools?: ResponsesToolDef[];
   toolChoice?: ResponsesToolChoice;
   reasoning?: ResponsesReasoning;
-  /** accepted, but llmleaf stores nothing and always answers `false`. */
   store?: boolean;
+  /** continue a stored upstream response without replaying prior input/output items */
+  previousResponseId?: string;
   /** dialect-specific passthrough, raw JSON object as a JSON string, merged at the top level. */
   extra?: string;
 }
@@ -723,8 +724,8 @@ export interface ResponsesResponse {
   output: ResponseItem[];
   /** null on in-flight snapshots */
   usage?: ResponsesUsage;
-  /** llmleaf always answers `false`. */
   store?: boolean;
+  previousResponseId?: string;
   instructions?: string;
   maxOutputTokens?: number;
   temperature?: number;

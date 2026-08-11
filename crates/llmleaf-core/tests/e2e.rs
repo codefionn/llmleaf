@@ -684,8 +684,8 @@ async fn responses_non_streaming_round_trip() {
     assert_eq!(v["model"], "demo");
     assert_eq!(v["status"], "completed");
     assert!(v["id"].as_str().unwrap().starts_with("resp_"));
-    // Stateless: `store: true` in the request is answered `false`.
-    assert_eq!(v["store"], false);
+    // The upstream storage preference is preserved.
+    assert_eq!(v["store"], true);
     // The visible answer is a `message` output item.
     let output = v["output"].as_array().unwrap();
     let msg = output.iter().find(|i| i["type"] == "message").unwrap();
@@ -739,8 +739,7 @@ async fn responses_streaming_emits_event_sequence() {
 }
 
 #[tokio::test]
-async fn responses_previous_response_id_is_bad_request() {
-    // Stateless: continuing from a stored response is unsupported and rejected at the map-in edge.
+async fn responses_previous_response_id_is_proxied() {
     let (app, _bus) = app_and_bus();
     let req = Request::builder()
         .method("POST")
@@ -757,12 +756,9 @@ async fn responses_previous_response_id_is_bad_request() {
         ))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    assert!(v["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("previous_response_id"));
+    assert_eq!(v["previous_response_id"], "resp_abc");
 }
 
 #[tokio::test]
@@ -779,7 +775,7 @@ async fn responses_missing_bearer_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn responses_retrieval_is_404_stateless() {
+async fn responses_retrieval_is_404_without_a_local_store() {
     // Retrieval is unsupported by design; the client is told exactly why (P7).
     let (app, _bus) = app_and_bus();
     let req = Request::builder()
@@ -792,8 +788,7 @@ async fn responses_retrieval_is_404_stateless() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let v = body_json(resp).await;
     let msg = v["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("stateless"));
-    assert!(msg.contains("store"));
+    assert!(msg.contains("local response store"));
 
     // Even the always-404 stub authenticates first — the unauthenticated surface is enumerated in
     // SOUL.md (`/healthz`, `/v1/openapi.json`) and this endpoint is not on it.

@@ -212,6 +212,7 @@ class ResponsesWireTest {
             ),
             maxOutputTokens = 256,
             store = false,
+            previousResponseId = "resp_previous",
             extra = RawJson("""{"service_tier":"default"}"""),
         )
         val encoded = LenientJson.encodeToString(ResponsesRequest.serializer(), original)
@@ -219,6 +220,7 @@ class ResponsesWireTest {
         assertEquals(original.model, decoded.model)
         assertEquals(256, decoded.maxOutputTokens)
         assertEquals(false, decoded.store)
+        assertEquals("resp_previous", decoded.previousResponseId)
         // unknown top-level keys are captured back into `extra`.
         assertEquals(original.extra, decoded.extra)
         val items = (decoded.input as ResponsesInput.Items).items
@@ -235,7 +237,7 @@ class ResponsesWireTest {
             respond(
                 content = """
                     {"id":"resp_1","object":"response","created_at":1720000000,"status":"completed",
-                     "model":"gpt-4o-mini","store":false,
+                     "model":"gpt-4o-mini","store":false,"previous_response_id":"resp_previous",
                      "output":[
                        {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"ENC=="},
                        {"type":"message","id":"msg_1","role":"assistant","status":"completed",
@@ -258,8 +260,9 @@ class ResponsesWireTest {
         assertEquals("resp_1", resp.id)
         assertEquals("response", resp.`object`)
         assertEquals("completed", resp.status)
-        // llmleaf is stateless: store is always false.
+        // This response used stateless mode, so store is false.
         assertEquals(false, resp.store)
+        assertEquals("resp_previous", resp.previousResponseId)
 
         // Output decodes the reasoning + message items; assembled text flattens output_text parts.
         assertEquals(2, resp.output.size)

@@ -410,8 +410,8 @@ fn anthropic_sse_from_response(
 /// The OpenAI Responses compat surface. Same hot path as [`chat_completions`] — authenticate → map in →
 /// route → stream → map out — but in the Responses dialect: the body maps via
 /// [`responses::parse_responses_request`], and the output is either a single Responses `response` object
-/// or the Responses streaming-event sequence. Served statelessly: `store` is always answered `false`,
-/// and the stateless-continuation knobs are rejected at the map-in edge (see [`responses`]).
+/// or the Responses streaming-event sequence. Stateful response ids are proxied to the selected
+/// upstream; encrypted reasoning items provide the stateless alternative.
 async fn responses_create(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -458,10 +458,7 @@ async fn responses_create(
         responses_sse_from_response(stream, encoder).into_response()
     } else {
         match llmleaf_model::collect(stream).await {
-            Ok(mut resp) => {
-                // The Responses object is keyed by the consumer request id (`resp_<id>`), not the
-                // upstream's — stamp it so `id`, the output-item ids, and the streaming encoder agree.
-                resp.id = request_id;
+            Ok(resp) => {
                 Json(responses::response_to_responses(&resp, &echo, created)).into_response()
             }
             Err(e) => error(StatusCode::BAD_GATEWAY, e.to_string()),
@@ -513,10 +510,8 @@ fn responses_sse_from_response(
     Sse::new(body).keep_alive(KeepAlive::default())
 }
 
-/// `GET /v1/responses/{id}` — always 404. llmleaf is stateless and stores no responses (`store` is
-/// always `false`), so retrieval is unsupported by design. This is P7 transparency: a client that
-/// ignored `"store": false` is told exactly why, in the same OpenAI error envelope as the rest of the
-/// surface.
+/// `GET /v1/responses/{id}` — always 404. Stateful continuation is proxied during create calls, but
+/// llmleaf does not keep enough local routing state to implement response retrieval.
 async fn get_response(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -534,8 +529,8 @@ async fn get_response(
     error(
         StatusCode::NOT_FOUND,
         format!(
-            "response '{id}' not found: llmleaf is stateless and does not store responses \
-             (`store` is always false), so retrieval is unsupported by design"
+            "response '{id}' cannot be retrieved through llmleaf: response-id continuation is \
+             proxied upstream, but the gateway does not maintain a local response store"
         ),
     )
 }

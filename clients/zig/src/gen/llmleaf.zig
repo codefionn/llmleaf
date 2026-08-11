@@ -311,10 +311,10 @@ pub const ChatCompletionChunk = struct {
 // Responses  (POST /v1/responses) — the OpenAI Responses dialect
 // ---------------------------------------------------------------------------
 //
-// Same canonical core as chat, a different edge dialect. llmleaf serves it
-// STATELESSLY: `store` is accepted but always answered `false`,
-// `previous_response_id`/`background:true` are rejected (400), and there is no
-// retrieval call (`GET /v1/responses/{id}` is an explained 404). Dialect
+// Same canonical core as chat, a different edge dialect. `store:true` and
+// `previous_response_id` are proxied to a Responses-speaking upstream, while
+// encrypted reasoning items support stateless replay. There is no retrieval
+// call (`GET /v1/responses/{id}` is an explained 404). Dialect
 // vocabulary that would collide with the chat enums (statuses, the "developer"
 // role) stays a plain wire string here rather than an enum.
 
@@ -452,8 +452,8 @@ pub const ResponsesRequest = struct {
     tools: []const ResponsesToolDef = &.{},
     tool_choice: ?ResponsesToolChoice = null,
     reasoning: ?ResponsesReasoning = null,
-    /// Accepted but always answered `false` — llmleaf stores nothing.
     store: ?bool = null,
+    previous_response_id: ?[]const u8 = null,
     extra: ?[]const u8 = null, // raw JSON object, merged at the top level
 };
 
@@ -506,7 +506,8 @@ pub const ResponsesResponse = struct {
     model: []const u8 = "",
     output: []const ResponseItem = &.{},
     usage: ?ResponsesUsage = null, // null on in-flight snapshots
-    store: ?bool = null, // llmleaf always answers false
+    store: ?bool = null,
+    previous_response_id: ?[]const u8 = null,
     instructions: ?[]const u8 = null,
     max_output_tokens: ?u32 = null,
     temperature: ?f32 = null,

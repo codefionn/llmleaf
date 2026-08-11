@@ -83,9 +83,11 @@ Body = `ResponsesRequest` — the OpenAI Responses dialect on the same canonical
   `content[]` entries as `{"type":"reasoning_text","text"}` — the list an entry lives in decides
   its wire token. `encrypted_content` is opaque: echo it back verbatim in the next request's
   input to continue an encrypted reasoning turn.
-- llmleaf is stateless: `store` is accepted but the response always reports `"store": false`;
-  `previous_response_id` and `background: true` are rejected with 400. Do not expose a
-  retrieval call — `GET /v1/responses/{id}` is an explained 404 by design.
+- `store:true` and `previous_response_id` are proxied to a Responses-speaking upstream. The gateway
+  returns the upstream response id so its stored reasoning state can be continued without resending
+  prior items. Encrypted reasoning replay remains the stateless alternative.
+- `background:true` is rejected. Do not expose a retrieval call: `GET /v1/responses/{id}` remains an
+  explained 404 because llmleaf keeps no local response-routing store.
 
 **Non-streaming** (`stream` absent/false): response = `ResponsesResponse` (`object:"response"`).
 

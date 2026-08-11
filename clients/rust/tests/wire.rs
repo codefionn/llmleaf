@@ -270,11 +270,15 @@ fn responses_tool_choice_mode_is_bare_string() {
 #[test]
 fn responses_extra_merges_at_top_level() {
     let mut req = ResponsesRequest::new("m", "hi");
+    req.store = Some(true);
+    req.previous_response_id = Some("resp_previous".into());
     let mut extra = serde_json::Map::new();
     extra.insert("metadata".into(), json!({ "trace": "abc" }));
     req.extra = Some(extra);
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["metadata"], json!({ "trace": "abc" }));
+    assert_eq!(v["store"], true);
+    assert_eq!(v["previous_response_id"], "resp_previous");
     assert!(v.get("extra").is_none());
 }
 
@@ -287,6 +291,7 @@ fn responses_response_decodes_output_usage_and_store() {
         "status": "completed",
         "model": "gpt-4o-mini",
         "store": false,
+        "previous_response_id": "resp_previous",
         "output": [
             {
                 "type": "reasoning",
@@ -315,6 +320,7 @@ fn responses_response_decodes_output_usage_and_store() {
     let resp: ResponsesResponse = serde_json::from_value(body).unwrap();
     assert_eq!(resp.status, "completed");
     assert_eq!(resp.store, Some(false));
+    assert_eq!(resp.previous_response_id.as_deref(), Some("resp_previous"));
     assert_eq!(resp.output_text(), "Hello!");
     let usage = resp.usage.as_ref().unwrap();
     assert_eq!(usage.input_tokens, 20);

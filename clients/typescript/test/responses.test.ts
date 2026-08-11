@@ -52,6 +52,7 @@ test("request encodes an item array with flat tools + reasoning replay", () => {
     toolChoice: { type: "function", name: "get_weather" },
     temperature: 0.7,
     store: false,
+    previousResponseId: "resp_previous",
   };
 
   const body = encodeResponsesRequest(req, false);
@@ -90,6 +91,7 @@ test("request encodes an item array with flat tools + reasoning replay", () => {
     ],
     tool_choice: { type: "function", name: "get_weather" },
     store: false,
+    previous_response_id: "resp_previous",
   });
 });
 
@@ -147,14 +149,16 @@ test("response decodes output + store:false + cached-tokens usage", () => {
       total_tokens: 48,
     },
     store: false,
+    previous_response_id: "resp_previous",
   };
 
   const resp = decodeResponsesResponse(wire);
   assert.equal(resp.id, "resp_1");
   assert.equal(resp.object, "response");
   assert.equal(resp.status, "completed");
-  // llmleaf is stateless — the store echo is always false.
+  // This response used stateless mode, so its store echo is false.
   assert.equal(resp.store, false);
+  assert.equal(resp.previousResponseId, "resp_previous");
 
   assert.equal(resp.output.length, 1);
   const item = resp.output[0]!;

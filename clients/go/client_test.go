@@ -299,6 +299,9 @@ func TestResponsesWireAndDecode(t *testing.T) {
 		if body["store"] != false {
 			t.Errorf("store should be false, got %v", body["store"])
 		}
+		if body["previous_response_id"] != "resp_previous" {
+			t.Errorf("previous_response_id = %v", body["previous_response_id"])
+		}
 
 		// Tools are FLAT: type/name at the top level, no nested "function".
 		tools := body["tools"].([]any)
@@ -357,13 +360,14 @@ func TestResponsesWireAndDecode(t *testing.T) {
 		  "output":[{"type":"message","role":"assistant","status":"completed",
 		    "content":[{"type":"output_text","text":"It is 15C in Paris.","annotations":[]}]}],
 		  "usage":{"input_tokens":20,"output_tokens":8,"total_tokens":28,"input_tokens_details":{"cached_tokens":12}},
-		  "store":false}`)
+		  "store":false,"previous_response_id":"resp_previous"}`)
 	})
 	defer srv.Close()
 
 	resp, err := client.CreateResponse(context.Background(), &pb.ResponsesRequest{
-		Model: "gpt-4o",
-		Store: ptr(false),
+		Model:              "gpt-4o",
+		Store:              ptr(false),
+		PreviousResponseId: ptr("resp_previous"),
 		Input: &pb.ResponsesRequest_Items{Items: &pb.ResponseItemList{Items: []*pb.ResponseItem{
 			{Item: &pb.ResponseItem_Message{Message: &pb.ResponseMessageItem{
 				Role:    "user",
@@ -393,6 +397,9 @@ func TestResponsesWireAndDecode(t *testing.T) {
 	}
 	if resp.Store == nil || resp.GetStore() {
 		t.Errorf("store should decode as present-and-false, got %v", resp.Store)
+	}
+	if resp.GetPreviousResponseId() != "resp_previous" {
+		t.Errorf("previous_response_id = %q", resp.GetPreviousResponseId())
 	}
 	out := resp.GetOutput()
 	if len(out) != 1 {

@@ -310,6 +310,7 @@ internal static class Mapper
                 ? null
                 : new WireResponsesReasoning { Effort = req.Reasoning.Effort, Summary = req.Reasoning.Summary },
             Store = req.Store,
+            PreviousResponseId = req.PreviousResponseId,
         };
 
         if (req.Tools is { Count: > 0 })
@@ -431,6 +432,7 @@ internal static class Mapper
         Output = ResponseItemsFromWire(w.Output),
         Usage = ResponsesUsageFromWire(w.Usage),
         Store = w.Store,
+        PreviousResponseId = w.PreviousResponseId,
         Instructions = w.Instructions,
         MaxOutputTokens = w.MaxOutputTokens,
         Temperature = w.Temperature,

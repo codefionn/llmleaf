@@ -89,9 +89,8 @@ Non-2xx responses throw a typed `ApiException` (`int Status` + the parsed messag
 fields (`Extra`, `Parameters`, `JsonSchema`, …) are raw JSON object strings spliced verbatim;
 `Extra` keys merge at the top level (explicit fields win).
 
-The Responses surface is stateless: `Store` is accepted but the response always reports
-`store:false`, and there is no retrieval call (`previous_response_id` / `background:true` are
-rejected upstream). To continue an encrypted reasoning turn, echo a `ResponseReasoningItem`'s
+The Responses surface is stateless by default, while `Store:true` / `PreviousResponseId` are proxied
+upstream; `Background:true` is rejected. To continue an encrypted reasoning turn, echo a `ResponseReasoningItem`'s
 `EncryptedContent` back verbatim in the next request's `Input`.
 
 ## Run the example

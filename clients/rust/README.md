@@ -60,7 +60,7 @@ and each `ToolCallDelta.index`; retain `id` / `kind` / function `name` whenever 
 `POST /v1/responses` is the same canonical core behind a different edge dialect. `input` is a
 bare string (one user message) or an array of items; use `ResponseItem` to build multi-turn
 input (messages, `function_call` / `function_call_output` replay, reasoning items). llmleaf is
-stateless, so the response always reports `"store": false`.
+stateless by default; `store:true` and `previous_response_id` enable upstream-managed continuation.
 
 ```rust
 use futures::StreamExt;

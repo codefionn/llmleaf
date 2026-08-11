@@ -897,6 +897,7 @@ export function encodeResponsesRequest(req: ResponsesRequest, forceStream?: bool
   put(out, "tool_choice", req.toolChoice && encodeResponsesToolChoice(req.toolChoice));
   put(out, "reasoning", req.reasoning && encodeResponsesReasoning(req.reasoning));
   put(out, "store", req.store);
+  put(out, "previous_response_id", req.previousResponseId);
 
   // `extra`: parsed and merged at the top level of the request object (SPEC.md).
   const extra = parseRawJson("ResponsesRequest.extra", req.extra);
@@ -1115,6 +1116,8 @@ export function decodeResponsesResponse(v: unknown): ResponsesResponse {
   if (usage !== undefined) resp.usage = usage;
   const store = optBool(o["store"]);
   if (store !== undefined) resp.store = store;
+  const previousResponseId = optStr(o["previous_response_id"]);
+  if (previousResponseId !== undefined) resp.previousResponseId = previousResponseId;
   const instructions = optStr(o["instructions"]);
   if (instructions !== undefined) resp.instructions = instructions;
   const maxOut = optNum(o["max_output_tokens"]);

@@ -182,8 +182,8 @@ impl Client {
     /// `POST /v1/responses` (non-streaming) — the OpenAI Responses dialect.
     ///
     /// `stream` is forced to `false` (or absent) so a JSON [`ResponsesResponse`] comes
-    /// back. llmleaf serves this dialect statelessly, so the response always reports
-    /// `"store": false` (SPEC.md).
+    /// back. `store:true` plus `previous_response_id` enables upstream-managed continuation;
+    /// encrypted reasoning items provide the stateless alternative.
     pub async fn responses(&self, mut request: ResponsesRequest) -> Result<ResponsesResponse> {
         request.stream = None;
         let resp = self

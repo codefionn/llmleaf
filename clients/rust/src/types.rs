@@ -1103,9 +1103,11 @@ pub struct ResponsesRequest {
     pub tool_choice: Option<ResponsesToolChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponsesReasoning>,
-    /// Accepted but always answered `false` — llmleaf stores nothing (SPEC.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
+    /// Continue a stored upstream response without replaying its prior input/output items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
     /// Dialect-specific passthrough; its keys are merged at the top level of the request
     /// object (P7 transparent passthrough), so it is `#[serde(flatten)]`ed here.
     #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
@@ -1127,6 +1129,7 @@ impl ResponsesRequest {
             tool_choice: None,
             reasoning: None,
             store: None,
+            previous_response_id: None,
             extra: None,
         }
     }
@@ -1222,9 +1225,10 @@ pub struct ResponsesResponse {
     /// `null` on in-flight snapshots; set on the terminal one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ResponsesUsage>,
-    /// llmleaf always answers `false` (SPEC.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

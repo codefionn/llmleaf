@@ -36,7 +36,7 @@ public sealed class ResponsesWireTests
                 "arguments":"{\"city\":\"Paris\"}","status":"completed"}],
              "usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},
                       "output_tokens":8,"output_tokens_details":{"reasoning_tokens":3},"total_tokens":50},
-             "store":false}
+             "store":false,"previous_response_id":"resp_previous"}
             """;
         using var server = new TestServer(_ => CannedResponse.Json(response));
         using var client = Client(server);
@@ -50,6 +50,7 @@ public sealed class ResponsesWireTests
             Tools = [new ResponsesToolDef("function", "get_weather", "Get weather", """{"type":"object","properties":{"city":{"type":"string"}}}""", Strict: false)],
             ToolChoice = ResponsesToolChoice.Named("get_weather"),
             Store = false,
+            PreviousResponseId = "resp_previous",
             Input = ResponsesInput.FromItems(
             [
                 new ResponseMessageItem
@@ -84,6 +85,7 @@ public sealed class ResponsesWireTests
         Assert.False(body.GetProperty("stream").GetBoolean()); // forced false for non-streaming
         Assert.Equal("Be terse.", body.GetProperty("instructions").GetString());
         Assert.Equal(256u, body.GetProperty("max_output_tokens").GetUInt32());
+        Assert.Equal("resp_previous", body.GetProperty("previous_response_id").GetString());
 
         // reasoning config (distinct from the reasoning item inside `input`).
         Assert.Equal("medium", body.GetProperty("reasoning").GetProperty("effort").GetString());
@@ -150,7 +152,8 @@ public sealed class ResponsesWireTests
         Assert.Equal("response", resp.Object);
         Assert.Equal(1720000000L, resp.CreatedAt);
         Assert.Equal("completed", resp.Status);
-        Assert.False(resp.Store!.Value); // llmleaf always reports store:false
+        Assert.False(resp.Store!.Value);
+        Assert.Equal("resp_previous", resp.PreviousResponseId);
 
         Assert.Equal(2, resp.Output.Count);
         var respMsg = Assert.IsType<ResponseMessageItem>(resp.Output[0]);

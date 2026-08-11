@@ -290,7 +290,7 @@ async fn openai_chat_posts_responses_shape_and_parses_responses_sse() {
         "Responses body has `input`, not `messages`"
     );
     assert!(body.get("messages").is_none());
-    assert_eq!(body["store"], false); // llmleaf never lets the upstream store the payload
+    assert_eq!(body["store"], false); // Stateless is the default unless the caller opts into storage.
     assert_eq!(
         body["include"],
         serde_json::json!(["reasoning.encrypted_content"])

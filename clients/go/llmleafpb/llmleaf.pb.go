@@ -3189,12 +3189,13 @@ type ResponsesRequest struct {
 	Tools           []*ResponsesToolDef      `protobuf:"bytes,9,rep,name=tools,proto3" json:"tools,omitempty"`
 	ToolChoice      *ResponsesToolChoice     `protobuf:"bytes,10,opt,name=tool_choice,json=toolChoice,proto3,oneof" json:"tool_choice,omitempty"`
 	Reasoning       *ResponsesReasoning      `protobuf:"bytes,11,opt,name=reasoning,proto3,oneof" json:"reasoning,omitempty"`
-	// Accepted but always answered `false` — llmleaf stores nothing.
-	Store *bool `protobuf:"varint,12,opt,name=store,proto3,oneof" json:"store,omitempty"`
+	Store           *bool                    `protobuf:"varint,12,opt,name=store,proto3,oneof" json:"store,omitempty"`
 	// Dialect-specific passthrough, spliced verbatim into the request body (P7).
-	Extra         *string `protobuf:"bytes,13,opt,name=extra,proto3,oneof" json:"extra,omitempty"` // raw JSON object
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Extra *string `protobuf:"bytes,13,opt,name=extra,proto3,oneof" json:"extra,omitempty"` // raw JSON object
+	// Continue a stored upstream response without resending its prior input/output items.
+	PreviousResponseId *string `protobuf:"bytes,14,opt,name=previous_response_id,json=previousResponseId,proto3,oneof" json:"previous_response_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ResponsesRequest) Reset() {
@@ -3325,6 +3326,13 @@ func (x *ResponsesRequest) GetStore() bool {
 func (x *ResponsesRequest) GetExtra() string {
 	if x != nil && x.Extra != nil {
 		return *x.Extra
+	}
+	return ""
+}
+
+func (x *ResponsesRequest) GetPreviousResponseId() string {
+	if x != nil && x.PreviousResponseId != nil {
+		return *x.PreviousResponseId
 	}
 	return ""
 }
@@ -3561,24 +3569,25 @@ func (x *ResponsesIncompleteDetails) GetReason() string {
 // Fields the wire echoes but SDKs don't need typed (tools, tool_choice, truncation,
 // parallel_tool_calls, …) are simply ignored on decode — JSON tolerates unknown keys.
 type ResponsesResponse struct {
-	state             protoimpl.MessageState      `protogen:"open.v1"`
-	Id                string                      `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Object            string                      `protobuf:"bytes,2,opt,name=object,proto3" json:"object,omitempty"`                         // "response"
-	CreatedAt         int64                       `protobuf:"varint,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // unix seconds
-	Status            string                      `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`                         // "completed" | "in_progress" | "incomplete" | "failed"
-	IncompleteDetails *ResponsesIncompleteDetails `protobuf:"bytes,5,opt,name=incomplete_details,json=incompleteDetails,proto3,oneof" json:"incomplete_details,omitempty"`
-	Error             *ErrorBody                  `protobuf:"bytes,6,opt,name=error,proto3,oneof" json:"error,omitempty"`
-	Model             string                      `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
-	Output            []*ResponseItem             `protobuf:"bytes,8,rep,name=output,proto3" json:"output,omitempty"`
-	Usage             *ResponsesUsage             `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"`   // null on in-flight snapshots
-	Store             *bool                       `protobuf:"varint,10,opt,name=store,proto3,oneof" json:"store,omitempty"` // llmleaf always answers false
-	Instructions      *string                     `protobuf:"bytes,11,opt,name=instructions,proto3,oneof" json:"instructions,omitempty"`
-	MaxOutputTokens   *uint32                     `protobuf:"varint,12,opt,name=max_output_tokens,json=maxOutputTokens,proto3,oneof" json:"max_output_tokens,omitempty"`
-	Temperature       *float32                    `protobuf:"fixed32,13,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
-	TopP              *float32                    `protobuf:"fixed32,14,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
-	Reasoning         *ResponsesReasoning         `protobuf:"bytes,15,opt,name=reasoning,proto3,oneof" json:"reasoning,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state              protoimpl.MessageState      `protogen:"open.v1"`
+	Id                 string                      `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Object             string                      `protobuf:"bytes,2,opt,name=object,proto3" json:"object,omitempty"`                         // "response"
+	CreatedAt          int64                       `protobuf:"varint,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // unix seconds
+	Status             string                      `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`                         // "completed" | "in_progress" | "incomplete" | "failed"
+	IncompleteDetails  *ResponsesIncompleteDetails `protobuf:"bytes,5,opt,name=incomplete_details,json=incompleteDetails,proto3,oneof" json:"incomplete_details,omitempty"`
+	Error              *ErrorBody                  `protobuf:"bytes,6,opt,name=error,proto3,oneof" json:"error,omitempty"`
+	Model              string                      `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
+	Output             []*ResponseItem             `protobuf:"bytes,8,rep,name=output,proto3" json:"output,omitempty"`
+	Usage              *ResponsesUsage             `protobuf:"bytes,9,opt,name=usage,proto3,oneof" json:"usage,omitempty"` // null on in-flight snapshots
+	Store              *bool                       `protobuf:"varint,10,opt,name=store,proto3,oneof" json:"store,omitempty"`
+	Instructions       *string                     `protobuf:"bytes,11,opt,name=instructions,proto3,oneof" json:"instructions,omitempty"`
+	MaxOutputTokens    *uint32                     `protobuf:"varint,12,opt,name=max_output_tokens,json=maxOutputTokens,proto3,oneof" json:"max_output_tokens,omitempty"`
+	Temperature        *float32                    `protobuf:"fixed32,13,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP               *float32                    `protobuf:"fixed32,14,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	Reasoning          *ResponsesReasoning         `protobuf:"bytes,15,opt,name=reasoning,proto3,oneof" json:"reasoning,omitempty"`
+	PreviousResponseId *string                     `protobuf:"bytes,16,opt,name=previous_response_id,json=previousResponseId,proto3,oneof" json:"previous_response_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ResponsesResponse) Reset() {
@@ -3714,6 +3723,13 @@ func (x *ResponsesResponse) GetReasoning() *ResponsesReasoning {
 		return x.Reasoning
 	}
 	return nil
+}
+
+func (x *ResponsesResponse) GetPreviousResponseId() string {
+	if x != nil && x.PreviousResponseId != nil {
+		return *x.PreviousResponseId
+	}
+	return ""
 }
 
 // One streaming SSE event. Unlike chat streaming there is NO `data: [DONE]` sentinel:
@@ -5771,7 +5787,7 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\asummary\x18\x02 \x01(\tH\x01R\asummary\x88\x01\x01B\t\n" +
 	"\a_effortB\n" +
 	"\n" +
-	"\b_summary\"\xa7\x05\n" +
+	"\b_summary\"\xf7\x05\n" +
 	"\x10ResponsesRequest\x12\x14\n" +
 	"\x05model\x18\x01 \x01(\tR\x05model\x12\x14\n" +
 	"\x04text\x18\x02 \x01(\tH\x00R\x04text\x124\n" +
@@ -5787,7 +5803,9 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"toolChoice\x88\x01\x01\x12A\n" +
 	"\treasoning\x18\v \x01(\v2\x1e.llmleaf.v1.ResponsesReasoningH\aR\treasoning\x88\x01\x01\x12\x19\n" +
 	"\x05store\x18\f \x01(\bH\bR\x05store\x88\x01\x01\x12\x19\n" +
-	"\x05extra\x18\r \x01(\tH\tR\x05extra\x88\x01\x01B\a\n" +
+	"\x05extra\x18\r \x01(\tH\tR\x05extra\x88\x01\x01\x125\n" +
+	"\x14previous_response_id\x18\x0e \x01(\tH\n" +
+	"R\x12previousResponseId\x88\x01\x01B\a\n" +
 	"\x05inputB\x0f\n" +
 	"\r_instructionsB\t\n" +
 	"\a_streamB\x0e\n" +
@@ -5798,7 +5816,8 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\n" +
 	"_reasoningB\b\n" +
 	"\x06_storeB\b\n" +
-	"\x06_extra\"\xf1\x02\n" +
+	"\x06_extraB\x17\n" +
+	"\x15_previous_response_id\"\xf1\x02\n" +
 	"\x0eResponsesUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\rR\vinputTokens\x12^\n" +
 	"\x14input_tokens_details\x18\x02 \x01(\v2'.llmleaf.v1.ResponsesInputTokensDetailsH\x00R\x12inputTokensDetails\x88\x01\x01\x12#\n" +
@@ -5814,7 +5833,7 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x10reasoning_tokens\x18\x01 \x01(\rH\x00R\x0freasoningTokens\x88\x01\x01B\x13\n" +
 	"\x11_reasoning_tokens\"4\n" +
 	"\x1aResponsesIncompleteDetails\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason\"\xfc\x05\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"\xcc\x06\n" +
 	"\x11ResponsesResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06object\x18\x02 \x01(\tR\x06object\x12\x1d\n" +
@@ -5832,7 +5851,8 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x11max_output_tokens\x18\f \x01(\rH\x05R\x0fmaxOutputTokens\x88\x01\x01\x12%\n" +
 	"\vtemperature\x18\r \x01(\x02H\x06R\vtemperature\x88\x01\x01\x12\x18\n" +
 	"\x05top_p\x18\x0e \x01(\x02H\aR\x04topP\x88\x01\x01\x12A\n" +
-	"\treasoning\x18\x0f \x01(\v2\x1e.llmleaf.v1.ResponsesReasoningH\bR\treasoning\x88\x01\x01B\x15\n" +
+	"\treasoning\x18\x0f \x01(\v2\x1e.llmleaf.v1.ResponsesReasoningH\bR\treasoning\x88\x01\x01\x125\n" +
+	"\x14previous_response_id\x18\x10 \x01(\tH\tR\x12previousResponseId\x88\x01\x01B\x15\n" +
 	"\x13_incomplete_detailsB\b\n" +
 	"\x06_errorB\b\n" +
 	"\x06_usageB\b\n" +
@@ -5842,7 +5862,8 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\f_temperatureB\b\n" +
 	"\x06_top_pB\f\n" +
 	"\n" +
-	"_reasoning\"\xe1\x04\n" +
+	"_reasoningB\x17\n" +
+	"\x15_previous_response_id\"\xe1\x04\n" +
 	"\x14ResponsesStreamEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12'\n" +
 	"\x0fsequence_number\x18\x02 \x01(\x04R\x0esequenceNumber\x12>\n" +

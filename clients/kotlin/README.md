@@ -59,7 +59,7 @@ function `arguments` fragment until `finishReason == FinishReason.TOOL_CALLS`.
 
 The OpenAI **Responses** dialect on the same core. `input` is a bare string (one user message) or
 an array of items; tools and `tool_choice` are **flat**; llmleaf is stateless, so the response
-always reports `store = false`.
+defaults to stateless operation; `store = true` plus `previousResponseId` enables upstream continuation.
 
 ```kotlin
 import eu.codefionn.llmleaf.client.model.ResponsesInput

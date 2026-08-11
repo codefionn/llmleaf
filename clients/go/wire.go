@@ -1462,17 +1462,18 @@ func responsesReasoningFromWire(r *wireResponsesReasoning) *pb.ResponsesReasonin
 // wireResponsesRequest carries every ResponsesRequest field except `extra`,
 // which is merged at the top level by encodeResponsesRequest.
 type wireResponsesRequest struct {
-	Model           string                   `json:"model"`
-	Input           json.RawMessage          `json:"input"`
-	Instructions    *string                  `json:"instructions,omitempty"`
-	Stream          *bool                    `json:"stream,omitempty"`
-	Temperature     *float32                 `json:"temperature,omitempty"`
-	TopP            *float32                 `json:"top_p,omitempty"`
-	MaxOutputTokens *uint32                  `json:"max_output_tokens,omitempty"`
-	Tools           []wireResponsesToolDef   `json:"tools,omitempty"`
-	ToolChoice      *wireResponsesToolChoice `json:"tool_choice,omitempty"`
-	Reasoning       *wireResponsesReasoning  `json:"reasoning,omitempty"`
-	Store           *bool                    `json:"store,omitempty"`
+	Model              string                   `json:"model"`
+	Input              json.RawMessage          `json:"input"`
+	Instructions       *string                  `json:"instructions,omitempty"`
+	Stream             *bool                    `json:"stream,omitempty"`
+	Temperature        *float32                 `json:"temperature,omitempty"`
+	TopP               *float32                 `json:"top_p,omitempty"`
+	MaxOutputTokens    *uint32                  `json:"max_output_tokens,omitempty"`
+	Tools              []wireResponsesToolDef   `json:"tools,omitempty"`
+	ToolChoice         *wireResponsesToolChoice `json:"tool_choice,omitempty"`
+	Reasoning          *wireResponsesReasoning  `json:"reasoning,omitempty"`
+	Store              *bool                    `json:"store,omitempty"`
+	PreviousResponseID *string                  `json:"previous_response_id,omitempty"`
 }
 
 // encodeResponsesInput serialises the `input` oneof: a bare string for a single
@@ -1498,15 +1499,16 @@ func responsesRequestToWire(req *pb.ResponsesRequest, streamOverride *bool) (wir
 		stream = streamOverride
 	}
 	w := wireResponsesRequest{
-		Model:           req.GetModel(),
-		Instructions:    req.Instructions,
-		Stream:          stream,
-		Temperature:     req.Temperature,
-		TopP:            req.TopP,
-		MaxOutputTokens: req.MaxOutputTokens,
-		ToolChoice:      responsesToolChoiceToWire(req.ToolChoice),
-		Reasoning:       responsesReasoningToWire(req.GetReasoning()),
-		Store:           req.Store,
+		Model:              req.GetModel(),
+		Instructions:       req.Instructions,
+		Stream:             stream,
+		Temperature:        req.Temperature,
+		TopP:               req.TopP,
+		MaxOutputTokens:    req.MaxOutputTokens,
+		ToolChoice:         responsesToolChoiceToWire(req.ToolChoice),
+		Reasoning:          responsesReasoningToWire(req.GetReasoning()),
+		Store:              req.Store,
+		PreviousResponseID: req.PreviousResponseId,
 	}
 	in, err := encodeResponsesInput(req)
 	if err != nil {
@@ -1580,38 +1582,40 @@ type wireResponsesIncompleteDetails struct {
 }
 
 type wireResponsesResponse struct {
-	ID                string                          `json:"id"`
-	Object            string                          `json:"object"`
-	CreatedAt         int64                           `json:"created_at"`
-	Status            string                          `json:"status"`
-	IncompleteDetails *wireResponsesIncompleteDetails `json:"incomplete_details"`
-	Error             *wireErrorBody                  `json:"error"`
-	Model             string                          `json:"model"`
-	Output            []wireResponseItem              `json:"output"`
-	Usage             *wireResponsesUsage             `json:"usage"`
-	Store             *bool                           `json:"store"`
-	Instructions      *string                         `json:"instructions"`
-	MaxOutputTokens   *uint32                         `json:"max_output_tokens"`
-	Temperature       *float32                        `json:"temperature"`
-	TopP              *float32                        `json:"top_p"`
-	Reasoning         *wireResponsesReasoning         `json:"reasoning"`
+	ID                 string                          `json:"id"`
+	Object             string                          `json:"object"`
+	CreatedAt          int64                           `json:"created_at"`
+	Status             string                          `json:"status"`
+	IncompleteDetails  *wireResponsesIncompleteDetails `json:"incomplete_details"`
+	Error              *wireErrorBody                  `json:"error"`
+	Model              string                          `json:"model"`
+	Output             []wireResponseItem              `json:"output"`
+	Usage              *wireResponsesUsage             `json:"usage"`
+	Store              *bool                           `json:"store"`
+	Instructions       *string                         `json:"instructions"`
+	MaxOutputTokens    *uint32                         `json:"max_output_tokens"`
+	Temperature        *float32                        `json:"temperature"`
+	TopP               *float32                        `json:"top_p"`
+	Reasoning          *wireResponsesReasoning         `json:"reasoning"`
+	PreviousResponseID *string                         `json:"previous_response_id"`
 }
 
 func (w *wireResponsesResponse) toPB() (*pb.ResponsesResponse, error) {
 	out := &pb.ResponsesResponse{
-		Id:              w.ID,
-		Object:          w.Object,
-		CreatedAt:       w.CreatedAt,
-		Status:          w.Status,
-		Error:           w.Error.toPB(),
-		Model:           w.Model,
-		Usage:           responsesUsageFromWire(w.Usage),
-		Store:           w.Store,
-		Instructions:    w.Instructions,
-		MaxOutputTokens: w.MaxOutputTokens,
-		Temperature:     w.Temperature,
-		TopP:            w.TopP,
-		Reasoning:       responsesReasoningFromWire(w.Reasoning),
+		Id:                 w.ID,
+		Object:             w.Object,
+		CreatedAt:          w.CreatedAt,
+		Status:             w.Status,
+		Error:              w.Error.toPB(),
+		Model:              w.Model,
+		Usage:              responsesUsageFromWire(w.Usage),
+		Store:              w.Store,
+		Instructions:       w.Instructions,
+		MaxOutputTokens:    w.MaxOutputTokens,
+		Temperature:        w.Temperature,
+		TopP:               w.TopP,
+		Reasoning:          responsesReasoningFromWire(w.Reasoning),
+		PreviousResponseId: w.PreviousResponseID,
 	}
 	if d := w.IncompleteDetails; d != nil {
 		out.IncompleteDetails = &pb.ResponsesIncompleteDetails{Reason: d.Reason}

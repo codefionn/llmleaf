@@ -94,7 +94,7 @@ Consumer endpoints (OpenAI-compatible unless noted):
 |----------|---------|
 | `POST /v1/chat/completions` | Chat (SSE streaming) |
 | `POST /v1/messages` | Anthropic Messages dialect |
-| `POST /v1/responses` | OpenAI Responses dialect (stateless; `store` always `false`, `GET /v1/responses/{id}` is a 404-by-design stub) |
+| `POST /v1/responses` | OpenAI Responses dialect (encrypted stateless replay and proxied `store`/`previous_response_id`; GET remains a 404-by-design stub) |
 | `POST /v1/embeddings` | Embeddings |
 | `POST /v1/rerank` | Rerank (Cohere/Jina/OpenRouter dialect) |
 | `POST /v1/audio/speech`, `GET /v1/audio/voices` | Text-to-speech |

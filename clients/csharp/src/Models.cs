@@ -453,8 +453,10 @@ public sealed record ResponsesRequest
     public ResponsesToolChoice? ToolChoice { get; init; }
     public ResponsesReasoning? Reasoning { get; init; }
 
-    /// <summary>Accepted but always answered <c>false</c> — llmleaf stores nothing.</summary>
     public bool? Store { get; init; }
+
+    /// <summary>Continue a stored upstream response without replaying prior items.</summary>
+    public string? PreviousResponseId { get; init; }
 
     /// <summary>Dialect passthrough: a raw JSON object string, merged at the top level of the request.</summary>
     public string? Extra { get; init; }
@@ -479,8 +481,7 @@ public sealed record ResponsesIncompleteDetails(string Reason);
 
 /// <summary>POST /v1/responses non-streaming response (<c>object:"response"</c>); also the snapshot carried
 /// by the <c>response.created</c>/<c>in_progress</c>/<c>completed</c> stream events. <see cref="Status"/> is
-/// a plain string (<c>"completed"</c> | <c>"in_progress"</c> | <c>"incomplete"</c> | <c>"failed"</c>);
-/// <see cref="Store"/> is always <c>false</c> (llmleaf is stateless).</summary>
+/// a plain string (<c>"completed"</c> | <c>"in_progress"</c> | <c>"incomplete"</c> | <c>"failed"</c>).</summary>
 public sealed record ResponsesResponse
 {
     public required string Id { get; init; }
@@ -496,6 +497,7 @@ public sealed record ResponsesResponse
     public ResponsesUsage? Usage { get; init; }
 
     public bool? Store { get; init; }
+    public string? PreviousResponseId { get; init; }
     public string? Instructions { get; init; }
     public uint? MaxOutputTokens { get; init; }
     public float? Temperature { get; init; }

@@ -553,6 +553,10 @@ pub fn encodeResponsesRequest(gpa: Allocator, req: gen.ResponsesRequest) ![]u8 {
         try s.objectField("store");
         try s.write(v);
     }
+    if (req.previous_response_id) |v| {
+        try s.objectField("previous_response_id");
+        try s.write(v);
+    }
     // `extra` keys are merged at the top level, exactly like ChatRequest.extra.
     if (req.extra) |raw| try mergeExtra(&s, gpa, raw);
 
@@ -1099,6 +1103,7 @@ pub fn decodeResponsesResponse(arena: Allocator, root: Value) !gen.ResponsesResp
         .output = try parseResponseOutput(arena, objGet(root, "output")),
         .usage = parseResponsesUsage(root, "usage"),
         .store = getBool(root, "store"),
+        .previous_response_id = getStr(root, "previous_response_id"),
         .instructions = getStr(root, "instructions"),
         .max_output_tokens = getInt(u32, root, "max_output_tokens"),
         .temperature = if (getFloat(root, "temperature")) |f| @floatCast(f) else null,
@@ -1754,6 +1759,7 @@ test "encode responses request flat tools, flat tool_choice, reasoning, store, e
         .tool_choice = .{ .named = .{ .name = "get_weather" } },
         .reasoning = .{ .effort = "low", .summary = "auto" },
         .store = false,
+        .previous_response_id = "resp_previous",
         .extra = "{\"service_tier\":\"flex\"}",
     };
     const body = try encodeResponsesRequest(testing.allocator, req);
@@ -1765,6 +1771,7 @@ test "encode responses request flat tools, flat tool_choice, reasoning, store, e
     try testing.expect(std.mem.indexOf(u8, body, "\"reasoning\":{\"effort\":\"low\",\"summary\":\"auto\"}") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"max_output_tokens\":256") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"previous_response_id\":\"resp_previous\"") != null);
     // `extra` spliced (not stringified) and merged at the top level.
     try testing.expect(std.mem.indexOf(u8, body, "\"service_tier\":\"flex\"") != null);
 }
@@ -1806,7 +1813,7 @@ test "encode responses request item array replay (message, reasoning, tool call,
 test "decode responses response (usage cached/reasoning tokens, store:false, output items)" {
     const json =
         \\{"id":"resp_1","object":"response","created_at":1720000000,"status":"completed",
-        \\ "model":"gpt-5","store":false,
+        \\ "model":"gpt-5","store":false,"previous_response_id":"resp_previous",
         \\ "output":[
         \\   {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking"}],
         \\     "content":[],"encrypted_content":"BLOB=="},
@@ -1827,6 +1834,7 @@ test "decode responses response (usage cached/reasoning tokens, store:false, out
     try testing.expectEqualStrings("completed", resp.status);
     try testing.expectEqual(@as(i64, 1720000000), resp.created_at);
     try testing.expectEqual(false, resp.store.?);
+    try testing.expectEqualStrings("resp_previous", resp.previous_response_id.?);
     try testing.expectEqual(@as(usize, 3), resp.output.len);
     // reasoning item (summary_text entry retained as text)
     try testing.expectEqualStrings("thinking", resp.output[0].reasoning.summary[0].text);

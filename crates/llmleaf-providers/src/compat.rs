@@ -23,7 +23,7 @@ use crate::batch::{build_jsonl, jsonl_result_stream};
 use crate::http::{post_json, send_checked};
 use crate::openai_responses_wire::{
     needs_chat_completions, openai_responses_sse_to_stream, openai_responses_to_chunks,
-    request_to_openai_responses, ResponsesFlavor,
+    request_to_openai_responses, requires_responses, ResponsesFlavor,
 };
 use crate::openai_wire::{
     audio_content_type, decode_speech_envelope, embedding_request_to_openai,
@@ -658,6 +658,9 @@ impl OpenAiCompatProvider {
                 }
                 _ => {} // absent/unrecognized: retain the automatic downgrade for compatibility.
             }
+        }
+        if requires_responses(req) {
+            return ChatApi::Responses;
         }
         if api == ChatApi::Responses && needs_chat_completions(req) {
             api = ChatApi::Completions;
@@ -1319,7 +1322,7 @@ impl Provider for OpenAiCompatProvider {
             ChatApi::Responses => match self.chat_responses(&req, cx).await {
                 Err(ModelError::Upstream {
                     status: 404 | 405, ..
-                }) => self.chat_completions(&req, cx).await,
+                }) if !requires_responses(&req) => self.chat_completions(&req, cx).await,
                 other => other,
             },
         }
@@ -2755,6 +2758,15 @@ mod tests {
         let mut req = chat_req("gpt-5");
         req.stop = vec!["\n".into()];
         assert_eq!(openai.effective_chat_api(&cx, &req), ChatApi::Completions);
+
+        // Stateful continuation must not be sent to Chat Completions, even when an operator pinned it.
+        let mut req = chat_req("gpt-5");
+        req.extra
+            .insert("previous_response_id".into(), json!("resp_previous"));
+        assert_eq!(
+            openai.effective_chat_api(&cx_with_chat_api("chat_completions"), &req),
+            ChatApi::Responses
+        );
 
         // A chat-only `extra` field (`response_format`) forces the same downgrade.
         let mut req = chat_req("gpt-5");

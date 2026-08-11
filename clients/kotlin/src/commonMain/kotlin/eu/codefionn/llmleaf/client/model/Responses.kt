@@ -529,7 +529,8 @@ public data class ResponsesRequest(
     val tools: List<ResponsesToolDef> = emptyList(),
     val toolChoice: ResponsesToolChoice? = null,
     val reasoning: ResponsesReasoning? = null,
-    val store: Boolean? = null, // accepted but always answered `false` — llmleaf stores nothing
+    val store: Boolean? = null,
+    val previousResponseId: String? = null,
     val extra: RawJson? = null, // raw JSON object; keys merged at top level
 )
 
@@ -547,6 +548,7 @@ internal data class ResponsesRequestWire(
     @SerialName("tool_choice") val toolChoice: ResponsesToolChoice? = null,
     @SerialName("reasoning") val reasoning: ResponsesReasoning? = null,
     @SerialName("store") val store: Boolean? = null,
+    @SerialName("previous_response_id") val previousResponseId: String? = null,
 )
 
 public object ResponsesRequestSerializer : KSerializer<ResponsesRequest> {
@@ -568,6 +570,7 @@ public object ResponsesRequestSerializer : KSerializer<ResponsesRequest> {
             toolChoice = value.toolChoice,
             reasoning = value.reasoning,
             store = value.store,
+            previousResponseId = value.previousResponseId,
         )
         val base = json.encodeToJsonElement(ResponsesRequestWire.serializer(), wire) as JsonObject
         jsonEncoder.encodeJsonElement(mergeExtra(json, base, value.extra))
@@ -597,6 +600,7 @@ public object ResponsesRequestSerializer : KSerializer<ResponsesRequest> {
             toolChoice = wire.toolChoice,
             reasoning = wire.reasoning,
             store = wire.store,
+            previousResponseId = wire.previousResponseId,
             extra = extra,
         )
     }
@@ -657,7 +661,8 @@ public data class ResponsesResponse(
     @SerialName("model") val model: String = "",
     @SerialName("output") val output: List<ResponseItem> = emptyList(),
     @SerialName("usage") val usage: ResponsesUsage? = null, // null on in-flight snapshots
-    @SerialName("store") val store: Boolean? = null, // llmleaf always answers false
+    @SerialName("store") val store: Boolean? = null,
+    @SerialName("previous_response_id") val previousResponseId: String? = null,
     @SerialName("instructions") val instructions: String? = null,
     @SerialName("max_output_tokens") val maxOutputTokens: Int? = null,
     @SerialName("temperature") val temperature: Float? = null,

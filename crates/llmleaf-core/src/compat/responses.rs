@@ -1,4 +1,4 @@
-//! The OpenAI Responses API compat surface (`POST /v1/responses`) — served statelessly.
+//! The OpenAI Responses API compat surface (`POST /v1/responses`).
 //!
 //! In: an OpenAI Responses request JSON → canonical [`ChatRequest`]. The Responses dialect is its own
 //! shape (decision filter: match the documented dialect even when awkward): `instructions` is a
@@ -15,11 +15,11 @@
 //! `function_call_arguments` deltas inside), then a terminal `response.completed` (or
 //! `response.incomplete`/`response.failed`) carrying the full response snapshot.
 //!
-//! **Deliberate deviations — llmleaf stores nothing (SOUL: the core is not a database):**
-//! - `store` is accepted but the response *always* reports `"store": false`; the field is stripped, so
-//!   no provider edge ever sees it.
-//! - `previous_response_id` (non-null), an `item_reference` input item, and `background: true` are
-//!   rejected with a clear 400 — there is no stored state to continue from, resolve, or poll.
+//! **Conversation state:** llmleaf keeps no node-local response database. `store` and
+//! `previous_response_id` are instead proxied to a Responses-speaking upstream, allowing the upstream
+//! response id to preserve reasoning state. Stateless encrypted-reasoning replay remains supported.
+//! An `item_reference` input item and `background: true` are rejected because they require retrieval or
+//! polling state that the gateway does not hold.
 //! - Responses-only knobs we do not model (`text`, `truncation`, `include`, `metadata`,
 //!   `parallel_tool_calls`, …) ride through `extra` verbatim (P7): a Responses-speaking upstream honors
 //!   them natively, while a chat-completions upstream may reject them. The consumer picks the fields
@@ -51,8 +51,7 @@ fn mapping(msg: impl Into<String>) -> ModelError {
 /// `model` is required (as on the chat surface). `instructions` becomes a leading [`Role::System`]
 /// message; `input` (a string, or an ordered list of typed items) expands into the conversation.
 /// Everything unmodeled rides through in [`ChatRequest::extra`] (principle 7). See the module docs for
-/// the stateless rejections (`previous_response_id`, `item_reference`, `background: true`) and the
-/// always-`false` `store`.
+/// the stored-item rejections (`item_reference`, `background: true`).
 pub fn parse_responses_request(value: Value) -> Result<ChatRequest, ModelError> {
     let Value::Object(mut obj) = value else {
         return Err(mapping("request body must be a JSON object"));
@@ -63,14 +62,9 @@ pub fn parse_responses_request(value: Value) -> Result<ChatRequest, ModelError> 
         _ => return Err(mapping("`model` is required and must be a string")),
     };
 
-    // Stateless rejections (SOUL: the core is not a database). Remove-and-check so a rejected field
-    // never lingers in `extra` either.
-    if let Some(v) = obj.remove("previous_response_id") {
-        if !v.is_null() {
-            return Err(mapping(
-                "`previous_response_id` is not supported: llmleaf is stateless and stores no \
-                 responses to continue from",
-            ));
+    if let Some(value) = obj.get("previous_response_id") {
+        if !value.is_null() && !value.is_string() {
+            return Err(mapping("`previous_response_id` must be a string or null"));
         }
     }
     if obj.remove("background").and_then(|v| v.as_bool()) == Some(true) {
@@ -135,10 +129,11 @@ pub fn parse_responses_request(value: Value) -> Result<ChatRequest, ModelError> 
         None => None,
     };
 
-    // Remove-and-ignore: `store` (the response always reports `false`; documented) and `include` (we
-    // always include what we can express). Everything else unmodeled rides through untouched.
-    obj.remove("store");
-    obj.remove("include");
+    if let Some(value) = obj.get("store") {
+        if !value.is_boolean() {
+            return Err(mapping("`store` must be a boolean"));
+        }
+    }
 
     let extra = obj;
 
@@ -502,6 +497,8 @@ pub struct RequestEcho {
     parallel_tool_calls: Option<Value>,
     text: Option<Value>,
     truncation: Option<Value>,
+    previous_response_id: Option<String>,
+    store: bool,
 }
 
 impl RequestEcho {
@@ -528,6 +525,16 @@ impl RequestEcho {
             parallel_tool_calls: req.extra.get("parallel_tool_calls").cloned(),
             text: req.extra.get("text").cloned(),
             truncation: req.extra.get("truncation").cloned(),
+            previous_response_id: req
+                .extra
+                .get("previous_response_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            store: req
+                .extra
+                .get("store")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -711,7 +718,7 @@ fn build_response(
     created: u64,
 ) -> Value {
     json!({
-        "id": format!("resp_{request_id}"),
+        "id": response_id(request_id),
         "object": "response",
         "created_at": created,
         "status": status,
@@ -723,10 +730,9 @@ fn build_response(
         "model": model,
         "output": output,
         "parallel_tool_calls": echo.parallel_tool_calls.clone().unwrap_or(json!(true)),
-        "previous_response_id": Value::Null,
+        "previous_response_id": echo.previous_response_id,
         "reasoning": { "effort": echo.reasoning_effort, "summary": Value::Null },
-        // llmleaf stores nothing — always false, whatever the request asked (documented deviation).
-        "store": false,
+        "store": echo.store,
         "temperature": echo.temperature,
         "text": echo.text.clone().unwrap_or(json!({ "format": { "type": "text" } })),
         "tool_choice": echo.tool_choice.clone().unwrap_or(json!("auto")),
@@ -738,9 +744,17 @@ fn build_response(
     })
 }
 
-/// Collect-mode mapping: a canonical [`ChatResponse`] to a Responses `response` object. The Responses
-/// dialect keys the object on the consumer request id (`resp_<id>`) — the edge stamps that id onto
-/// `resp.id` before calling — so `id`, the output-item ids, and the streaming encoder all agree.
+fn response_id(id: &str) -> String {
+    if id.starts_with("resp_") {
+        id.to_owned()
+    } else {
+        format!("resp_{id}")
+    }
+}
+
+/// Collect-mode mapping: a canonical [`ChatResponse`] to a Responses `response` object. The provider's
+/// response id is retained so callers can pass it back as `previous_response_id`; output-item ids and
+/// the streaming encoder use the same identity.
 pub fn response_to_responses(resp: &ChatResponse, echo: &RequestEcho, created: u64) -> Value {
     let choice = resp.choices.first();
     let output = choice
@@ -841,8 +855,8 @@ pub struct EventEncoder {
 }
 
 impl EventEncoder {
-    /// Construct the encoder for one response. `request_id`/`model` are the consumer-facing identity
-    /// (the upstream [`StreamChunk::Start`] id/model are ignored, as on every other surface).
+    /// Construct the encoder for one response. `request_id` is a fallback until the upstream
+    /// [`StreamChunk::Start`] supplies the response id used for stateful continuation.
     pub fn new(
         request_id: impl Into<String>,
         model: impl Into<String>,
@@ -1139,7 +1153,12 @@ impl EventEncoder {
     /// so they cannot arise from this surface — guarded defensively).
     pub fn encode(&mut self, chunk: &StreamChunk, out: &mut Vec<Frame>) {
         match chunk {
-            StreamChunk::Start { .. } => self.ensure_started(out),
+            StreamChunk::Start { id, .. } => {
+                if !self.started && !id.trim().is_empty() {
+                    self.request_id = id.clone();
+                }
+                self.ensure_started(out);
+            }
             StreamChunk::Thinking { index, delta } => {
                 if *index != 0 {
                     return;
@@ -1571,13 +1590,14 @@ mod tests {
     }
 
     #[test]
-    fn store_is_stripped_and_unknown_fields_ride_through() {
+    fn stateful_continuation_and_unknown_fields_ride_through() {
         let req = parse_responses_request(json!({
-            "model": "m", "input": "hi", "store": true,
+            "model": "m", "input": "hi", "store": true, "previous_response_id": "resp_1",
             "metadata": { "k": "v" }, "truncation": "auto", "text": { "format": { "type": "text" } }
         }))
         .unwrap();
-        assert!(!req.extra.contains_key("store"));
+        assert_eq!(req.extra["store"], true);
+        assert_eq!(req.extra["previous_response_id"], "resp_1");
         assert_eq!(req.extra["metadata"]["k"], "v");
         assert_eq!(req.extra["truncation"], "auto");
         assert!(req.extra.contains_key("text"));
@@ -1602,10 +1622,7 @@ mod tests {
     #[test]
     fn rejections() {
         let is_err = |v: Value| parse_responses_request(v).is_err();
-        // Stateless continuation / retrieval knobs.
-        assert!(is_err(
-            json!({ "model": "m", "input": "hi", "previous_response_id": "resp_x" })
-        ));
+        // Stored-item retrieval/background execution remain unsupported.
         assert!(is_err(
             json!({ "model": "m", "input": "hi", "background": true })
         ));
@@ -1887,8 +1904,7 @@ mod tests {
 
         // The terminal snapshot equals the collected view for the same chunks (one shared builder).
         let snapshot = &events.last().unwrap().1["response"];
-        let mut resp = collect_chunks(chunks);
-        resp.id = "req-1".into(); // the edge stamps the consumer request id
+        let resp = collect_chunks(chunks);
         let collected = response_to_responses(&resp, &empty_echo(), 1000);
         assert_eq!(snapshot, &collected);
 
@@ -1943,8 +1959,7 @@ mod tests {
 
         // Snapshot parity with the collected path (the shared fold carries the signature).
         let snapshot = &events.last().unwrap().1["response"];
-        let mut resp = collect_chunks(chunks);
-        resp.id = "req-1".into();
+        let resp = collect_chunks(chunks);
         let collected = response_to_responses(&resp, &empty_echo(), 1000);
         assert_eq!(snapshot, &collected);
         assert_eq!(snapshot["output"][0]["signature"], "SIG");

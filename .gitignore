@@ -9,3 +9,4 @@
 *.db-wal
 *.db-shm
 /.codex-meta-smoke.toml
+*.local.*

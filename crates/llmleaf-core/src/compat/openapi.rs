@@ -218,10 +218,10 @@ fn paths() -> Value {
                 "operationId": "createResponse",
                 "summary": "Create a model response (OpenAI Responses API)",
                 "description": "OpenAI Responses API compatibility — a third chat dialect on the same \
-                    canonical core (P3), served statelessly. llmleaf stores nothing (the core is not a \
-                    database), so `store` is accepted but the response always reports `\"store\": \
-                    false`, and `previous_response_id`, `background: true`, and `item_reference` inputs \
-                    are rejected. With `stream: true` the response is a `text/event-stream` of named \
+                    canonical core (P3). `store: true` and `previous_response_id` are proxied to a \
+                    Responses-speaking upstream, while encrypted reasoning items support stateless \
+                    continuation. `background: true` and `item_reference` inputs are rejected. With \
+                    `stream: true` the response is a `text/event-stream` of named \
                     Responses events (`response.created`, `response.output_text.delta`, …, \
                     `response.completed`); otherwise a single `response` object (a collected stream — P4).",
                 "requestBody": json_body("ResponsesRequest"),
@@ -247,18 +247,17 @@ fn paths() -> Value {
                 "tags": ["responses"],
                 "operationId": "getResponse",
                 "summary": "Retrieve a stored response (always 404 — stateless)",
-                "description": "Always returns 404: llmleaf is stateless and stores no responses \
-                    (`store` is always false), so retrieval is unsupported by design. This is P7 \
-                    transparency — a client that ignored `\"store\": false` is told exactly why.",
+                "description": "Always returns 404: llmleaf does not keep a local response store. \
+                    Stateful continuation is proxied during POST requests, but retrieval is unsupported.",
                 "parameters": [{
                     "name": "id",
                     "in": "path",
                     "required": true,
                     "schema": { "type": "string" },
-                    "description": "A response id. Never resolvable — nothing is stored.",
+                    "description": "An upstream response id; llmleaf does not provide local retrieval.",
                 }],
                 "responses": {
-                    "404": json_err("No stored response — llmleaf is stateless (`store` is always false)"),
+                    "404": json_err("No local response store — retrieval is unsupported"),
                 },
             }
         },
@@ -484,9 +483,8 @@ fn responses_request_schema() -> Value {
     json!({
         "type": "object",
         "description": "OpenAI Responses API request, mapped into llmleaf's canonical request at the \
-            edge (P3). Served statelessly: `store` is accepted but ignored (the response always reports \
-            false); `previous_response_id`, `background: true`, and `item_reference` inputs are \
-            rejected. Unlisted fields (`text`, `truncation`, `include`, `metadata`, \
+            edge (P3). `store` and `previous_response_id` are proxied to Responses-speaking upstreams; \
+            `background: true` and `item_reference` inputs are rejected. Unlisted fields (`text`, `truncation`, `include`, `metadata`, \
             `parallel_tool_calls`, …) are accepted and ride through verbatim.",
         "properties": {
             "model": { "type": "string", "description": "The logical model id to route." },
@@ -512,8 +510,9 @@ fn responses_request_schema() -> Value {
             "reasoning": { "type": "object" },
             "store": {
                 "type": "boolean",
-                "description": "Accepted but ignored; the response always reports false.",
+                "description": "Whether the selected upstream should store response state.",
             },
+            "previous_response_id": { "type": "string", "description": "Upstream response id to continue." },
         },
         "required": ["model"],
         "additionalProperties": true,
@@ -525,8 +524,7 @@ fn response_object_schema() -> Value {
     json!({
         "type": "object",
         "description": "An OpenAI Responses object. With `stream: true` the response is a \
-            `text/event-stream` of Responses events instead of this object. `store` is always false \
-            (llmleaf is stateless).",
+            `text/event-stream` of Responses events instead of this object.",
         "properties": {
             "id": { "type": "string" },
             "object": { "type": "string", "const": "response" },
@@ -538,7 +536,8 @@ fn response_object_schema() -> Value {
                 "items": { "type": "object" },
                 "description": "Output items: `reasoning`, `message`, `function_call`.",
             },
-            "store": { "type": "boolean", "const": false },
+            "store": { "type": "boolean" },
+            "previous_response_id": { "type": "string" },
             "reasoning": { "type": "object" },
             "usage": {
                 "type": "object",

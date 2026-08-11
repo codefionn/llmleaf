@@ -8,9 +8,9 @@
 //! no dialect gets a shortcut through the core (principle 3); the Responses-specific knowledge lives here
 //! at the edge, exactly like the chat-completions mapping (decision filter: quirks at the edge).
 //!
-//! llmleaf is a *stateless* proxy (principles 5, 9): it never lets the upstream store request payloads on
-//! its behalf, and it makes reasoning replayable by carrying the encrypted reasoning back out and in — so
-//! multi-turn reasoning round-trips through a stateless client without any node-local conversation state.
+//! llmleaf keeps no node-local conversation database. By default it makes reasoning replayable by carrying
+//! encrypted reasoning back out and in; callers may instead opt into an upstream's stored state with
+//! `store: true` and continue it using `previous_response_id`.
 //!
 //! Several upstreams speak this wire, differing only at the edges ([`ResponsesFlavor`]): stock OpenAI —
 //! a flavor xAI (whose `POST /responses` is its documented-preferred chat surface) and Azure OpenAI (on
@@ -335,6 +335,21 @@ pub fn needs_chat_completions(req: &ChatRequest) -> bool {
             .extra
             .keys()
             .any(|k| CHAT_ONLY_EXTRA_KEYS.contains(&k.as_str()))
+}
+
+/// Whether this request depends on Responses-only conversation state and therefore must never be
+/// downgraded to Chat Completions.
+pub fn requires_responses(req: &ChatRequest) -> bool {
+    req.extra
+        .get("previous_response_id")
+        .is_some_and(|value| !value.is_null())
+        || req.extra.get("store").and_then(Value::as_bool) == Some(true)
+        || req.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::RedactedThinking { .. }))
+        })
 }
 
 /// A Responses `usage` object → canonical [`Usage`]. `input_tokens`/`output_tokens` are the Responses
@@ -790,6 +805,30 @@ mod tests {
     }
 
     #[test]
+    fn stateful_and_encrypted_continuations_require_responses() {
+        let mut req = user_req("next");
+        req.extra
+            .insert("previous_response_id".into(), json!("resp_previous"));
+        assert!(requires_responses(&req));
+
+        req.extra.clear();
+        req.extra.insert("store".into(), json!(true));
+        assert!(requires_responses(&req));
+
+        req.extra.clear();
+        req.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::RedactedThinking {
+                data: "encrypted".into(),
+            }],
+            tool_calls: vec![],
+            tool_call_id: None,
+            name: None,
+        });
+        assert!(requires_responses(&req));
+    }
+
+    #[test]
     fn request_maps_system_user_image_and_tools() {
         let mut req = user_req("describe");
         req.messages = vec![
@@ -1059,6 +1098,7 @@ mod tests {
         req.extra = serde_json::from_value(json!({
             "prompt_cache_key": "abc",
             "store": true,
+            "previous_response_id": "resp_previous",
             "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
         }))
         .unwrap();
@@ -1067,6 +1107,7 @@ mod tests {
         assert_eq!(wire["prompt_cache_key"], "abc");
         // The consumer's explicit `store`/`include` win over our stateless defaults.
         assert_eq!(wire["store"], true);
+        assert_eq!(wire["previous_response_id"], "resp_previous");
         assert_eq!(
             wire["include"],
             json!([

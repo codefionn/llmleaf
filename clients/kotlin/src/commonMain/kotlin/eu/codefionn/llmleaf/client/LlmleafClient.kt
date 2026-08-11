@@ -161,7 +161,7 @@ public class LlmleafClient private constructor(
     /**
      * Non-streaming Responses call (`POST /v1/responses`, the OpenAI Responses dialect). Forces
      * `stream=false` regardless of [request]. llmleaf is stateless, so the returned
-     * [ResponsesResponse] always reports `store=false`.
+     * `store=true` and `previousResponseId` enable upstream-managed continuation.
      */
     public suspend fun responses(request: ResponsesRequest): ResponsesResponse {
         val body = request.copy(stream = false)

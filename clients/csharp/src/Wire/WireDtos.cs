@@ -337,6 +337,7 @@ internal sealed class WireResponsesRequest
 
     [JsonPropertyName("reasoning")] public WireResponsesReasoning? Reasoning { get; set; }
     [JsonPropertyName("store")] public bool? Store { get; set; }
+    [JsonPropertyName("previous_response_id")] public string? PreviousResponseId { get; set; }
 }
 
 // ---- responses: usage / response (decode) ------------------------------
@@ -377,6 +378,7 @@ internal sealed class WireResponsesResponse
     [JsonPropertyName("output")] public List<WireResponseItem>? Output { get; set; }
     [JsonPropertyName("usage")] public WireResponsesUsage? Usage { get; set; }
     [JsonPropertyName("store")] public bool? Store { get; set; }
+    [JsonPropertyName("previous_response_id")] public string? PreviousResponseId { get; set; }
     [JsonPropertyName("instructions")] public string? Instructions { get; set; }
     [JsonPropertyName("max_output_tokens")] public uint? MaxOutputTokens { get; set; }
     [JsonPropertyName("temperature")] public float? Temperature { get; set; }

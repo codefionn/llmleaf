@@ -83,7 +83,7 @@ function `arguments` fragment before calling `next()` again, until `finish_reaso
 
 The OpenAI Responses dialect on the same canonical core. `input` is a bare string or an array
 of typed items (`.text` / `.items`); tools and the named `tool_choice` are **flat**. llmleaf is
-stateless: `store` is accepted but the response always reports `"store": false`.
+stateless by default; `store = true` plus `previous_response_id` enables upstream continuation.
 
 ```zig
 var api_err: ?llmleaf.ApiError = null;

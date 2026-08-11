@@ -287,9 +287,9 @@ message ChatCompletionChunk {
 // Responses  (POST /v1/responses) — the OpenAI Responses dialect
 // ----------------------------------------------------------------------------
 //
-// llmleaf serves this dialect statelessly: `store` is accepted but always answered
-// `false`, `previous_response_id` is rejected (400), and `GET /v1/responses/{id}`
-// is an explained 404 by design — so the SDKs expose no retrieval call. Dialect
+// llmleaf can proxy upstream conversation state through `store` + `previous_response_id`, while
+// encrypted reasoning items provide stateless continuation. `GET /v1/responses/{id}` remains an
+// explained 404 because the gateway keeps no local response-routing store. Dialect
 // vocabulary that collides with existing enum value names at package scope
 // (status "completed"/"in_progress"/…, roles incl. "developer") stays a plain
 // wire string here rather than an enum.
@@ -429,10 +429,11 @@ message ResponsesRequest {
   repeated ResponsesToolDef tools = 9;
   optional ResponsesToolChoice tool_choice = 10;
   optional ResponsesReasoning reasoning = 11;
-  // Accepted but always answered `false` — llmleaf stores nothing.
   optional bool store = 12;
   // Dialect-specific passthrough, spliced verbatim into the request body (P7).
   optional string extra = 13; // raw JSON object
+  // Continue a stored upstream response without resending its prior input/output items.
+  optional string previous_response_id = 14;
 }
 
 // Token accounting in the Responses dialect's own names (`input_tokens`/`output_tokens`,
@@ -472,12 +473,13 @@ message ResponsesResponse {
   string model = 7;
   repeated ResponseItem output = 8;
   optional ResponsesUsage usage = 9; // null on in-flight snapshots
-  optional bool store = 10;          // llmleaf always answers false
+  optional bool store = 10;
   optional string instructions = 11;
   optional uint32 max_output_tokens = 12;
   optional float temperature = 13;
   optional float top_p = 14;
   optional ResponsesReasoning reasoning = 15;
+  optional string previous_response_id = 16;
 }
 
 // One streaming SSE event. Unlike chat streaming there is NO `data: [DONE]` sentinel:
