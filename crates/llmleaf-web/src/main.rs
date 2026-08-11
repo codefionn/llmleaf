@@ -17,6 +17,7 @@ async fn main() {
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use llmleaf_web::app::{shell, App};
     use llmleaf_web::state::AppState;
+    use llmleaf_web::terminal::TerminalManager;
     use llmleaf_web::{auth, config::WebConfig, control, db, limiter};
     use tokio_util::sync::CancellationToken;
 
@@ -55,6 +56,7 @@ async fn main() {
         config: config.clone(),
         http: reqwest::Client::new(),
         master_hash,
+        terminal: TerminalManager::new(),
     };
 
     let shutdown = CancellationToken::new();
@@ -68,6 +70,7 @@ async fn main() {
         )
         .merge(control::router())
         .merge(auth::router())
+        .merge(llmleaf_web::terminal::router())
         .route("/healthz", get(|| async { "ok" }))
         .leptos_routes_with_context(
             &state,

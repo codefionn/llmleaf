@@ -53,6 +53,8 @@ toml = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
+portable-pty = { version = "0.8", optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
 
 [features]
 # So a plain `cargo build`/`cargo test` (and the workspace build) compiles this crate as the server.
@@ -82,6 +84,8 @@ ssr = [
     "dep:thiserror",
     "dep:tracing",
     "dep:tracing-subscriber",
+    "dep:portable-pty",
+    "dep:uuid",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

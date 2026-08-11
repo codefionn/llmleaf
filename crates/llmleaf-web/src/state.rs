@@ -8,6 +8,7 @@ use leptos::prelude::LeptosOptions;
 
 use crate::config::WebConfig;
 use crate::db::Db;
+use crate::terminal::TerminalManager;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,6 +19,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// The resolved operator master-password hash (config or DEV fallback), verified at login.
     pub master_hash: Arc<Option<String>>,
+    /// Workspace-agent-owned PTY manager (each tab is a real PTY in /workspace, not host pwd).
+    pub terminal: TerminalManager,
 }
 
 // `leptos_routes`/`with_state` need `LeptosOptions: FromRef<AppState>`.

@@ -76,6 +76,7 @@ fn is_public(path: &str) -> bool {
         || path == "/favicon.ico"
         || path.starts_with("/auth/")
         || path.starts_with("/llmleaf/")
+        || path.starts_with("/api/terminal/")
         || path.starts_with("/pkg/")
         || path.starts_with("/assets/")
 }

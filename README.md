@@ -6,6 +6,10 @@ llmleaf is a llm proxy. It proxies different llm providers and their slighty
 different apis and converts it to a single api surface (enhanced
 *openai-compatible* or anthropic).
 
+The origin of this project is that other AI gateways focus on being all
+encompassing and *fast*. I wanted a project that is slim, focused and near
+native performance instead.
+
 ## Goals:
 
 - fast
