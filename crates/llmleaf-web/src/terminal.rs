@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::CookieJar;
-use portable_pty::{CommandBuilder, MasterPty, PtySize, PtySystem};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -74,12 +74,6 @@ struct CreateReq {
     rows: Option<u16>,
 }
 
-#[derive(Deserialize)]
-struct ResizeMsg {
-    cols: u16,
-    rows: u16,
-}
-
 // ---------- helpers ----------
 
 fn workspace_root() -> PathBuf {
@@ -102,6 +96,12 @@ fn histfile_for(id: Uuid) -> PathBuf {
 
 fn shell_program() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
+}
+
+impl Default for TerminalManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TerminalManager {
@@ -152,14 +152,14 @@ impl TerminalManager {
             // keep host HOME but not PWD
         }
 
-        let mut child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("spawn: {e}"))?;
         // Try to get pid if available (some impls expose it)
         let pid: Option<u32> = None; // portable-pty Child pid not exposed on all versions
 
-        let mut master_box: Box<dyn MasterPty + Send> = pair.master;
+        let master_box: Box<dyn MasterPty + Send> = pair.master;
         let writer: Box<dyn Write + Send> = master_box
             .take_writer()
             .map_err(|e| format!("take_writer: {e}"))?;
@@ -177,7 +177,7 @@ impl TerminalManager {
             std::thread::spawn(move || {
                 // take a reader; portable-pty wants a dedicated reader handle
                 let reader = {
-                    let mut m = master_clone.lock().unwrap();
+                    let m = master_clone.lock().unwrap();
                     m.try_clone_reader()
                 };
                 let mut reader = match reader {
@@ -252,49 +252,6 @@ impl TerminalManager {
 }
 
 // ---------- auth: session cookie OR control bearer ----------
-
-fn check_terminal_auth(
-    state: &crate::state::AppState,
-    headers: &HeaderMap,
-    jar: &CookieJar,
-) -> bool {
-    // 1. control bearer (remote agents)
-    if let Some(expected) = state
-        .config
-        .control
-        .token
-        .as_ref()
-        .and_then(|s| s.resolve())
-    {
-        if let Some(presented) = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-        {
-            use sha2::{Digest, Sha256};
-            let a = Sha256::digest(presented.as_bytes());
-            let b = Sha256::digest(expected.as_bytes());
-            let mut diff = 0u8;
-            for (x, y) in a.iter().zip(b.iter()) {
-                diff |= x ^ y;
-            }
-            if diff == 0 {
-                return true;
-            }
-        }
-        // if control token is configured, bearer is the remote-agent path;
-        // but we still allow session cookie as fallback (operator UI)
-    } else {
-        // no control token => open, but still check session for UI
-    }
-
-    // 2. session cookie (local UI) — we do a sync check via cookie presence only here;
-    //    the full DB lookup is async, so handlers do it async. This fast path returns false
-    //    to force async check. We return false here and let handler do async lookup.
-    //    Caller should do async lookup; this helper is for quick bearer check.
-    //    To keep handler simple, we consider cookie presence as "maybe authed" and let handler verify.
-    jar.get(crate::auth::COOKIE).is_some()
-}
 
 async fn require_terminal_auth(
     state: &crate::state::AppState,
@@ -461,7 +418,11 @@ async fn handle_ws(mut socket: WebSocket, manager: TerminalManager, id: Uuid) {
                 match out {
                     Ok(bytes) => {
                         // Send as binary; xterm.js expects text, but binary is fine for raw bytes
-                        if ws_send.send(Message::Binary(bytes)).await.is_err() {
+                        if ws_send
+                            .send(Message::Binary(bytes.into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -505,7 +466,7 @@ async fn handle_ws(mut socket: WebSocket, manager: TerminalManager, id: Uuid) {
                         let _ = ws_send.send(Message::Pong(p)).await;
                     }
                     Some(Ok(Message::Pong(_))) => {}
-                    Some(Err(_)) | None => break,
+                    Some(Err(_)) => break,
                 }
             }
         }
