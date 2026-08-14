@@ -19,10 +19,11 @@ collector, not a claim that Z.AI exposes a pricing/list-models API.
   input plus generated tokens, so `max_context` must not be treated as a
   prompt-only limit.
 
-The table below deliberately covers the 20 models currently callable through
-the *general* chat-completions endpoint.  It excludes the Coding Plan: it has
-a different `/api/coding/paas/v4` endpoint and Z.AI says it is for supported
-tools, not general-purpose API access ([quick start](https://docs.z.ai/guides/overview/quick-start), [subscription terms](https://docs.z.ai/legal-agreement/subscription-terms)).
+The table below covers the 20 models currently callable through the *general*
+chat-completions endpoint, plus a metadata-only GLM-5.3 row. GLM-5.3 is
+currently offered through the Coding Plan's separate `/api/coding/paas/v4`
+endpoint; Z.AI says its general API is coming soon and has not published a
+pay-as-you-go token rate ([GLM-5.3 guide](https://docs.z.ai/guides/llm/glm-5.3), [quick start](https://docs.z.ai/guides/overview/quick-start)).
 
 ## Collector-ready chat catalog
 
@@ -32,6 +33,7 @@ wire values, not the title-cased names used in the pricing table.
 
 | Model ID | Input | Cached input | Output | Input -> output modalities | Context | Max output | Reasoning / thinking |
 | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| `glm-5.3` | — | — | — | text -> text | 1M | 128K | yes |
 | `glm-5.2` | 1.40 | 0.26 | 4.40 | text -> text | 1M | 128K | yes, automatic |
 | `glm-5.1` | 1.40 | 0.26 | 4.40 | text -> text | 200K | 128K | yes, automatic |
 | `glm-5` | 1.00 | 0.20 | 3.20 | text -> text | 200K | 128K | yes, automatic |
@@ -65,9 +67,12 @@ thinking-token count.
 
 ## Important reconciliation and schema caveats
 
-1. **Do not add `glm-5.3` to the general API dataset.**  Its guide explicitly
-   says “API is coming soon”; it is currently a Coding Plan offering, absent
-   from both the general chat enum and the pricing table ([GLM-5.3 guide](https://docs.z.ai/guides/llm/glm-5.3)).  Therefore it has no published general-API rate.
+1. **Keep `glm-5.3` metadata-only until public rates exist.** Its guide says
+   the general API is coming soon; it is currently a Coding Plan offering,
+   absent from both the general chat enum and the pricing table
+   ([GLM-5.3 guide](https://docs.z.ai/guides/llm/glm-5.3)). The catalog includes
+   its documented 1M context, 128K maximum output, and reasoning support, but
+   all three token-rate fields remain absent so `cost_usd` returns `None`.
 
 2. **The lists do not line up perfectly.**  `autoglm-phone-multilingual` is
    accepted by the vision chat schema, but has neither price nor context on

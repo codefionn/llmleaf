@@ -526,14 +526,25 @@ pub mod collect {
     /// - <https://docs.z.ai/guides/overview/overview>
     /// - <https://docs.z.ai/guides/overview/concept-param>
     ///
-    /// GLM-5.3 is intentionally absent: its guide says the general API is "coming soon" and only the
-    /// subscription Coding Plan currently serves it, for which no per-token price is published.
-    /// Image/video generation is also absent because this dataset only represents token pricing.
+    /// GLM-5.3 is included as a metadata-only row: its guide says the general API is "coming soon"
+    /// and only the subscription Coding Plan currently serves it, so no per-token price is
+    /// published. Image/video generation is absent because this dataset only represents token
+    /// pricing.
     fn zai_documented_catalog() -> Vec<ModelInfo> {
         const TEXT: &[&str] = &["text"];
         const VISION: &[&str] = &["text", "image", "video", "file"];
         const DOCUMENT: &[&str] = &["image", "file"];
         vec![
+            documented_model(
+                "glm-5.3",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (None, None, None),
+            ),
             documented_model(
                 "glm-5.2",
                 Modality::Llm,
@@ -1887,7 +1898,15 @@ mod tests {
     fn zai_documented_catalog_has_current_paid_free_and_vision_rows() {
         for kind in ["zai", "z.ai", "glm"] {
             let rows = collect::documented_catalog(kind).unwrap();
-            assert_eq!(rows.len(), 20, "{kind}");
+            assert_eq!(rows.len(), 21, "{kind}");
+
+            let newest = rows.iter().find(|row| row.id == "glm-5.3").unwrap();
+            assert_eq!(newest.max_context, Some(1_000_000));
+            assert_eq!(newest.max_output, Some(131_072));
+            assert_eq!(newest.input_per_mtok, None);
+            assert_eq!(newest.cached_input_per_mtok, None);
+            assert_eq!(newest.output_per_mtok, None);
+            assert_eq!(newest.supports_reasoning, Some(true));
 
             let flagship = rows.iter().find(|row| row.id == "glm-5.2").unwrap();
             assert_eq!(flagship.max_context, Some(1_000_000));

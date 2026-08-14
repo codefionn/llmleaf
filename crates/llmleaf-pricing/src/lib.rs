@@ -257,6 +257,14 @@ mod tests {
     fn bundled_dataset_has_documented_provider_gap_catalogs() {
         let pricing = Pricing::bundled().unwrap();
 
+        let zai_newest = pricing.card("glm-5.3").unwrap();
+        assert_eq!(zai_newest.max_context, Some(1_000_000));
+        assert_eq!(zai_newest.max_output, Some(131_072));
+        assert_eq!(zai_newest.input_per_mtok, None);
+        assert_eq!(zai_newest.cached_input_per_mtok, None);
+        assert_eq!(zai_newest.output_per_mtok, None);
+        assert_eq!(zai_newest.supports_reasoning, Some(true));
+
         let zai = pricing.card("glm-5.2").unwrap();
         assert_eq!(zai.max_context, Some(1_000_000));
         assert_eq!(zai.max_output, Some(131_072));

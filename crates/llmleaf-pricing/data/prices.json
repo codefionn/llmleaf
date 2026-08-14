@@ -677,6 +677,18 @@
         "text"
       ]
     },
+    "glm-5.3": {
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
     "glm-5v-turbo": {
       "input_per_mtok": 1.2,
       "cached_input_per_mtok": 0.24,
