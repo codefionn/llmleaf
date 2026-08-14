@@ -834,6 +834,20 @@ fn model_item_to_info(item: Value) -> Option<ModelInfo> {
         .or_else(|| wire_take_str(&mut obj, "model_name"))?;
     let mut info = ModelInfo::new(id);
     info.name = wire_take_str(&mut obj, "name").or_else(|| wire_take_str(&mut obj, "display_name"));
+    // xAI's richer `/language-models` response puts modality arrays at the top level. Preserve them
+    // in the canonical architecture block so both coarse filtering and fine-grained rendering see
+    // the same explicit provider metadata.
+    if !obj.contains_key("architecture")
+        && (obj.contains_key("input_modalities") || obj.contains_key("output_modalities"))
+    {
+        obj.insert(
+            "architecture".into(),
+            json!({
+                "input_modalities": obj.get("input_modalities"),
+                "output_modalities": obj.get("output_modalities"),
+            }),
+        );
+    }
     info.modality = wire_modality(&obj);
     // The nested `limits` source is Cerebras's public-catalog model-cap object; only its
     // `max_context_length`/`max_completion_tokens` keys are token caps (sibling rate limits like
@@ -1284,6 +1298,24 @@ mod tests {
         assert_eq!(out[0].input_per_mtok, Some(0.2)); // verbatim, NOT *1e6
         assert_eq!(out[0].output_per_mtok, Some(0.6));
         assert_eq!(out[1].modality, Some(Modality::Embedding));
+    }
+
+    #[test]
+    fn models_xai_top_level_modalities_become_architecture() {
+        let v = json!({ "models": [{
+            "id": "grok-current",
+            "input_modalities": ["text", "image"],
+            "output_modalities": ["text"],
+            "aliases": ["grok-latest"]
+        }]});
+        let out = openai_wire_models_to_canonical(v);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].modality, Some(Modality::Llm));
+        assert_eq!(
+            out[0].extra["architecture"]["input_modalities"],
+            json!(["text", "image"])
+        );
+        assert_eq!(out[0].extra["aliases"], json!(["grok-latest"]));
     }
 
     #[test]

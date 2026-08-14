@@ -44,6 +44,11 @@ pub struct ModelInfo {
     /// USD per 1,000,000 output tokens, when the catalog prices the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_mtok: Option<f64>,
+    /// Whether downstream enrichment may fill missing USD token rates from the bundled pricing
+    /// dataset. `None`/`Some(true)` permit it; `Some(false)` is used by subscription catalogs whose
+    /// model IDs overlap pay-as-you-go products but whose billing is quota/credit based.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_pricing_enrichment: Option<bool>,
     /// The positive list of canonical parameters the provider's OWN catalog declares supported — e.g.
     /// OpenRouter's `supported_parameters`, captured verbatim when the upstream reports it. `None` means
     /// the provider reported no list; the catalog surface then computes one from the modality baseline
@@ -83,6 +88,7 @@ impl ModelInfo {
             input_per_mtok: None,
             cached_input_per_mtok: None,
             output_per_mtok: None,
+            allow_pricing_enrichment: None,
             supported_parameters: None,
             unsupported_parameters: Vec::new(),
             default_parameters: Map::new(),

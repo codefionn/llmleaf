@@ -1234,6 +1234,7 @@ async fn list_models(
 /// "provider-specific enhancement" for upstreams whose list-models API does not report limits/pricing.
 fn enrich(mut info: ModelInfo, card: Option<ModelCard>) -> ModelInfo {
     if let Some(c) = card {
+        let allow_pricing_enrichment = info.allow_pricing_enrichment != Some(false);
         let provider_has_architecture = info
             .extra
             .get("architecture")
@@ -1268,9 +1269,11 @@ fn enrich(mut info: ModelInfo, card: Option<ModelCard>) -> ModelInfo {
         info.max_output = info.max_output.or(c.max_output);
         info.max_thinking = info.max_thinking.or(c.max_thinking);
         info.supports_reasoning = info.supports_reasoning.or(c.supports_reasoning);
-        info.input_per_mtok = info.input_per_mtok.or(c.input_per_mtok);
-        info.cached_input_per_mtok = info.cached_input_per_mtok.or(c.cached_input_per_mtok);
-        info.output_per_mtok = info.output_per_mtok.or(c.output_per_mtok);
+        if allow_pricing_enrichment {
+            info.input_per_mtok = info.input_per_mtok.or(c.input_per_mtok);
+            info.cached_input_per_mtok = info.cached_input_per_mtok.or(c.cached_input_per_mtok);
+            info.output_per_mtok = info.output_per_mtok.or(c.output_per_mtok);
+        }
         if !info.extra.contains_key("tier") {
             if let Some(tier) = c.tier {
                 info.extra.insert("tier".into(), Value::from(tier));
@@ -2091,6 +2094,21 @@ mod architecture_tests {
         assert_eq!(info.output_per_mtok, Some(4.25));
         assert_eq!(info.extra["tier"], "standard");
         assert_eq!(info.extra["prompts_used_for_training"], false);
+    }
+
+    #[test]
+    fn subscription_catalog_enriches_capabilities_without_payg_prices() {
+        let card = Pricing::bundled().unwrap().card("glm-4.7").unwrap();
+        let mut info = ModelInfo::new("glm-4.7");
+        info.allow_pricing_enrichment = Some(false);
+        let info = enrich(info, Some(card));
+
+        assert_eq!(info.max_context, Some(200_000));
+        assert_eq!(info.max_output, Some(131_072));
+        assert_eq!(info.supports_reasoning, Some(true));
+        assert_eq!(info.input_per_mtok, None);
+        assert_eq!(info.cached_input_per_mtok, None);
+        assert_eq!(info.output_per_mtok, None);
     }
 
     #[test]

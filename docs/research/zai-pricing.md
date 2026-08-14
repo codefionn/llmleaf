@@ -78,7 +78,16 @@ thinking-token count.
    OpenAI-compatible catalog: `glm-5.3`, `glm-5-turbo`, and `glm-4.7`, plus the
    callable `glm-5.2` and `glm-5.1` compatibility IDs that Z.AI automatically
    routes to GLM-5.3. This is a static availability catalog because the Coding
-   Plan endpoint has no usable model-list API ([Coding Plan overview](https://docs.z.ai/devpack/overview)).
+   Plan endpoint has no usable model-list API. Its rows explicitly suppress
+   pricing enrichment because Coding Plan uses subscription credits rather
+   than the general API's USD token rates ([Coding Plan overview](https://docs.z.ai/devpack/overview)).
+
+   The general `zai` provider also uses a static availability catalog, sourced
+   from the 14 text and 6 vision model IDs in the published Chat Completions
+   OpenAPI enums. Unlike the pricing dataset, that catalog excludes `glm-5.3`
+   while its general API is pending and excludes `glm-ocr`, which uses the
+   separate layout-parsing endpoint; it includes the chat-callable unpriced
+   `autoglm-phone-multilingual` row.
 
 2. **The lists do not line up perfectly.**  `autoglm-phone-multilingual` is
    accepted by the vision chat schema, but has neither price nor context on

@@ -60,8 +60,8 @@ max_body_bytes = 33554432
 #   subscription plans: zai-coding (glm-coding; the GLM Coding Plan — same wire as zai on its
 #                       dedicated /api/coding/paas/v4 base, plan-bound keys),
 #                       kimi-coding (kimi-for-coding; the "Kimi for Coding" subscription at
-#                       api.kimi.com/coding/v1 — keys from kimi.com/code/console, upstream model id
-#                       is always `kimi-for-coding`). MiniMax's Token Plan needs no separate
+#                       api.kimi.com/coding/v1 — keys from kimi.com/code/console; available model IDs
+#                       are membership-tier dependent). MiniMax's Token Plan needs no separate
 #                       endpoint — the minimax-* aliases exist so configs read clearly; only the
 #                       key differs (plan-bound `sk-cp…`).
 #   local/testing     : echo

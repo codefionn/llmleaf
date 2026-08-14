@@ -109,23 +109,80 @@ const CEREBRAS_PUBLIC_MODELS_URL: &str = "https://api.cerebras.ai/public/v1/mode
 /// It needs no authentication and returns a bare array whose model identifier is `model_name`.
 const DEEPINFRA_PUBLIC_MODELS_URL: &str = "https://api.deepinfra.com/models/list";
 
-/// Models callable through the GLM Coding Plan's OpenAI-compatible endpoint. Z.AI does not expose a
-/// usable `/models` endpoint there, so keep its documented catalog at the provider edge. GLM-5.2 and
-/// GLM-5.1 remain callable compatibility IDs that Z.AI automatically routes to GLM-5.3.
-///
-/// Source (checked 2026-08-14): <https://docs.z.ai/devpack/overview>
+/// xAI's richer language-model listing includes modalities and aliases in addition to the standard
+/// `/models` fields. The shared tolerant parser accepts its `models` wrapper.
+const XAI_LANGUAGE_MODELS_URL: &str = "https://api.x.ai/v1/language-models";
+
+/// Exact chat IDs in Z.AI's published OpenAPI enums. GLM-5.3 is intentionally absent from the
+/// general endpoint until Z.AI publishes it there; GLM-OCR belongs to layout parsing, not chat.
+/// Source (checked 2026-08-14): <https://docs.z.ai/openapi.json>
+const ZAI_MODELS: &[&str] = &[
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5-turbo",
+    "glm-5",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "glm-4.6",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.5-x",
+    "glm-4.5-airx",
+    "glm-4.5-flash",
+    "glm-4-32b-0414-128k",
+    "glm-5v-turbo",
+    "glm-4.6v",
+    "autoglm-phone-multilingual",
+    "glm-4.6v-flash",
+    "glm-4.6v-flashx",
+    "glm-4.5v",
+];
+
+/// Current GLM Coding Plan IDs. GLM-5.2 and GLM-5.1 remain callable compatibility IDs that Z.AI
+/// automatically routes to GLM-5.3. Source: <https://docs.z.ai/devpack/overview>
 const ZAI_CODING_MODELS: &[&str] = &["glm-5.3", "glm-5-turbo", "glm-4.7", "glm-5.2", "glm-5.1"];
 
-fn documented_models(brand: &str) -> Option<Vec<ModelInfo>> {
-    let ids = match brand {
-        "zai-coding" => ZAI_CODING_MODELS,
-        _ => return None,
-    };
+const MINIMAX_MODELS: &[&str] = &[
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
+    "M2-her",
+];
+const MINIMAX_TOKEN_PLAN_MODELS: &[&str] = &["MiniMax-M2.7", "MiniMax-M2.7-highspeed"];
+
+/// Kimi Code IDs; K3, 1M context, and HighSpeed availability depend on membership tier.
+/// Source: <https://www.kimi.com/code/docs/en/kimi-code/models.html>
+const KIMI_CODING_MODELS: &[&str] = &[
+    "k3",
+    "k3-256k",
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+];
+
+/// Current models on Perplexity's legacy Sonar Chat Completions surface.
+/// Source: <https://docs.perplexity.ai/docs/sonar/models>
+const PERPLEXITY_SONAR_MODELS: &[&str] = &[
+    "sonar",
+    "sonar-pro",
+    "sonar-reasoning-pro",
+    "sonar-deep-research",
+];
+
+fn documented_models(brand: &Brand) -> Option<Vec<ModelInfo>> {
+    let ids = brand.documented_models?;
     Some(
         ids.iter()
             .map(|id| {
                 let mut info = ModelInfo::new(*id);
                 info.modality = Some(Modality::Llm);
+                if !brand.allow_pricing_enrichment {
+                    info.allow_pricing_enrichment = Some(false);
+                }
                 info
             })
             .collect(),
@@ -164,10 +221,15 @@ pub struct Brand {
     pub voices_api: bool,
     /// Whether this brand's upstream exposes a usable `GET /models` listing. When `true`,
     /// [`Provider::models`] fetches the live catalog and parses it tolerantly (OpenAI id-only,
-    /// OpenRouter context+pricing, Together's bare array, Cerebras's rich public catalog, …); when
-    /// `false` it stays `Unsupported` and the listing surface shows the namespace as non-enumerable
-    /// rather than guessing a catalog.
+    /// OpenRouter context+pricing, Together's bare array, Cerebras's rich public catalog, …). When
+    /// `false`, [`Brand::documented_models`] is used if present; otherwise the namespace remains
+    /// honestly non-enumerable rather than guessing a catalog.
     pub models_api: bool,
+    /// Exact documented model IDs used only when the upstream has no usable list-models endpoint.
+    pub documented_models: Option<&'static [&'static str]>,
+    /// Whether documented rows may inherit USD rates from the bundled dataset. Subscription plans
+    /// disable this because their quota/credit billing differs from pay-as-you-go rates.
+    pub allow_pricing_enrichment: bool,
     /// A fixed, brand-specific list-models URL that overrides the default `<endpoint>/models`. Used for
     /// unauthenticated public catalogs on a different host/path than inference: Cerebras's rich public
     /// endpoint ([`CEREBRAS_PUBLIC_MODELS_URL`]) and DeepInfra's ([`DEEPINFRA_PUBLIC_MODELS_URL`]).
@@ -235,6 +297,8 @@ impl Brand {
             transcription_json_base64: false,
             voices_api: false,
             models_api: false,
+            documented_models: None,
+            allow_pricing_enrichment: true,
             models_url_override: None,
             models_query: "",
             filter_inactive_models: false,
@@ -257,6 +321,8 @@ impl Brand {
             transcription_json_base64: false,
             voices_api: false,
             models_api: false,
+            documented_models: None,
+            allow_pricing_enrichment: true,
             models_url_override: None,
             models_query: "",
             filter_inactive_models: false,
@@ -313,11 +379,14 @@ impl Brand {
             // Requesty is a multi-provider gateway like OpenRouter: OpenAI wire, `provider/model`
             // ids (e.g. `openai/gpt-4o`), and the same HTTP-Referer/X-Title attribution headers
             // (carried by the passthrough settings). Its router normalizes `max_tokens`.
-            "requesty" => b(
-                "requesty",
-                "https://router.requesty.ai/v1",
-                AuthStyle::Bearer,
-            ),
+            "requesty" => Brand {
+                models_api: true,
+                ..b(
+                    "requesty",
+                    "https://router.requesty.ai/v1",
+                    AuthStyle::Bearer,
+                )
+            },
             // Amazon Bedrock's OpenAI-compatible "Mantle" data-plane surface. The endpoint is
             // regional, so operators supply the full `/v1` base (for example
             // `https://bedrock-mantle.us-east-1.api.aws/v1`). Bedrock API keys authenticate as plain
@@ -383,7 +452,10 @@ impl Brand {
                 ..b("groq", "https://api.groq.com/openai/v1", AuthStyle::Bearer)
             },
             // DeepSeek's base has no `/v1` segment (verified against official docs).
-            "deepseek" => b("deepseek", "https://api.deepseek.com", AuthStyle::Bearer),
+            "deepseek" => Brand {
+                models_api: true,
+                ..b("deepseek", "https://api.deepseek.com", AuthStyle::Bearer)
+            },
             // Baidu AI Cloud Qianfan's current mainland API is OpenAI-compatible at `/v2`: API keys
             // use bearer auth, chat streams accept `stream_options.include_usage`, embeddings and
             // the rich model catalog use the standard paths, and `/rerank` uses the shared
@@ -407,6 +479,8 @@ impl Brand {
             // still covers an upstream without it, and an operator can pin `chat_api = "completions"`.
             "xai" | "grok" => Brand {
                 chat_api: ChatApi::Responses,
+                models_api: true,
+                models_url_override: Some(XAI_LANGUAGE_MODELS_URL),
                 ..bc("xai", "https://api.x.ai/v1", AuthStyle::Bearer)
             },
             // Mistral exposes a real `GET /v1/audio/voices` listing — fetch it live. Its batch API is
@@ -430,7 +504,10 @@ impl Brand {
                 "https://api.fireworks.ai/inference/v1",
                 AuthStyle::Bearer,
             ),
-            "perplexity" => b("perplexity", "https://api.perplexity.ai", AuthStyle::Bearer),
+            "perplexity" => Brand {
+                documented_models: Some(PERPLEXITY_SONAR_MODELS),
+                ..b("perplexity", "https://api.perplexity.ai", AuthStyle::Bearer)
+            },
             // NOTE: Ollama and LM Studio are NOT here — they are first-class native providers (their
             // own `/api/*` and `/api/v0/*` dialects), built directly in `lib.rs::build`, not OpenAI-wire
             // shims over this table.
@@ -446,18 +523,25 @@ impl Brand {
             // Z.AI (Zhipu GLM), international host. The /api/paas/v4 base already carries the version
             // segment — unlike the OpenAI default there is no trailing /v1 to append. Mainland China
             // serves the same wire at https://open.bigmodel.cn/api/paas/v4 (an `endpoint` override).
-            "zai" | "z.ai" | "glm" => b("zai", "https://api.z.ai/api/paas/v4", AuthStyle::Bearer),
+            "zai" | "z.ai" | "glm" => Brand {
+                documented_models: Some(ZAI_MODELS),
+                ..b("zai", "https://api.z.ai/api/paas/v4", AuthStyle::Bearer)
+            },
             // Z.AI's GLM Coding Plan (subscription): the same wire as `zai` on a dedicated base — the
             // plan serves ONLY at /api/coding/paas/v4 (mainland override:
             // https://open.bigmodel.cn/api/coding/paas/v4), and its keys are rejected on the general
             // endpoint exactly as general keys are rejected here (business codes 1315/1311). A distinct
             // kind, not an alias of `zai`, because the two differ in the one thing a kind defaults: the
             // endpoint.
-            "zai-coding" | "glm-coding" => b(
-                "zai-coding",
-                "https://api.z.ai/api/coding/paas/v4",
-                AuthStyle::Bearer,
-            ),
+            "zai-coding" | "glm-coding" => Brand {
+                documented_models: Some(ZAI_CODING_MODELS),
+                allow_pricing_enrichment: false,
+                ..b(
+                    "zai-coding",
+                    "https://api.z.ai/api/coding/paas/v4",
+                    AuthStyle::Bearer,
+                )
+            },
             // Moonshot (Kimi, incl. Kimi K2), international host. Its API deprecates max_tokens in
             // favor of max_completion_tokens. Mainland China serves the same wire at
             // https://api.moonshot.cn/v1 (an `endpoint` override). NOTE: the factory wraps this row
@@ -470,25 +554,36 @@ impl Brand {
             },
             // Moonshot's "Kimi for Coding" subscription: the same OpenAI wire on a dedicated host+path
             // (keys come from kimi.com/code/console, not the platform console, and are not
-            // interchangeable with pay-as-you-go `moonshot` keys). The upstream serves exactly one
-            // model id, `kimi-for-coding`. Neither `GET /models` nor batch is documented on this host,
-            // so both stay off — the namespace shows as non-enumerable rather than guessing.
-            "kimi-coding" | "kimi-for-coding" => bc(
-                "kimi-coding",
-                "https://api.kimi.com/coding/v1",
-                AuthStyle::Bearer,
-            ),
+            // interchangeable with pay-as-you-go `moonshot` keys). No list-models API is documented
+            // there, so use Kimi's published membership catalog; tier-gated rows can still return 401
+            // for a particular key.
+            "kimi-coding" | "kimi-for-coding" => Brand {
+                documented_models: Some(KIMI_CODING_MODELS),
+                allow_pricing_enrichment: false,
+                ..bc(
+                    "kimi-coding",
+                    "https://api.kimi.com/coding/v1",
+                    AuthStyle::Bearer,
+                )
+            },
             // MiniMax, international host (mainland: https://api.minimaxi.com/v1 — note the extra `i` —
             // via an `endpoint` override). OpenAI chat wire with `max_completion_tokens` (`max_tokens`
             // is its documented-deprecated alias), but its legacy `base_resp` envelope survives on this
             // surface: errors can arrive as HTTP 200 with a non-zero `base_resp.status_code`, so
             // responses are classified through `base_resp_error` before mapping. `GET /models` returns
-            // 404 — the catalog stays non-enumerable. The Token Plan subscription (né "Coding Plan")
+            // 404, so exact documented catalogs are used. The Token Plan subscription (né "Coding Plan")
             // rides the SAME host and paths — only the key differs (plan-bound `sk-cp…` keys, not
             // interchangeable with pay-as-you-go keys) — so the subscription kinds resolve to this
             // identical row rather than implying an endpoint difference that does not exist.
-            "minimax" | "minimax-coding" | "minimax-token-plan" => Brand {
+            "minimax" => Brand {
                 base_resp_envelope: true,
+                documented_models: Some(MINIMAX_MODELS),
+                ..bc("minimax", "https://api.minimax.io/v1", AuthStyle::Bearer)
+            },
+            "minimax-coding" | "minimax-token-plan" => Brand {
+                base_resp_envelope: true,
+                documented_models: Some(MINIMAX_TOKEN_PLAN_MODELS),
+                allow_pricing_enrichment: false,
                 ..bc("minimax", "https://api.minimax.io/v1", AuthStyle::Bearer)
             },
             "azure-openai" | "azure" => Brand {
@@ -507,6 +602,8 @@ impl Brand {
                 // Azure lists models at the resource root (`/openai/models?api-version=`), not under a
                 // deployment — `models_url` builds that, NOT `url_for`.
                 models_api: true,
+                documented_models: None,
+                allow_pricing_enrichment: true,
                 models_url_override: None,
                 models_query: "",
                 // Azure's listing carries no `active` flag — nothing to filter.
@@ -1470,7 +1567,7 @@ impl Provider for OpenAiCompatProvider {
 
     async fn models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
         // Prefer a provider's documented static catalog when no usable listing endpoint exists.
-        if let Some(models) = documented_models(self.brand.name) {
+        if let Some(models) = documented_models(&self.brand) {
             return Ok(models);
         }
         // Only remaining brands with a confirmed `GET /models` enumerate; others stay Unsupported so
@@ -2040,6 +2137,33 @@ mod tests {
     }
 
     #[test]
+    fn newly_enabled_live_catalogs_use_their_documented_urls() {
+        let transports = crate::transport::Transports::fake();
+        for (kind, expected) in [
+            ("requesty", "https://router.requesty.ai/v1/models"),
+            ("deepseek", "https://api.deepseek.com/models"),
+        ] {
+            let brand = Brand::for_kind(kind).unwrap();
+            assert!(brand.models_api, "{kind}");
+            let provider = OpenAiCompatProvider::for_kind(kind, &transports).unwrap();
+            assert_eq!(
+                provider.models_url(&ProviderCx::default()),
+                expected,
+                "{kind}"
+            );
+        }
+
+        let xai = Brand::for_kind("xai").unwrap();
+        assert!(xai.models_api);
+        assert_eq!(xai.models_url_override, Some(XAI_LANGUAGE_MODELS_URL));
+        let provider = OpenAiCompatProvider::for_kind("xai", &transports).unwrap();
+        assert_eq!(
+            provider.models_url(&ProviderCx::default()),
+            "https://api.x.ai/v1/language-models"
+        );
+    }
+
+    #[test]
     fn groq_lists_models_from_its_openai_v1_endpoint() {
         // Groq enumerates models at the standard `<endpoint>/models`; because its base already carries
         // `/openai/v1`, that resolves to Groq's documented list-models URL. No fixed override (unlike
@@ -2318,13 +2442,23 @@ mod tests {
         assert_eq!(models[0].extra.get("max_tokens"), Some(&json!(131072)));
     }
 
-    #[test]
-    fn zai_base_already_carries_version_segment() {
+    #[tokio::test]
+    async fn zai_base_and_documented_general_catalog_are_exact() {
         // The /api/paas/v4 base must NOT gain an extra /v1 — chat/completions appends directly.
         let p =
             OpenAiCompatProvider::for_kind("zai", &crate::transport::Transports::fake()).unwrap();
         let url = p.build_url(&ProviderCx::default(), "glm-4.6");
         assert_eq!(url, "https://api.z.ai/api/paas/v4/chat/completions");
+        let models = p.models(&ProviderCx::default()).await.unwrap();
+        assert_eq!(models.len(), 20);
+        assert!(models
+            .iter()
+            .any(|model| model.id == "autoglm-phone-multilingual"));
+        assert!(!models.iter().any(|model| model.id == "glm-5.3"));
+        assert!(!models.iter().any(|model| model.id == "glm-ocr"));
+        assert!(models
+            .iter()
+            .all(|model| model.modality == Some(Modality::Llm)));
     }
 
     #[test]
@@ -2379,13 +2513,16 @@ mod tests {
         assert!(models
             .iter()
             .all(|model| model.modality == Some(Modality::Llm)));
+        assert!(models
+            .iter()
+            .all(|model| model.allow_pricing_enrichment == Some(false)));
     }
 
-    #[test]
-    fn kimi_coding_subscription_serves_from_kimi_com() {
+    #[tokio::test]
+    async fn kimi_coding_subscription_serves_and_lists_membership_catalog() {
         // "Kimi for Coding" keys come from kimi.com/code/console and serve only on api.kimi.com's
         // /coding/v1 base — a different host than pay-as-you-go `moonshot`. Same reasoning-era
-        // max_completion_tokens field; no documented models/batch surface on this host.
+        // max_completion_tokens field; the host has no list API, so model discovery is documented.
         let p =
             OpenAiCompatProvider::for_kind("kimi-coding", &crate::transport::Transports::fake())
                 .unwrap();
@@ -2395,10 +2532,26 @@ mod tests {
         assert_eq!(brand.max_tokens_field, "max_completion_tokens");
         assert!(!brand.models_api);
         assert_eq!(brand.batch_flavor, BatchFlavor::Unsupported);
+        let models = p.models(&ProviderCx::default()).await.unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "k3",
+                "k3-256k",
+                "kimi-for-coding",
+                "kimi-for-coding-highspeed"
+            ]
+        );
+        assert!(models
+            .iter()
+            .all(|model| model.allow_pricing_enrichment == Some(false)));
     }
 
-    #[test]
-    fn minimax_token_plan_kinds_share_the_standard_endpoint() {
+    #[tokio::test]
+    async fn minimax_kinds_share_endpoint_but_use_plan_appropriate_catalogs() {
         // MiniMax's Token Plan (né Coding Plan) rides the same host and paths as pay-as-you-go —
         // only the key differs — so every subscription kind resolves to the identical brand row
         // rather than implying an endpoint difference that does not exist.
@@ -2411,13 +2564,59 @@ mod tests {
             );
             assert!(brand.base_resp_envelope, "{kind}");
             assert_eq!(brand.max_tokens_field, "max_completion_tokens", "{kind}");
-            // No public `GET /models` (404) — the catalog stays non-enumerable, never guessed.
+            // No public `GET /models` (404) — availability comes from documented static IDs.
             assert!(!brand.models_api, "{kind}");
         }
         let p = OpenAiCompatProvider::for_kind("minimax", &crate::transport::Transports::fake())
             .unwrap();
         let url = p.build_url(&ProviderCx::default(), "MiniMax-M3");
         assert_eq!(url, "https://api.minimax.io/v1/chat/completions");
+        let payg = p.models(&ProviderCx::default()).await.unwrap();
+        assert_eq!(payg.len(), 8);
+        assert!(payg.iter().any(|model| model.id == "M2-her"));
+        assert!(payg
+            .iter()
+            .all(|model| model.allow_pricing_enrichment.is_none()));
+
+        for kind in ["minimax-coding", "minimax-token-plan"] {
+            let provider =
+                OpenAiCompatProvider::for_kind(kind, &crate::transport::Transports::fake())
+                    .unwrap();
+            let plan = provider.models(&ProviderCx::default()).await.unwrap();
+            assert_eq!(
+                plan.iter()
+                    .map(|model| model.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+                "{kind}"
+            );
+            assert!(plan
+                .iter()
+                .all(|model| model.allow_pricing_enrichment == Some(false)));
+        }
+    }
+
+    #[tokio::test]
+    async fn perplexity_sonar_lists_its_documented_chat_models() {
+        let provider =
+            OpenAiCompatProvider::for_kind("perplexity", &crate::transport::Transports::fake())
+                .unwrap();
+        let models = provider.models(&ProviderCx::default()).await.unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "sonar",
+                "sonar-pro",
+                "sonar-reasoning-pro",
+                "sonar-deep-research"
+            ]
+        );
+        assert!(models
+            .iter()
+            .all(|model| model.modality == Some(Modality::Llm)));
     }
 
     #[test]

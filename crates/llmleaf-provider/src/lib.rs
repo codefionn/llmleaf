@@ -77,11 +77,12 @@ pub trait Provider: Send + Sync {
     /// Enumerate the models this provider serves — its upstream catalog, for the model-listing surface
     /// (`GET /v1/models`). Opt-in: the default declares it unsupported, which the listing falls past
     /// *without* penalizing health (a provider that cannot enumerate its catalog is not degraded — the
-    /// listing simply shows its namespace as non-enumerable). A provider whose upstream exposes a real
-    /// list-models API (most do) fetches it here and returns each model with whatever metadata the API
-    /// reports; fields the API does not report are left `None` (NEVER guessed — gaps are enhanced
-    /// downstream from the bundled dataset). Unlike [`Self::voices`] this takes no model: it lists the
-    /// whole catalog, so the listing surface can pass an upstream provider's models through by prefix.
+    /// listing simply shows its namespace as non-enumerable). A provider may fetch a live list-models
+    /// API or return an exact documented static catalog when no usable listing endpoint exists. It
+    /// returns each model with whatever metadata the source reports; missing fields stay `None` (NEVER
+    /// guessed — gaps are enhanced downstream from the bundled dataset). Unlike [`Self::voices`] this
+    /// takes no model: it lists the whole catalog, so the listing surface can pass an upstream
+    /// provider's models through by prefix.
     async fn models(&self, _cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
         Err(unsupported(self.name(), "model listing"))
     }
