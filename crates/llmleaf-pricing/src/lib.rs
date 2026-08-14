@@ -254,6 +254,33 @@ mod tests {
     }
 
     #[test]
+    fn bundled_dataset_has_documented_provider_gap_catalogs() {
+        let pricing = Pricing::bundled().unwrap();
+
+        let zai = pricing.card("glm-5.2").unwrap();
+        assert_eq!(zai.max_context, Some(1_000_000));
+        assert_eq!(zai.max_output, Some(131_072));
+        assert_eq!(zai.input_per_mtok, Some(1.4));
+        assert_eq!(zai.cached_input_per_mtok, Some(0.26));
+        assert_eq!(zai.output_per_mtok, Some(4.4));
+
+        let deepseek = pricing.card("deepseek-v4-flash").unwrap();
+        assert_eq!(deepseek.cached_input_per_mtok, Some(0.0028));
+        assert_eq!(deepseek.output_per_mtok, Some(0.28));
+
+        let minimax = pricing.card("MiniMax-M2.7-highspeed").unwrap();
+        assert_eq!(minimax.max_context, Some(204_800));
+        assert_eq!(minimax.max_output, None);
+        assert_eq!(minimax.input_per_mtok, Some(0.6));
+        assert_eq!(minimax.output_per_mtok, Some(2.4));
+
+        let groq = pricing.card("llama-3.3-70b-versatile").unwrap();
+        assert_eq!(groq.cached_input_per_mtok, None);
+        assert_eq!(groq.input_per_mtok, Some(0.59));
+        assert_eq!(groq.output_per_mtok, Some(0.79));
+    }
+
+    #[test]
     fn cost_is_lookup_times_tokens() {
         let pricing = Pricing::bundled().unwrap();
         let usage = Usage {

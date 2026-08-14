@@ -81,9 +81,10 @@ pub mod collect {
         /// Environment variable containing the provider credential.
         pub credential_env: Option<String>,
         pub settings: Map<String, Value>,
-        /// `auto` chooses a provider-specific pricing page when one is known, otherwise a model-list
-        /// endpoint. Generic list endpoints must include token prices; provider-specific collectors may
-        /// also accept an availability catalog when they can add documented capability metadata.
+        /// `auto` chooses an audited documented catalog when one exists, then a provider-specific
+        /// pricing page, otherwise a model-list endpoint. Generic list endpoints must include token
+        /// prices; provider-specific collectors may also accept a sparse availability catalog when
+        /// they can safely add documented capability metadata.
         #[serde(default)]
         pub source: CollectorSource,
         /// Override the provider pricing page URL. Used only by `pricing-page` collectors.
@@ -99,6 +100,10 @@ pub mod collect {
         Auto,
         ListEndpoint,
         PricingPage,
+        /// Provider documentation distilled into code for catalogs whose live API is absent or too
+        /// sparse to generate accurate pricing cards. These rows must cite their primary sources in
+        /// the collector implementation and be periodically audited.
+        DocumentedCatalog,
     }
 
     impl Default for CollectorProvider {
@@ -288,14 +293,34 @@ pub mod collect {
         match p.source {
             CollectorSource::PricingPage => collect_pricing_page(http, p, name).await,
             CollectorSource::ListEndpoint => collect_list_endpoint(p, name).await,
+            CollectorSource::DocumentedCatalog => collect_documented_catalog(p, name),
             CollectorSource::Auto => {
-                if !pricing_page_urls(p).is_empty() {
+                if p.pricing_url.is_some() {
+                    collect_pricing_page(http, p, name).await
+                } else if p.list_url.is_some() || p.endpoint.is_some() {
+                    collect_list_endpoint(p, name).await
+                } else if documented_catalog(&p.kind).is_some() {
+                    collect_documented_catalog(p, name)
+                } else if !pricing_page_urls(p).is_empty() {
                     collect_pricing_page(http, p, name).await
                 } else {
                     collect_list_endpoint(p, name).await
                 }
             }
         }
+    }
+
+    fn collect_documented_catalog(
+        p: &CollectorProvider,
+        name: &str,
+    ) -> Result<(String, Vec<ModelInfo>), Box<dyn std::error::Error + Send + Sync>> {
+        let infos = documented_catalog(&p.kind).ok_or_else(|| {
+            format!(
+                "{name} ({}) has no built-in documented catalog; use a supported source or add audited primary-source rows",
+                p.kind
+            )
+        })?;
+        Ok(("documented-catalog".to_string(), infos))
     }
 
     async fn collect_list_endpoint(
@@ -449,6 +474,371 @@ pub mod collect {
         }
     }
 
+    /// Primary-source model cards for providers whose public model-list endpoint is missing or does
+    /// not carry enough information to build honest pricing cards. Keep these deliberately small:
+    /// only fields explicitly published by the provider belong here.
+    pub(crate) fn documented_catalog(kind: &str) -> Option<Vec<ModelInfo>> {
+        match normalized_kind(kind).as_str() {
+            "zai" => Some(zai_documented_catalog()),
+            "deepseek" => Some(deepseek_documented_catalog()),
+            "minimax" => Some(minimax_documented_catalog()),
+            "groq" => Some(groq_documented_catalog()),
+            _ => None,
+        }
+    }
+
+    // A flat signature keeps each hardcoded row visibly aligned with the provider's published table.
+    #[allow(clippy::too_many_arguments)]
+    fn documented_model(
+        id: &'static str,
+        modality: Modality,
+        max_context: Option<u32>,
+        max_output: Option<u32>,
+        supports_reasoning: Option<bool>,
+        input_modalities: &'static [&'static str],
+        output_modalities: &'static [&'static str],
+        prices: (Option<f64>, Option<f64>, Option<f64>),
+    ) -> ModelInfo {
+        let mut info = ModelInfo::new(id);
+        info.modality = Some(modality);
+        info.max_context = max_context;
+        info.max_output = max_output;
+        info.supports_reasoning = supports_reasoning;
+        (
+            info.input_per_mtok,
+            info.cached_input_per_mtok,
+            info.output_per_mtok,
+        ) = prices;
+        info.extra.insert(
+            "architecture".into(),
+            serde_json::json!({
+                "input_modalities": input_modalities,
+                "output_modalities": output_modalities,
+            }),
+        );
+        info
+    }
+
+    /// Z.AI's general API has no documented rich model-list endpoint. These global pay-as-you-go
+    /// rows were verified on 2026-08-14 against the official pricing, overview, core-parameter, and
+    /// individual model references:
+    /// - <https://docs.z.ai/guides/overview/pricing>
+    /// - <https://docs.z.ai/guides/overview/overview>
+    /// - <https://docs.z.ai/guides/overview/concept-param>
+    ///
+    /// GLM-5.3 is intentionally absent: its guide says the general API is "coming soon" and only the
+    /// subscription Coding Plan currently serves it, for which no per-token price is published.
+    /// Image/video generation is also absent because this dataset only represents token pricing.
+    fn zai_documented_catalog() -> Vec<ModelInfo> {
+        const TEXT: &[&str] = &["text"];
+        const VISION: &[&str] = &["text", "image", "video", "file"];
+        const DOCUMENT: &[&str] = &["image", "file"];
+        vec![
+            documented_model(
+                "glm-5.2",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(1.4), Some(0.26), Some(4.4)),
+            ),
+            documented_model(
+                "glm-5.1",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(1.4), Some(0.26), Some(4.4)),
+            ),
+            documented_model(
+                "glm-5",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(1.0), Some(0.2), Some(3.2)),
+            ),
+            documented_model(
+                "glm-5-turbo",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(1.2), Some(0.24), Some(4.0)),
+            ),
+            documented_model(
+                "glm-4.7",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.6), Some(0.11), Some(2.2)),
+            ),
+            documented_model(
+                "glm-4.7-flashx",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.07), Some(0.01), Some(0.4)),
+            ),
+            documented_model(
+                "glm-4.6",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.6), Some(0.11), Some(2.2)),
+            ),
+            documented_model(
+                "glm-4.5",
+                Modality::Llm,
+                Some(128_000),
+                Some(98_304),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.6), Some(0.11), Some(2.2)),
+            ),
+            documented_model(
+                "glm-4.5-x",
+                Modality::Llm,
+                Some(128_000),
+                Some(98_304),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(2.2), Some(0.45), Some(8.9)),
+            ),
+            documented_model(
+                "glm-4.5-air",
+                Modality::Llm,
+                Some(128_000),
+                Some(98_304),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.2), Some(0.03), Some(1.1)),
+            ),
+            documented_model(
+                "glm-4.5-airx",
+                Modality::Llm,
+                Some(128_000),
+                Some(98_304),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(1.1), Some(0.22), Some(4.5)),
+            ),
+            documented_model(
+                "glm-4-32b-0414-128k",
+                Modality::Llm,
+                Some(128_000),
+                Some(16_384),
+                Some(false),
+                TEXT,
+                TEXT,
+                (Some(0.1), None, Some(0.1)),
+            ),
+            documented_model(
+                "glm-4.7-flash",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.0), Some(0.0), Some(0.0)),
+            ),
+            documented_model(
+                "glm-4.5-flash",
+                Modality::Llm,
+                Some(200_000),
+                Some(98_304),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.0), Some(0.0), Some(0.0)),
+            ),
+            documented_model(
+                "glm-5v-turbo",
+                Modality::Llm,
+                Some(200_000),
+                Some(131_072),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(1.2), Some(0.24), Some(4.0)),
+            ),
+            documented_model(
+                "glm-4.6v",
+                Modality::Llm,
+                Some(128_000),
+                Some(32_768),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.3), Some(0.05), Some(0.9)),
+            ),
+            documented_model(
+                "glm-ocr",
+                Modality::Llm,
+                None,
+                None,
+                None,
+                DOCUMENT,
+                TEXT,
+                (Some(0.03), None, Some(0.03)),
+            ),
+            documented_model(
+                "glm-4.6v-flashx",
+                Modality::Llm,
+                Some(128_000),
+                Some(32_768),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.04), Some(0.004), Some(0.4)),
+            ),
+            documented_model(
+                "glm-4.5v",
+                Modality::Llm,
+                Some(64_000),
+                Some(16_384),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.6), Some(0.11), Some(1.8)),
+            ),
+            documented_model(
+                "glm-4.6v-flash",
+                Modality::Llm,
+                Some(128_000),
+                Some(32_768),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.0), Some(0.0), Some(0.0)),
+            ),
+        ]
+    }
+
+    /// DeepSeek's `/models` API is id-only. The two rows below are the complete direct API catalog
+    /// published on 2026-08-14; the former `deepseek-chat` and `deepseek-reasoner` ids were retired.
+    /// Sources: <https://api-docs.deepseek.com/api/list-models/>,
+    /// <https://api-docs.deepseek.com/quick_start/pricing>, and
+    /// <https://api-docs.deepseek.com/news/news260424/>.
+    fn deepseek_documented_catalog() -> Vec<ModelInfo> {
+        const TEXT: &[&str] = &["text"];
+        vec![
+            documented_model(
+                "deepseek-v4-flash",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(384_000),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.14), Some(0.0028), Some(0.28)),
+            ),
+            documented_model(
+                "deepseek-v4-pro",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(384_000),
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(0.435), Some(0.003625), Some(0.87)),
+            ),
+        ]
+    }
+
+    /// MiniMax documents no list-models endpoint on its OpenAI-compatible API. These are the flat,
+    /// standard-priority M2 pay-as-you-go rows whose complete charge fits llmleaf's three token-rate
+    /// schema. M3 (length-tiered), priority service, explicit Anthropic cache writes, and non-token
+    /// media products are intentionally excluded. Verified 2026-08-14 from:
+    /// <https://platform.minimax.io/docs/guides/text-generation> and
+    /// <https://platform.minimax.io/docs/guides/pricing-paygo>.
+    fn minimax_documented_catalog() -> Vec<ModelInfo> {
+        const TEXT: &[&str] = &["text"];
+        [
+            ("MiniMax-M2.7", 0.3, 0.06, 1.2),
+            ("MiniMax-M2.7-highspeed", 0.6, 0.06, 2.4),
+            ("MiniMax-M2.5", 0.3, 0.03, 1.2),
+            ("MiniMax-M2.5-highspeed", 0.6, 0.03, 2.4),
+            ("MiniMax-M2.1", 0.3, 0.03, 1.2),
+            ("MiniMax-M2.1-highspeed", 0.6, 0.03, 2.4),
+            ("MiniMax-M2", 0.3, 0.03, 1.2),
+        ]
+        .into_iter()
+        .map(|(id, input, cached, output)| {
+            documented_model(
+                id,
+                Modality::Llm,
+                Some(204_800),
+                None,
+                Some(true),
+                TEXT,
+                TEXT,
+                (Some(input), Some(cached), Some(output)),
+            )
+        })
+        .chain(std::iter::once(documented_model(
+            "M2-her",
+            Modality::Llm,
+            Some(64_000),
+            Some(2_048),
+            None,
+            TEXT,
+            TEXT,
+            (Some(0.3), None, Some(1.2)),
+        )))
+        .collect()
+    }
+
+    /// Groq's authenticated list endpoint is id-only. Restrict the static catalog to direct models
+    /// whose official card has ordinary text-token rates *and* whose ids are Groq-specific. Generic
+    /// slash-qualified ids are omitted because the runtime table is keyed only by model id and another
+    /// provider can charge a different rate for the same id. Compound, audio, TTS, and provisioned
+    /// throughput also have billing dimensions this schema cannot represent. Verified 2026-08-14 from
+    /// <https://console.groq.com/docs/models>.
+    fn groq_documented_catalog() -> Vec<ModelInfo> {
+        const TEXT: &[&str] = &["text"];
+        [
+            ("llama-3.1-8b-instant", 131_072, 131_072, 0.05, 0.08),
+            ("llama-3.3-70b-versatile", 131_072, 32_768, 0.59, 0.79),
+        ]
+        .into_iter()
+        .map(|(id, context, output_limit, input, output)| {
+            documented_model(
+                id,
+                Modality::Llm,
+                Some(context),
+                Some(output_limit),
+                None,
+                TEXT,
+                TEXT,
+                (Some(input), None, Some(output)),
+            )
+        })
+        .collect()
+    }
+
     pub(crate) fn parse_priced_list_endpoint(value: Value) -> Vec<ModelInfo> {
         list_endpoint_items(value)
             .into_iter()
@@ -457,41 +847,32 @@ pub mod collect {
             .collect()
     }
 
-    /// Parse Meta Model API's authenticated availability catalog. Meta's `/models` response currently
-    /// carries ids and ownership but no modality, limits, or prices, so the generic priced-list parser
-    /// correctly rejects it. The model family itself is documented as a multimodal *reasoning model*
-    /// exposed through text-generation APIs; in llmleaf's coarse output-modality taxonomy that is an
-    /// LLM. Meta publishes the exact context, text/image/video/PDF input family, prices, tier, and
-    /// training-data policy for three ids. The live result validates that this is Meta's catalog, while
-    /// the documented Contributor card is bundled even when a particular account's listing omits that
-    /// tier; the runtime still advertises only ids returned by that account's live `/models` call.
-    /// Public source: <https://dev.meta.ai/docs/models>.
+    /// Parse Meta Model API's authenticated availability catalog. Its `/models` response currently
+    /// carries ids and ownership but no modality, limits, or prices. Known Muse cards are enriched
+    /// from Meta's documentation; unknown future Muse ids remain honest id-only rows. Crucially, this
+    /// emits only ids the authenticated account actually received instead of manufacturing a fixed
+    /// catalog or an unavailable Contributor tier.
+    ///
+    /// Sources (audited 2026-08-14): <https://dev.meta.ai/docs/models>,
+    /// <https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/>, and
+    /// <https://developer.meta.com/ai/resources/blog/build-with-muse-code/>.
     pub(crate) fn parse_meta_model_api(value: Value) -> Vec<ModelInfo> {
-        let is_meta_catalog = list_endpoint_items(value).iter().any(|item| {
-            item.get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("muse-spark-"))
-        });
-        if !is_meta_catalog {
-            return Vec::new();
-        }
-
-        [
-            ("muse-spark-1.1", "standard", 1.25, 0.15, 4.25, false),
-            ("muse-spark-1.2", "standard", 1.25, 0.15, 4.25, false),
-            (
-                "muse-spark-1.2-contributor",
-                "contributor",
-                0.10,
-                0.002,
-                0.20,
-                true,
-            ),
-        ]
-        .into_iter()
-        .map(
-            |(id, tier, input, cached_input, output, prompts_used_for_training)| {
-                let mut info = ModelInfo::new(id);
+        list_endpoint_items(value)
+            .into_iter()
+            .filter_map(list_item_to_model_info)
+            .filter(|info| info.id.starts_with("muse-spark-"))
+            .map(|mut info| {
+                let documented = match info.id.as_str() {
+                    "muse-spark-1.1" => Some(("standard", 1.25, 0.15, 4.25, false)),
+                    "muse-spark-1.2" => Some(("standard", 1.25, 0.15, 4.25, false)),
+                    "muse-spark-1.2-contributor" => Some(("contributor", 0.10, 0.002, 0.20, true)),
+                    _ => None,
+                };
+                let Some((tier, input, cached_input, output, prompts_used_for_training)) =
+                    documented
+                else {
+                    return info;
+                };
                 info.modality = Some(Modality::Llm);
                 info.max_context = Some(1_048_576);
                 info.supports_reasoning = Some(true);
@@ -515,9 +896,8 @@ pub mod collect {
                     }),
                 );
                 info
-            },
-        )
-        .collect()
+            })
+            .collect()
     }
 
     fn list_endpoint_items(value: Value) -> Vec<Value> {
@@ -1327,6 +1707,7 @@ pub mod collect {
         match kind {
             "claude" => "anthropic",
             "meta-ai" | "meta-model-api" | "muse" => "meta",
+            "z.ai" | "glm" => "zai",
             other => other,
         }
         .to_ascii_lowercase()
@@ -1449,6 +1830,7 @@ mod tests {
                     "owned_by": "meta",
                     "metadata": null
                 },
+                { "id": "muse-spark-1.3", "owned_by": "meta" },
                 { "id": "unrelated-model" }
             ]
         }));
@@ -1479,15 +1861,12 @@ mod tests {
         assert_eq!(v12.input_per_mtok, Some(1.25));
         assert_eq!(v12.cached_input_per_mtok, Some(0.15));
         assert_eq!(v12.output_per_mtok, Some(4.25));
-        let contributor = rows
+        let future = rows.iter().find(|row| row.id == "muse-spark-1.3").unwrap();
+        assert_eq!(future.input_per_mtok, None);
+        assert_eq!(future.modality, None);
+        assert!(rows
             .iter()
-            .find(|row| row.id == "muse-spark-1.2-contributor")
-            .unwrap();
-        assert_eq!(contributor.input_per_mtok, Some(0.10));
-        assert_eq!(contributor.cached_input_per_mtok, Some(0.002));
-        assert_eq!(contributor.output_per_mtok, Some(0.20));
-        assert_eq!(contributor.extra["tier"], "contributor");
-        assert_eq!(contributor.extra["prompts_used_for_training"], true);
+            .all(|row| row.id != "muse-spark-1.2-contributor"));
     }
 
     #[test]
@@ -1502,6 +1881,69 @@ mod tests {
                 Some("https://api.meta.ai/v1/models")
             );
         }
+    }
+
+    #[test]
+    fn zai_documented_catalog_has_current_paid_free_and_vision_rows() {
+        for kind in ["zai", "z.ai", "glm"] {
+            let rows = collect::documented_catalog(kind).unwrap();
+            assert_eq!(rows.len(), 20, "{kind}");
+
+            let flagship = rows.iter().find(|row| row.id == "glm-5.2").unwrap();
+            assert_eq!(flagship.max_context, Some(1_000_000));
+            assert_eq!(flagship.max_output, Some(131_072));
+            assert_eq!(flagship.input_per_mtok, Some(1.4));
+            assert_eq!(flagship.cached_input_per_mtok, Some(0.26));
+            assert_eq!(flagship.output_per_mtok, Some(4.4));
+            assert_eq!(flagship.supports_reasoning, Some(true));
+
+            let free = rows.iter().find(|row| row.id == "glm-4.7-flash").unwrap();
+            assert_eq!(free.input_per_mtok, Some(0.0));
+            assert_eq!(free.cached_input_per_mtok, Some(0.0));
+            assert_eq!(free.output_per_mtok, Some(0.0));
+
+            let vision = rows.iter().find(|row| row.id == "glm-5v-turbo").unwrap();
+            assert_eq!(
+                vision.extra["architecture"]["input_modalities"],
+                serde_json::json!(["text", "image", "video", "file"])
+            );
+        }
+    }
+
+    #[test]
+    fn documented_provider_gaps_keep_only_schema_exact_prices() {
+        let deepseek = collect::documented_catalog("deepseek").unwrap();
+        assert_eq!(deepseek.len(), 2);
+        let flash = deepseek
+            .iter()
+            .find(|row| row.id == "deepseek-v4-flash")
+            .unwrap();
+        assert_eq!(flash.max_context, Some(1_000_000));
+        assert_eq!(flash.max_output, Some(384_000));
+        assert_eq!(flash.input_per_mtok, Some(0.14));
+        assert_eq!(flash.cached_input_per_mtok, Some(0.0028));
+        assert_eq!(flash.output_per_mtok, Some(0.28));
+
+        let minimax = collect::documented_catalog("minimax").unwrap();
+        assert_eq!(minimax.len(), 8);
+        let highspeed = minimax
+            .iter()
+            .find(|row| row.id == "MiniMax-M2.7-highspeed")
+            .unwrap();
+        assert_eq!(highspeed.max_context, Some(204_800));
+        assert_eq!(highspeed.max_output, None);
+        assert_eq!(highspeed.input_per_mtok, Some(0.6));
+        assert_eq!(highspeed.cached_input_per_mtok, Some(0.06));
+        assert_eq!(highspeed.output_per_mtok, Some(2.4));
+        let roleplay = minimax.iter().find(|row| row.id == "M2-her").unwrap();
+        assert_eq!(roleplay.max_context, Some(64_000));
+        assert_eq!(roleplay.max_output, Some(2_048));
+        assert_eq!(roleplay.cached_input_per_mtok, None);
+
+        let groq = collect::documented_catalog("groq").unwrap();
+        assert_eq!(groq.len(), 2);
+        assert!(groq.iter().all(|row| row.cached_input_per_mtok.is_none()));
+        assert!(groq.iter().all(|row| !row.id.contains('/')));
     }
 
     #[test]

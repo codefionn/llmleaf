@@ -4,6 +4,117 @@
   "_comment_params": "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.",
   "version": 7,
   "models": {
+    "M2-her": {
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.2,
+      "modality": "llm",
+      "max_context": 64000,
+      "max_output": 2048,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2": {
+      "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 1.2,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.1": {
+      "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 1.2,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.1-highspeed": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 2.4,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.5": {
+      "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 1.2,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.5-highspeed": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 2.4,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.7": {
+      "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.06,
+      "output_per_mtok": 1.2,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "MiniMax-M2.7-highspeed": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.06,
+      "output_per_mtok": 2.4,
+      "modality": "llm",
+      "max_context": 204800,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
     "aya-expanse-32b": {
       "input_per_mtok": 0.5,
       "output_per_mtok": 1.5,
@@ -228,6 +339,36 @@
         "temperature": 0.3
       }
     },
+    "deepseek-v4-flash": {
+      "input_per_mtok": 0.14,
+      "cached_input_per_mtok": 0.0028,
+      "output_per_mtok": 0.28,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 384000,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "deepseek-v4-pro": {
+      "input_per_mtok": 0.435,
+      "cached_input_per_mtok": 0.003625,
+      "output_per_mtok": 0.87,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 384000,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
     "devstral-2": {
       "input_per_mtok": 0.4,
       "output_per_mtok": 2.0,
@@ -254,6 +395,317 @@
       "output_per_mtok": 0.0,
       "modality": "embedding",
       "max_context": 512
+    },
+    "glm-4-32b-0414-128k": {
+      "input_per_mtok": 0.1,
+      "output_per_mtok": 0.1,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 16384,
+      "supports_reasoning": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.11,
+      "output_per_mtok": 2.2,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 98304,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5-air": {
+      "input_per_mtok": 0.2,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 1.1,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 98304,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5-airx": {
+      "input_per_mtok": 1.1,
+      "cached_input_per_mtok": 0.22,
+      "output_per_mtok": 4.5,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 98304,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5-flash": {
+      "input_per_mtok": 0.0,
+      "cached_input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 98304,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5-x": {
+      "input_per_mtok": 2.2,
+      "cached_input_per_mtok": 0.45,
+      "output_per_mtok": 8.9,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 98304,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.5v": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.11,
+      "output_per_mtok": 1.8,
+      "modality": "llm",
+      "max_context": 64000,
+      "max_output": 16384,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.6": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.11,
+      "output_per_mtok": 2.2,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.6v": {
+      "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.05,
+      "output_per_mtok": 0.9,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 32768,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.6v-flash": {
+      "input_per_mtok": 0.0,
+      "cached_input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 32768,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.6v-flashx": {
+      "input_per_mtok": 0.04,
+      "cached_input_per_mtok": 0.004,
+      "output_per_mtok": 0.4,
+      "modality": "llm",
+      "max_context": 128000,
+      "max_output": 32768,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.7": {
+      "input_per_mtok": 0.6,
+      "cached_input_per_mtok": 0.11,
+      "output_per_mtok": 2.2,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.7-flash": {
+      "input_per_mtok": 0.0,
+      "cached_input_per_mtok": 0.0,
+      "output_per_mtok": 0.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-4.7-flashx": {
+      "input_per_mtok": 0.07,
+      "cached_input_per_mtok": 0.01,
+      "output_per_mtok": 0.4,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5": {
+      "input_per_mtok": 1.0,
+      "cached_input_per_mtok": 0.2,
+      "output_per_mtok": 3.2,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5-turbo": {
+      "input_per_mtok": 1.2,
+      "cached_input_per_mtok": 0.24,
+      "output_per_mtok": 4.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5.1": {
+      "input_per_mtok": 1.4,
+      "cached_input_per_mtok": 0.26,
+      "output_per_mtok": 4.4,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5.2": {
+      "input_per_mtok": 1.4,
+      "cached_input_per_mtok": 0.26,
+      "output_per_mtok": 4.4,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5v-turbo": {
+      "input_per_mtok": 1.2,
+      "cached_input_per_mtok": 0.24,
+      "output_per_mtok": 4.0,
+      "modality": "llm",
+      "max_context": 200000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-ocr": {
+      "input_per_mtok": 0.03,
+      "output_per_mtok": 0.03,
+      "modality": "llm",
+      "input_modalities": [
+        "image",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
     },
     "gpt-3.5-turbo": {
       "input_per_mtok": 0.5,
@@ -585,6 +1037,32 @@
       "modality": "llm",
       "max_context": 1048576,
       "supports_reasoning": true
+    },
+    "llama-3.1-8b-instant": {
+      "input_per_mtok": 0.05,
+      "output_per_mtok": 0.08,
+      "modality": "llm",
+      "max_context": 131072,
+      "max_output": 131072,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "llama-3.3-70b-versatile": {
+      "input_per_mtok": 0.59,
+      "output_per_mtok": 0.79,
+      "modality": "llm",
+      "max_context": 131072,
+      "max_output": 32768,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
     },
     "magistral-medium": {
       "input_per_mtok": 2.0,
