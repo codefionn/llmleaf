@@ -11,8 +11,8 @@ use futures::{stream, StreamExt};
 use llmleaf_model::{
     collect_chunks, AudioChunk, AudioStream, BatchCounts, BatchHandle, BatchItem, BatchOutcome,
     BatchResult, BatchResultStream, BatchSpec, BatchStatus, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
-    SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
+    EmbeddingResponse, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse,
+    ResponseStream, SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, RealtimeParams, RealtimePeer};
 use serde_json::{json, Map, Value};
@@ -108,6 +108,29 @@ const CEREBRAS_PUBLIC_MODELS_URL: &str = "https://api.cerebras.ai/public/v1/mode
 /// DeepInfra's public rich catalog is not mounted below its OpenAI-compatible `/v1/openai` base.
 /// It needs no authentication and returns a bare array whose model identifier is `model_name`.
 const DEEPINFRA_PUBLIC_MODELS_URL: &str = "https://api.deepinfra.com/models/list";
+
+/// Models callable through the GLM Coding Plan's OpenAI-compatible endpoint. Z.AI does not expose a
+/// usable `/models` endpoint there, so keep its documented catalog at the provider edge. GLM-5.2 and
+/// GLM-5.1 remain callable compatibility IDs that Z.AI automatically routes to GLM-5.3.
+///
+/// Source (checked 2026-08-14): <https://docs.z.ai/devpack/overview>
+const ZAI_CODING_MODELS: &[&str] = &["glm-5.3", "glm-5-turbo", "glm-4.7", "glm-5.2", "glm-5.1"];
+
+fn documented_models(brand: &str) -> Option<Vec<ModelInfo>> {
+    let ids = match brand {
+        "zai-coding" => ZAI_CODING_MODELS,
+        _ => return None,
+    };
+    Some(
+        ids.iter()
+            .map(|id| {
+                let mut info = ModelInfo::new(*id);
+                info.modality = Some(Modality::Llm);
+                info
+            })
+            .collect(),
+    )
+}
 
 /// The per-brand quirk table. Endpoints are *defaults*: an operator may override `endpoint` in config.
 #[derive(Clone, Copy, Debug)]
@@ -1446,8 +1469,12 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
-        // Only brands with a confirmed `GET /models` enumerate; others stay Unsupported so the listing
-        // surface shows their namespace as non-enumerable rather than guessing a catalog.
+        // Prefer a provider's documented static catalog when no usable listing endpoint exists.
+        if let Some(models) = documented_models(self.brand.name) {
+            return Ok(models);
+        }
+        // Only remaining brands with a confirmed `GET /models` enumerate; others stay Unsupported so
+        // the listing surface shows their namespace as non-enumerable rather than guessing a catalog.
         if !self.brand.models_api {
             return Err(ModelError::Unsupported(format!(
                 "provider '{}' does not list models",
@@ -2329,8 +2356,8 @@ mod tests {
         assert_eq!(map_batch_status("Expired"), BatchStatus::Expired);
     }
 
-    #[test]
-    fn zai_coding_plan_serves_from_its_dedicated_base() {
+    #[tokio::test]
+    async fn zai_coding_plan_serves_from_its_dedicated_base_and_lists_documented_models() {
         // The GLM Coding Plan subscription is its own kind because the endpoint is the difference:
         // coding-plan keys serve ONLY at /api/coding/paas/v4. Everything else matches `zai`.
         let p = OpenAiCompatProvider::for_kind("zai-coding", &crate::transport::Transports::fake())
@@ -2340,6 +2367,18 @@ mod tests {
         let brand = Brand::for_kind("zai-coding").unwrap();
         assert_eq!(brand.max_tokens_field, "max_tokens");
         assert!(!brand.models_api);
+
+        let models = p.models(&ProviderCx::default()).await.unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["glm-5.3", "glm-5-turbo", "glm-4.7", "glm-5.2", "glm-5.1"]
+        );
+        assert!(models
+            .iter()
+            .all(|model| model.modality == Some(Modality::Llm)));
     }
 
     #[test]

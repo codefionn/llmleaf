@@ -74,6 +74,12 @@ thinking-token count.
    its documented 1M context, 128K maximum output, and reasoning support, but
    all three token-rate fields remain absent so `cost_usd` returns `None`.
 
+   The `zai-coding` provider separately advertises the Coding Plan's documented
+   OpenAI-compatible catalog: `glm-5.3`, `glm-5-turbo`, and `glm-4.7`, plus the
+   callable `glm-5.2` and `glm-5.1` compatibility IDs that Z.AI automatically
+   routes to GLM-5.3. This is a static availability catalog because the Coding
+   Plan endpoint has no usable model-list API ([Coding Plan overview](https://docs.z.ai/devpack/overview)).
+
 2. **The lists do not line up perfectly.**  `autoglm-phone-multilingual` is
    accepted by the vision chat schema, but has neither price nor context on
    the pricing/model-matrix pages.  Retain it only if the collector wants
