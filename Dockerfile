@@ -19,7 +19,7 @@
 # TARGETPLATFORM to the correct Rust target triple and C toolchain. The output is
 # verified static before being copied into scratch.
 
-ARG RUST_VERSION=1.90
+ARG RUST_VERSION=1.95
 ARG ALPINE_VERSION=3.22
 ARG XX_VERSION=1.8.0
 ARG APP_NAME=llmleaf

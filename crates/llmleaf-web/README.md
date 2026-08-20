@@ -1,8 +1,9 @@
 # llmleaf-web
 
 The **control-plane app for humans** — a [Leptos](https://leptos.dev) full-stack (SSR) application,
-served by axum. It is a *separate component* from the llmleaf core (SOUL.md, "Web server"): the core
-never depends on it, and it has no privileged backdoor into the core.
+served by Axum on Tokio. It is a *separate component* from the Compio/Cyper llmleaf data plane
+(SOUL.md, "Web server"): the core never depends on it, and it has no privileged backdoor into the
+core.
 
 It is the operator-facing other half of llmleaf's **inverted control plane**. The core is always the
 client — it *pulls* what it needs and *pushes* what it produces. This app:

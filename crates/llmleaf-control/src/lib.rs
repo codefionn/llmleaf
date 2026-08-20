@@ -69,7 +69,7 @@ pub fn build_interceptor(cfg: &ControlConfig) -> Option<Arc<dyn Interceptor>> {
     }
     let auth = cfg.resolve_auth(hook.auth.as_deref(), hook.credential.as_ref());
     Some(Arc::new(HttpInterceptor::new(
-        reqwest::Client::new(),
+        new_http_client(),
         hook,
         auth,
     )))
@@ -78,7 +78,7 @@ pub fn build_interceptor(cfg: &ControlConfig) -> Option<Arc<dyn Interceptor>> {
 /// Handles to the spawned background tasks. After cancelling the shared [`CancellationToken`], await
 /// [`ControlHandles::join`] to drain them on shutdown.
 pub struct ControlHandles {
-    handles: Vec<tokio::task::JoinHandle<()>>,
+    handles: Vec<compio::runtime::JoinHandle<()>>,
 }
 
 impl ControlHandles {
@@ -102,7 +102,7 @@ pub async fn start(
     topology: Option<TopologyTarget>,
     shutdown: CancellationToken,
 ) -> ControlHandles {
-    let http = reqwest::Client::new();
+    let http = new_http_client();
     let mut handles = Vec::new();
 
     if let Some(topo_cfg) = &cfg.topology {
@@ -156,25 +156,67 @@ pub async fn start(
 
 /// Shared HTTP GET → JSON helper. Optional resolved auth, per-request timeout, non-2xx ⇒ `Err`.
 pub(crate) async fn get_json<T: serde::de::DeserializeOwned>(
-    http: &reqwest::Client,
+    http: &cyper::Client,
     url: &str,
     auth: Option<&ResolvedAuth>,
     timeout: Duration,
-) -> Result<T, reqwest::Error> {
-    let req = apply_auth(http.get(url).timeout(timeout), auth);
-    req.send().await?.error_for_status()?.json::<T>().await
+) -> Result<T, String> {
+    let req =
+        apply_auth(http.get(url).map_err(|e| e.to_string())?, auth).map_err(|e| e.to_string())?;
+    let response = compio::time::timeout(timeout, req.send())
+        .await
+        .map_err(|_| "control request timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "control request failed with HTTP {}",
+            response.status()
+        ));
+    }
+    response.json::<T>().await.map_err(|e| e.to_string())
 }
 
 /// Attach a resolved control-plane auth to an outbound request: a `bearer` as `Authorization: Bearer
 /// <token>`, a `header` scheme as its `<name>: <value>`. `None` ⇒ the request goes out unauthenticated.
-/// The single place the core's [`ResolvedAuth`] meets reqwest, keeping `llmleaf-core` HTTP-free.
+/// The single place the core's [`ResolvedAuth`] meets the HTTP client, keeping `llmleaf-core` HTTP-free.
 pub(crate) fn apply_auth(
-    req: reqwest::RequestBuilder,
+    req: cyper::RequestBuilder,
     auth: Option<&ResolvedAuth>,
-) -> reqwest::RequestBuilder {
+) -> cyper::Result<cyper::RequestBuilder> {
     match auth {
         Some(ResolvedAuth::Bearer(token)) => req.bearer_auth(token),
         Some(ResolvedAuth::Header { name, value }) => req.header(name, value),
-        None => req,
+        None => Ok(req),
+    }
+}
+
+pub(crate) fn new_http_client() -> cyper::Client {
+    let _ = compio::rustls::crypto::ring::default_provider().install_default();
+    cyper::Client::new().expect("cyper client configuration is valid")
+}
+
+/// Await a `Send` request future with a Compio timer while retaining the `Send` contract required by
+/// the interceptor and OAuth traits. Compio timers are local to their runtime, so the timer runs on a
+/// short-lived local runtime and signals the caller through a runtime-neutral oneshot channel.
+pub(crate) async fn with_timeout<T>(
+    timeout: Duration,
+    request: impl std::future::Future<Output = cyper::Result<T>> + Send,
+) -> Result<T, String>
+where
+    T: Send,
+{
+    let (timer_tx, mut timer_rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("llmleaf-control-timeout".to_string())
+        .spawn(move || {
+            if let Ok(runtime) = compio::runtime::Runtime::new() {
+                runtime.block_on(compio::time::sleep(timeout));
+            }
+            let _ = timer_tx.send(());
+        })
+        .map_err(|e| format!("failed to start control timeout: {e}"))?;
+    tokio::select! {
+        result = request => result.map_err(|e| e.to_string()),
+        _ = &mut timer_rx => Err("control request timed out".to_string()),
     }
 }

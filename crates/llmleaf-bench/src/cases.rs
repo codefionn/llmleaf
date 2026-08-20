@@ -780,7 +780,7 @@ fn register_lookups(suite: &mut Suite, state: &llmleaf_core::AppState) {
             "ratelimit/admit",
             || (),
             move |()| {
-                let guard = rl.try_admit("bench", "model", tokio::time::Instant::now());
+                let guard = rl.try_admit("bench", "model", std::time::Instant::now());
                 std::hint::black_box(&guard);
             },
         );

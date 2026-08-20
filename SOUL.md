@@ -95,9 +95,14 @@ These are decision rules, not aspirations. Apply them literally.
 
 Two planes, strictly separated:
 
-**Data plane — the core.** The proxy itself. Compat surfaces (OpenAI, OpenRouter) on the front,
-extension boundary (traits + WASM) on the back, routing/fallback/caching/key-enforcement in
-between, usage events pushed out the side. Small enough to hold in your head.
+**Data plane — the core.** The proxy itself, implemented on Compio/Cyper: ingress/listening,
+control-plane background I/O, and provider HTTP all run on Compio. Compat surfaces (OpenAI,
+OpenRouter) are on the front, the extension boundary (traits + WASM) is on the back,
+routing/fallback/caching/key-enforcement sits between, and usage events push out the side. The
+separate `llmleaf-web` control-plane application remains Tokio/Axum. Where Axum's `Send` handler
+futures require it, rate-limit backoff and native upstream WebSockets use dedicated Compio runtime
+threads bridged through Tokio synchronization channels; this is a compatibility boundary, not
+Tokio reactor or I/O in the data plane. Small enough to hold in your head.
 
 **Control plane — everything else, reached outbound.** The core is always the client: it *pulls*
 what it needs (identity, verdicts) and *pushes* what it produces (usage). It never exposes an

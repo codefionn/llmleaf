@@ -20,6 +20,8 @@ llmleaf-control = { workspace = true, features = ["oauth"] }
 
 tokio.workspace = true
 tokio-util.workspace = true
+compio.workspace = true
+libc.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

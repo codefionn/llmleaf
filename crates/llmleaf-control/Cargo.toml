@@ -11,7 +11,8 @@ llmleaf-core.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true
-reqwest.workspace = true
+compio.workspace = true
+cyper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

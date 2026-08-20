@@ -3,15 +3,17 @@
 Async Rust SDK for the [llmleaf](https://github.com/codefionn/llmleaf) LLM proxy.
 
 llmleaf speaks OpenAI/OpenRouter-shaped JSON over HTTP, so the public types are plain `serde`
-structs and the transport is `reqwest` over `rustls` (no system OpenSSL). The
-[proto](../proto/llmleaf/v1/llmleaf.proto) is the source of truth: `build.rs` compiles it with
-`prost-build` on every build and exposes the messages under `pb` as a codegen check — the
+structs and the transport is `reqwest` over `rustls` by default, or native Compio support when
+the `compio` feature is selected. The [proto](../proto/llmleaf/v1/llmleaf.proto) is the source
+of truth; its generated Rust model is checked in and exposed under `pb` — the
 serde types at the crate root are what you actually use.
 
 ## Install
 
 This crate is its own standalone workspace inside the monorepo (intentionally not a member of
 the root workspace). Depend on it by path or git:
+
+The MSRV is Rust 1.85.
 
 ```toml
 [dependencies]
@@ -20,7 +22,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
 ```
 
-You need `protoc` (libprotoc 35) on `PATH` at build time — prost shells out to it.
+No build-time `protoc` installation is needed.
 
 ## Example
 
@@ -130,11 +132,30 @@ cargo run --example basic
 It lists models, does a non-streaming chat, streams one, then does the same pair over the
 Responses dialect (printing deltas live).
 
+## Runtimes
+
+Tokio is the default transport and keeps the `ClientBuilder::http_client(reqwest::Client)` API.
+For a Compio-only application, disable default features and enable `compio`:
+
+```toml
+llmleaf-client = { version = "0.1", default-features = false, features = ["compio"] }
+compio = { version = "0.16", features = ["macros"] }
+```
+
+Both features can be enabled together in a dependency graph; Tokio remains the selected default
+backend.
+
+The `compio` example runs with:
+
+```sh
+cargo run --example compio --no-default-features --features compio
+```
+
 ## Regenerate from the proto
 
-Codegen is wired into `build.rs`, so a build *is* a regeneration — after editing
-[`../proto/llmleaf/v1/llmleaf.proto`](../proto/llmleaf/v1/llmleaf.proto), just rebuild
-(`cargo build`, or `make gen-rust` from `clients/`).
+Consumers do not need `protoc`: `src/gen/llmleaf/v1/llmleaf.v1.rs` is checked in. After editing
+[`../proto/llmleaf/v1/llmleaf.proto`](../proto/llmleaf/v1/llmleaf.proto), contributors run
+`scripts/gen.sh`, which requires `protoc` and `protoc-gen-prost` 0.5.0 on `PATH`.
 
 ## Notes
 

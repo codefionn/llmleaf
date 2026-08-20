@@ -37,3 +37,36 @@ jobs:
           set: |
             *.cache-from=type=gha
             *.cache-to=type=gha,mode=max
+
+  rust-client:
+    name: Rust client · ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/rust
+    # The generated Prost source is checked in. An invalid PROTOC explicitly
+    # proves that normal consumers and the package verification build do not
+    # run code generation or require a system protoc installation.
+    env:
+      PROTOC: /nonexistent/protoc
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: Tokio (default)
+            command: cargo check --lib && cargo test
+          - check: Compio only
+            command: cargo check --lib --no-default-features --features compio
+          - check: all features
+            command: cargo check --all-features
+          - check: package (no protoc)
+            command: cargo package --allow-dirty
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: ${{ matrix.check }}
+        run: ${{ matrix.command }}

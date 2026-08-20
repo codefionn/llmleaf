@@ -124,11 +124,16 @@ async fn start_server() -> (SocketAddr, EventBus) {
     let state = build_state(&config, Arc::new(registry)).unwrap();
     let events = state.events.clone();
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let runtime = compio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let listener = compio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            cyper_axum::serve(listener, app).await.unwrap();
+        });
     });
+    let addr = addr_rx.await.unwrap();
     (addr, events)
 }
 
@@ -424,7 +429,12 @@ impl Provider for MockRealtime {
         match self.mode {
             RtMode::FailImmediately => Err(ModelError::Unavailable("native realtime down".into())),
             RtMode::SleepThenFail => {
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(150));
+                    let _ = tx.send(());
+                });
+                let _ = rx.await;
                 Err(ModelError::Unavailable("native realtime down".into()))
             }
             RtMode::FrameThenFail => {
@@ -491,11 +501,16 @@ async fn start_native(mode: RtMode) -> (SocketAddr, EventBus, Arc<Mutex<Vec<Chat
     let state = build_state(&config, Arc::new(registry)).unwrap();
     let events = state.events.clone();
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+    let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let runtime = compio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let listener = compio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            cyper_axum::serve(listener, app).await.unwrap();
+        });
     });
+    let addr = addr_rx.await.unwrap();
     (addr, events, chats)
 }
 

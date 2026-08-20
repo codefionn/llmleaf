@@ -25,7 +25,7 @@ variable "TAG" {
 }
 
 variable "RUST_VERSION" {
-  default = "1.90"
+  default = "1.95"
 }
 
 # Tags + OCI labels. In CI, docker/metadata-action emits a bake file that REDEFINES this

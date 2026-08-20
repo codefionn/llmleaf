@@ -23,7 +23,7 @@ members = ["crates/*"]
 edition = "2021"
 authors = ["Fionn Langhans <fionnlanghans@codefionn.eu>"]
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.95"
 repository = "https://github.com/codefionn/llmleaf"
 
 [workspace.dependencies]
@@ -36,6 +36,10 @@ llmleaf-control = { path = "crates/llmleaf-control" }
 
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+compio = { version = "0.19", default-features = false, features = ["io-uring", "polling", "runtime", "macros", "net", "time", "signal", "ws", "rustls", "ring"] }
+cyper = { version = "0.9", default-features = false, features = ["json", "rustls", "stream", "multipart", "sync"] }
+cyper-axum = { version = "0.9", features = ["ws"] }
+libc = "0.2"
 axum = { version = "0.8", features = ["multipart", "ws"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "multipart"] }

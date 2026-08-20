@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use compio::runtime::JoinHandle;
+use compio::time::interval;
 use llmleaf_core::{IntrospectionConfig, OAuthConfig, OAuthVerifier, TokenIntrospector};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use crate::get_json;
+use crate::{get_json, new_http_client, with_timeout};
 
 /// Build the HTTP client, wire the introspector (when configured), then prime + spawn the JWKS pull.
 /// Priming is synchronous (the caller awaits this before opening the listener) so a cold node fails
@@ -28,7 +28,7 @@ pub async fn start_oauth(
     verifier: Arc<OAuthVerifier>,
     shutdown: CancellationToken,
 ) -> Vec<JoinHandle<()>> {
-    let http = reqwest::Client::new();
+    let http = new_http_client();
     let mut handles = Vec::new();
 
     if let Some(intro) = &cfg.introspection {
@@ -53,7 +53,7 @@ pub async fn start_oauth(
 /// Fail posture mirrors the identity pull: a failed poll keeps the last-good keys; a cold node that
 /// cannot prime validates nothing (fail closed), unless an inline `[oauth].jwks` seeded the verifier.
 struct JwksRefresher {
-    http: reqwest::Client,
+    http: cyper::Client,
     issuer: String,
     /// Explicit endpoint; `None` ⇒ discovered from `issuer` on each fetch until it resolves.
     jwks_uri: Option<String>,
@@ -71,7 +71,7 @@ struct OidcDiscovery {
 
 impl JwksRefresher {
     fn new(
-        http: reqwest::Client,
+        http: cyper::Client,
         cfg: &OAuthConfig,
         verifier: Arc<OAuthVerifier>,
         shutdown: CancellationToken,
@@ -98,9 +98,8 @@ impl JwksRefresher {
     }
 
     fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             let mut tick = interval(self.interval);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             tick.tick().await; // discard the immediate tick; prime() already did the first pull
             loop {
                 tokio::select! {
@@ -150,7 +149,7 @@ impl JwksRefresher {
 /// RFC 7662 introspector: POSTs `token=<jwt>` form-encoded and trusts the IdP's `active` field. The core
 /// caches each answer for `cache_ttl_secs`, so this is not called per request once a token is warm.
 struct HttpIntrospector {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     credential: Option<String>,
     timeout: Duration,
@@ -163,7 +162,7 @@ struct IntrospectionResponse {
 }
 
 impl HttpIntrospector {
-    fn new(http: reqwest::Client, cfg: &IntrospectionConfig) -> Self {
+    fn new(http: cyper::Client, cfg: &IntrospectionConfig) -> Self {
         HttpIntrospector {
             http,
             url: cfg.url.clone(),
@@ -182,21 +181,20 @@ impl TokenIntrospector for HttpIntrospector {
         let mut req = self
             .http
             .post(&self.url)
-            .timeout(self.timeout)
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
+            .map_err(|e| e.to_string())?
+            .header("content-type", "application/x-www-form-urlencoded")
+            .map_err(|e| e.to_string())?
             .body(format!("token={token}"));
         if let Some(c) = &self.credential {
-            req = req.bearer_auth(c);
+            req = req.bearer_auth(c).map_err(|e| e.to_string())?;
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?;
+        let resp = with_timeout(self.timeout, req.send()).await?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "introspection request failed with HTTP {}",
+                resp.status()
+            ));
+        }
         let body: IntrospectionResponse = resp.json().await.map_err(|e| e.to_string())?;
         Ok(body.active)
     }

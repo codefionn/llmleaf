@@ -1,7 +1,7 @@
 //! The provider transport seam — the "client of the provider clients".
 //!
 //! Every first-party provider speaks its upstream over HTTP (and, for native realtime, a WebSocket).
-//! Historically each built a `reqwest::RequestBuilder` directly and owned a `reqwest::Client`, so the
+//! Historically each built a concrete HTTP request directly and owned its client, so the
 //! real request-mapping and response-parsing code could only run against a live network. This module
 //! lifts that boundary onto traits: [`HttpTransport`] (request → response) and [`RealtimeTransport`]
 //! (a pumped WebSocket session). Production wires the real [`ReqwestTransport`] +
@@ -60,7 +60,7 @@ impl HttpRequest {
         }
     }
 
-    /// Add a header (chainable). Mirrors `reqwest::RequestBuilder::header`. Takes `AsRef<str>` so a
+    /// Add a header (chainable). Mirrors a conventional HTTP request builder. Takes `AsRef<str>` so a
     /// `&String` credential, a `&str`, or a `String` all work at the call site without conversion.
     pub fn header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         self.headers
@@ -94,7 +94,7 @@ pub enum HttpBody {
     Multipart(MultipartForm),
 }
 
-/// A transport-neutral multipart form (the reqwest impl converts it to `reqwest::multipart::Form`).
+/// A transport-neutral multipart form (the production implementation converts it to `cyper::multipart::Form`).
 #[derive(Debug, Clone, Default)]
 pub struct MultipartForm {
     pub parts: Vec<MultipartPart>,
@@ -146,7 +146,7 @@ pub enum MultipartPart {
 
 /// A streaming response body. Items are already mapped to the canonical [`ModelError`] (the transport
 /// converts a mid-stream transport failure to [`ModelError::Unavailable`]), so the SSE/NDJSON/JSONL/audio
-/// consumers downstream see canonical errors only — never a `reqwest::Error`.
+/// consumers downstream see canonical errors only — never a client-specific error.
 pub type BytesStream = Pin<Box<dyn Stream<Item = Result<Bytes, ModelError>> + Send>>;
 
 /// An executed response: status + headers + a streaming body. `post_json` collects the body; streaming
@@ -210,7 +210,7 @@ pub struct Transports {
 }
 
 impl Transports {
-    /// The production transports: `reqwest` for HTTP, `tokio-tungstenite` for the realtime WebSocket.
+    /// The production transports: Compio-native HTTP and WebSocket clients.
     pub fn real() -> Self {
         Self {
             http: Arc::new(ReqwestTransport::new()),
@@ -219,21 +219,20 @@ impl Transports {
     }
 }
 
-/// The production HTTP transport: a shared `reqwest::Client`. The only place `reqwest` request/response
-/// types appear now (mirrored by `tokio-tungstenite` in [`crate::realtime_ws`]).
+/// The production HTTP transport: a shared Compio-compatible `cyper::Client`.
 pub struct ReqwestTransport {
-    client: reqwest::Client,
+    client: cyper::Client,
 }
 
 impl ReqwestTransport {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: cyper::Client::new().expect("cyper client configuration is valid"),
         }
     }
 
     /// Reuse a caller-built client (e.g. with custom timeouts/proxy).
-    pub fn with_client(client: reqwest::Client) -> Self {
+    pub fn with_client(client: cyper::Client) -> Self {
         Self { client }
     }
 }
@@ -250,14 +249,21 @@ impl HttpTransport for ReqwestTransport {
         let mut builder = match req.method {
             Method::Get => self.client.get(&req.url),
             Method::Post => self.client.post(&req.url),
-        };
+        }
+        .map_err(|e| ModelError::Unavailable(e.to_string()))?;
         for (name, value) in &req.headers {
-            builder = builder.header(name, value);
+            builder = builder
+                .header(name, value)
+                .map_err(|e| ModelError::Unavailable(e.to_string()))?;
         }
         builder = match req.body {
             HttpBody::Empty => builder,
-            HttpBody::Json(ref v) => builder.json(v),
-            HttpBody::Multipart(form) => builder.multipart(to_reqwest_form(form)),
+            HttpBody::Json(ref v) => builder
+                .json(v)
+                .map_err(|e| ModelError::Unavailable(e.to_string()))?,
+            HttpBody::Multipart(form) => builder
+                .multipart(to_reqwest_form(form))
+                .map_err(|e| ModelError::Unavailable(e.to_string()))?,
         };
 
         let resp = builder
@@ -286,11 +292,11 @@ impl HttpTransport for ReqwestTransport {
     }
 }
 
-/// Convert the neutral multipart form to a `reqwest::multipart::Form`. The provider passes known-good
+/// Convert the neutral multipart form to a `cyper::multipart::Form`. The provider passes known-good
 /// MIME strings; if one is somehow rejected we fall back to a part without an explicit MIME rather than
 /// panicking (the body still rides with its filename).
-fn to_reqwest_form(form: MultipartForm) -> reqwest::multipart::Form {
-    let mut out = reqwest::multipart::Form::new();
+fn to_reqwest_form(form: MultipartForm) -> cyper::multipart::Form {
+    let mut out = cyper::multipart::Form::new();
     for part in form.parts {
         match part {
             MultipartPart::Text { name, value } => out = out.text(name, value),
@@ -301,7 +307,7 @@ fn to_reqwest_form(form: MultipartForm) -> reqwest::multipart::Form {
                 data,
             } => {
                 let make_part = || {
-                    let mut p = reqwest::multipart::Part::bytes(data.to_vec());
+                    let mut p = cyper::multipart::Part::bytes(data.to_vec());
                     if let Some(fname) = &filename {
                         p = p.file_name(fname.clone());
                     }
@@ -309,7 +315,9 @@ fn to_reqwest_form(form: MultipartForm) -> reqwest::multipart::Form {
                 };
                 let mut p = make_part();
                 if let Some(m) = &mime {
-                    p = p.mime_str(m).unwrap_or_else(|_| make_part());
+                    if let Ok(mime) = m.parse() {
+                        p = p.mime(mime);
+                    }
                 }
                 out = out.part(name, p);
             }

@@ -54,8 +54,13 @@ pw_hash = "$2y$04$IcVq6nhz5Tf85lBpWclgKeDjWxWMHlIXLE696.T7m9Eg12HekWFJO"
 name = "local-dev"
 "#;
 
-#[tokio::main]
+#[compio::main]
 async fn main() -> ExitCode {
+    // Compio's rustls transport is built with the `ring` provider. Install it before config loading
+    // or any Cyper/WebSocket client can construct a TLS configuration; other workspace members may
+    // enable a second rustls provider through development-only dependencies.
+    let _ = compio::rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -151,19 +156,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// Resolve when the process should begin shutting down: ctrl-c on any platform, plus SIGTERM on unix.
 async fn wait_for_shutdown() {
     let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
+        let _ = compio::signal::ctrl_c().await;
     };
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = ctrl_c => {}
-                    _ = term.recv() => {}
-                }
-            }
-            Err(_) => ctrl_c.await,
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = compio::signal::unix::signal(libc::SIGTERM) => {}
         }
     }
     #[cfg(not(unix))]

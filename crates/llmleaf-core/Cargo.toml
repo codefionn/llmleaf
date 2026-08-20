@@ -12,6 +12,8 @@ llmleaf-provider.workspace = true
 llmleaf-pricing.workspace = true
 
 tokio.workspace = true
+compio.workspace = true
+cyper-axum.workspace = true
 axum.workspace = true
 tower-http.workspace = true
 # For the `Interceptor` trait (object-safe async). The trait lives in the core; its HTTP implementation

@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn parse_line_skips_blanks_and_maps_json() {
-        // A reqwest::Response is awkward to fabricate, so exercise the per-line mapping directly;
+        // A concrete streaming response is awkward to fabricate, so exercise the per-line mapping directly;
         // `jsonl_result_stream`'s framing is covered end-to-end by the core's batch e2e test.
         let parse = |v: Value| {
             v.get("custom_id")

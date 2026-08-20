@@ -1,6 +1,4 @@
-//! Prost-generated typed model, compiled from `proto/llmleaf/v1/llmleaf.proto` by
-//! `build.rs`. This is the "real codegen" proof: the proto genuinely compiles into the
-//! crate and the generated messages are available here as a typed mirror.
+//! Prost-generated typed model from `proto/llmleaf/v1/llmleaf.proto`.
 //!
 //! These types are NOT what the SDK serialises onto the wire — prost emits
 //! protobuf-binary-shaped types (oneofs, `i32` enums, no OpenAI JSON casing). The wire
@@ -10,4 +8,4 @@
 #![allow(missing_docs)]
 #![allow(rustdoc::all)]
 
-include!(concat!(env!("OUT_DIR"), "/llmleaf.v1.rs"));
+include!("gen/llmleaf/v1/llmleaf.v1.rs");

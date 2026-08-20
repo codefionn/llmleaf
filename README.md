@@ -112,12 +112,15 @@ Official client SDKs for 6 languages live in [`clients/`](clients/).
 
 ## Architecture
 
-Two strictly separated planes. The **core** (data plane) is the proxy; the **control plane** is
-reached only outbound — the core pulls identity/verdicts/topology and pushes usage, never the
-reverse. A pulled topology (`[control.topology]`) lets the controller also serve provider and route
-configuration, diffed against the previous pull on every refresh so resources are added, updated,
-and removed incrementally on top of the immutable config file. See [SOUL.md](SOUL.md) for the full
-design constitution. To build a compatible controller, see the
+Two strictly separated planes. The **core** (data plane) is a Compio/Cyper server: ingress,
+control-plane background I/O, and provider HTTP run on Compio. The separate `llmleaf-web`
+control-plane app intentionally remains Tokio/Axum; its narrow compatibility bridges never put a
+Tokio reactor or I/O loop in the data plane. The control plane is reached only outbound — the core
+pulls identity/verdicts/topology and pushes usage, never the reverse. A pulled topology
+(`[control.topology]`) lets the controller also serve provider and route configuration, diffed
+against the previous pull on every refresh so resources are added, updated, and removed
+incrementally on top of the immutable config file. See [SOUL.md](SOUL.md) for the full design
+constitution. To build a compatible controller, see the
 [external control-plane implementation guide](docs/external-control-plane.md).
 
 ```mermaid

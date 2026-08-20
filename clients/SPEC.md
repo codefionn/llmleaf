@@ -5,6 +5,14 @@ generated from [`proto/llmleaf/v1/llmleaf.proto`](proto/llmleaf/v1/llmleaf.proto
 document describes how those types map onto the **OpenAI/OpenRouter-shaped JSON over
 HTTP** that the llmleaf core actually speaks. The wire is JSON, never protobuf-binary.
 
+## Rust runtime and generated model
+
+The Rust client uses Tokio by default and also supports a Compio-only build with
+`--no-default-features --features compio`. Its Prost-generated model is checked in at
+`rust/src/gen/llmleaf/v1/llmleaf.v1.rs` and included by the crate, so ordinary builds, package
+verification, and downstream consumers do not need `protoc`. Regeneration is a contributor task
+when the proto changes.
+
 ## Base
 
 - **Base URL**: operator-provided, e.g. `https://gateway.example.com`. All paths below are
@@ -145,7 +153,8 @@ The three return a `BatchHandle`.
 
 ## What every SDK must ship
 
-1. Generated types from the proto (real codegen wired into the build — see each client README).
+1. Generated types from the proto. Clients may check generated output into their distribution;
+   the Rust SDK does so and must not require code generation or `protoc` for consumer builds.
 2. A `Client` constructed from `(baseUrl, apiKey, opts)` with a pluggable HTTP timeout and an
    optional `x-admin-token`.
 3. The ten calls above, with streaming chat and streaming responses surfaced idiomatically

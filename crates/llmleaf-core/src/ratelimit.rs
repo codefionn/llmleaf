@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::Instant;
 
 use crate::config::{ProviderConfig, RateLimitConfig};
 
@@ -237,9 +237,8 @@ impl RateGuard {
 
 /// A classic token bucket: `capacity` tokens of burst, refilling at `refill_per_sec`, lazily topped up
 /// against a monotonic clock on each access. Per-entry `Mutex` (not a shared `RwLock`) so contention is
-/// sharded per scope. Time is `tokio::time::Instant`, supplied by the caller — monotonic (no clock-skew
-/// handling), and controllable under `tokio::time::pause()` so the wait path is deterministically
-/// testable alongside the engine's `sleep`.
+/// sharded per scope. Time is `std::time::Instant`, supplied by the caller — monotonic and independent
+/// of wall-clock skew. Tests pass their own instants to keep the wait path deterministic.
 struct TokenBucket {
     capacity: f64,
     refill_per_sec: f64,

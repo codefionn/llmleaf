@@ -5,16 +5,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use compio::runtime::JoinHandle;
+use compio::time::interval;
 use llmleaf_core::{Envelope, ResolvedAuth, UsageSink};
 use serde::Serialize;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 /// Subscribes to the event bus, batches events, and POSTs `{"events": [Envelope, ...]}` to the sink.
 pub struct UsageReporter {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     auth: Option<ResolvedAuth>,
     flush_every: Duration,
@@ -31,7 +31,7 @@ struct UsageBatch<'a> {
 
 impl UsageReporter {
     pub fn new(
-        http: reqwest::Client,
+        http: cyper::Client,
         cfg: &UsageSink,
         auth: Option<ResolvedAuth>,
         rx: broadcast::Receiver<Arc<Envelope>>,
@@ -63,10 +63,9 @@ impl UsageReporter {
             shutdown,
         } = self;
 
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             let mut batch: Vec<Arc<Envelope>> = Vec::with_capacity(batch_max);
             let mut flush = interval(flush_every);
-            flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
@@ -102,7 +101,7 @@ impl UsageReporter {
 
 /// POST the current batch, then clear it. A failure drops the batch (the sink is downstream's problem).
 async fn send_batch(
-    http: &reqwest::Client,
+    http: &cyper::Client,
     url: &str,
     auth: Option<&ResolvedAuth>,
     timeout: Duration,
@@ -114,9 +113,24 @@ async fn send_batch(
     let body = UsageBatch {
         events: batch.iter().map(Arc::as_ref).collect(),
     };
-    let req = crate::apply_auth(http.post(url).timeout(timeout).json(&body), auth);
-    match req.send().await.and_then(|r| r.error_for_status()) {
-        Ok(_) => tracing::debug!(count = batch.len(), url = %url, "pushed usage batch"),
+    let result = async {
+        let req = crate::apply_auth(http.post(url).map_err(|e| e.to_string())?, auth)
+            .map_err(|e| e.to_string())?
+            .json(&body)
+            .map_err(|e| e.to_string())?;
+        let response = compio::time::timeout(timeout, req.send())
+            .await
+            .map_err(|_| "usage request timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err("usage sink returned a non-success status".to_string())
+        }
+    }
+    .await;
+    match result {
+        Ok(()) => tracing::debug!(count = batch.len(), url = %url, "pushed usage batch"),
         Err(e) => {
             tracing::warn!(error = %e, count = batch.len(), url = %url, "usage push failed; dropping batch")
         }

@@ -212,12 +212,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # build.rs runs prost-build → protoc, and `cargo publish` does a verify build,
-      # so protoc must be on PATH.
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # Prost output is checked in, so publishing performs the same normal
+      # consumer build that does not need protoc or release-time codegen.
 
       - name: Stamp version from tag
         run: sed -i -E "0,/^version = \".*\"/s//version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml

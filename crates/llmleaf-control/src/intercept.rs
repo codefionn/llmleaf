@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// A reqwest-backed [`Interceptor`]. Built from `[control.intercept]` config.
 pub struct HttpInterceptor {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     auth: Option<ResolvedAuth>,
     timeout: Duration,
@@ -46,7 +46,7 @@ enum InterceptResponse {
 }
 
 impl HttpInterceptor {
-    pub fn new(http: reqwest::Client, cfg: &InterceptHook, auth: Option<ResolvedAuth>) -> Self {
+    pub fn new(http: cyper::Client, cfg: &InterceptHook, auth: Option<ResolvedAuth>) -> Self {
         HttpInterceptor {
             http,
             url: cfg.url.clone(),
@@ -91,11 +91,23 @@ impl Interceptor for HttpInterceptor {
             model,
             payload,
         };
-        let req = crate::apply_auth(
-            self.http.post(&self.url).timeout(self.timeout).json(&body),
-            self.auth.as_ref(),
-        );
-        let resp = match req.send().await.and_then(|r| r.error_for_status()) {
+        let result = async {
+            let req = crate::apply_auth(
+                self.http.post(&self.url).map_err(|e| e.to_string())?,
+                self.auth.as_ref(),
+            )
+            .map_err(|e| e.to_string())?
+            .json(&body)
+            .map_err(|e| e.to_string())?;
+            let response = crate::with_timeout(self.timeout, req.send()).await?;
+            if response.status().is_success() {
+                Ok(response)
+            } else {
+                Err("interceptor returned a non-success status".to_string())
+            }
+        }
+        .await;
+        let resp = match result {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, url = %self.url, "interceptor call failed; applying on_error");
@@ -139,7 +151,7 @@ mod tests {
     }
 
     fn interceptor(h: InterceptHook) -> HttpInterceptor {
-        HttpInterceptor::new(reqwest::Client::new(), &h, None)
+        HttpInterceptor::new(crate::new_http_client(), &h, None)
     }
 
     #[test]

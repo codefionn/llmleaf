@@ -30,7 +30,7 @@ pub enum Error {
 
     /// An HTTP / transport-level failure (connection, TLS, timeout, …).
     #[error("http transport error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(String),
 
     /// A JSON body could not be (de)serialised.
     #[error("json error: {0}")]
@@ -65,3 +65,13 @@ pub(crate) struct ErrorBody {
 
 /// A convenience result alias.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(feature = "tokio")]
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self { Self::Http(error.to_string()) }
+}
+
+#[cfg(feature = "compio")]
+impl From<cyper::Error> for Error {
+    fn from(error: cyper::Error) -> Self { Self::Http(error.to_string()) }
+}

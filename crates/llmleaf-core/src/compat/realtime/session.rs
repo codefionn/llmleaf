@@ -14,7 +14,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use cyper_axum::ws::{Message as WsMessage, WebSocket};
 use futures::StreamExt;
 use llmleaf_model::{
     ChatRequest, FinishReason, Message, Role, StreamChunk, ToolChoice, ToolDef, Usage,
@@ -274,6 +274,7 @@ pub async fn run_bridge_replaying(
             WsMessage::Binary(_) => IncomingFrame::Binary,
             WsMessage::Close(_) => break,
             WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+            WsMessage::Frame(_) => continue,
         };
         if handle_frame(
             &mut socket,

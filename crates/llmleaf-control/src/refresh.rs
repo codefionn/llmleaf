@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use compio::runtime::JoinHandle;
+use compio::time::interval;
 use llmleaf_core::{
     Engine, IdentityInput, IdentitySource, KeyStore, LimitsSource, ProviderConfig, ProviderFactory,
     ResolvedAuth, RouteConfig, TopologySource, Verdict,
 };
 use serde::Deserialize;
-use tokio::task::JoinHandle;
-use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::get_json;
@@ -26,7 +26,7 @@ use crate::get_json;
 /// Identities are untouched. Fail-open: a failed poll keeps the last-good overlay; a cold node simply
 /// has no overlay yet (every authenticated key runs unrestricted).
 pub struct VerdictRefresher {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     auth: Option<ResolvedAuth>,
     interval: Duration,
@@ -43,7 +43,7 @@ struct VerdictResponse {
 
 impl VerdictRefresher {
     pub fn new(
-        http: reqwest::Client,
+        http: cyper::Client,
         cfg: &LimitsSource,
         auth: Option<ResolvedAuth>,
         keys: Arc<KeyStore>,
@@ -62,9 +62,8 @@ impl VerdictRefresher {
 
     /// Spawn the poll loop. The first tick fires immediately, so verdicts land shortly after startup.
     pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             let mut tick = interval(self.interval);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = self.shutdown.cancelled() => break,
@@ -102,7 +101,7 @@ impl VerdictRefresher {
 /// and a cold node runs from the config base alone; a *successful* poll with empty lists deliberately
 /// removes every dynamic resource (the controller declared none). The file base is never touched.
 pub struct TopologyRefresher {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     auth: Option<ResolvedAuth>,
     interval: Duration,
@@ -123,7 +122,7 @@ struct TopologyResponse {
 
 impl TopologyRefresher {
     pub fn new(
-        http: reqwest::Client,
+        http: cyper::Client,
         cfg: &TopologySource,
         auth: Option<ResolvedAuth>,
         engine: Arc<Engine>,
@@ -145,9 +144,8 @@ impl TopologyRefresher {
     /// Spawn the poll loop. The first tick fires immediately, so a pulled topology lands shortly after
     /// startup (it is availability-additive, so unlike identity there is nothing to prime fail-closed).
     pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             let mut tick = interval(self.interval);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = self.shutdown.cancelled() => break,
@@ -205,7 +203,7 @@ impl TopologyRefresher {
 /// identity cache through an outage. There is no safe "fail open" for authentication, so a failed pull
 /// never widens the roster.
 pub struct IdentityRefresher {
-    http: reqwest::Client,
+    http: cyper::Client,
     url: String,
     auth: Option<ResolvedAuth>,
     interval: Duration,
@@ -233,7 +231,7 @@ struct KeyDto {
 
 impl IdentityRefresher {
     pub fn new(
-        http: reqwest::Client,
+        http: cyper::Client,
         cfg: &IdentitySource,
         auth: Option<ResolvedAuth>,
         keys: Arc<KeyStore>,
@@ -268,9 +266,8 @@ impl IdentityRefresher {
     /// Spawn the poll loop. The immediate first tick is consumed (priming already pulled once), so the
     /// next pull is a full interval away.
     pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             let mut tick = interval(self.interval);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             tick.tick().await; // discard the immediate tick; prime() already did the first pull
             loop {
                 tokio::select! {
@@ -294,7 +291,7 @@ impl IdentityRefresher {
         }
     }
 
-    async fn fetch(&self) -> Result<Vec<IdentityInput>, reqwest::Error> {
+    async fn fetch(&self) -> Result<Vec<IdentityInput>, String> {
         let resp: IdentityResponse =
             get_json(&self.http, &self.url, self.auth.as_ref(), self.timeout).await?;
         Ok(resp

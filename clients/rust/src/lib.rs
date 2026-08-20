@@ -22,8 +22,8 @@
 //!
 //! ## Codegen
 //!
-//! `build.rs` compiles `proto/llmleaf/v1/llmleaf.proto` with `prost-build` (real codegen,
-//! run every build); the generated messages are exposed under [`pb`]. The public types
+//! Checked-in generated messages from `proto/llmleaf/v1/llmleaf.proto` are exposed under
+//! [`pb`]. The public types
 //! (re-exported at the crate root, e.g. [`ChatRequest`]) are hand-written serde structs
 //! that produce the exact OpenAI JSON wire — prost compiles the proto while serde drives
 //! the wire.
@@ -57,6 +57,7 @@ pub mod pb;
 mod client;
 mod error;
 mod stream;
+mod transport;
 mod wire;
 
 // The wire-mirror structs document themselves at the type level; their fields map

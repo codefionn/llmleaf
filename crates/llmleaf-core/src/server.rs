@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -27,7 +26,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use futures::{SinkExt, Stream, StreamExt};
+use cyper_axum::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use futures::{Stream, StreamExt};
 use llmleaf_model::{AudioChunk, Modality, ModelInfo, ResponseStream};
 use llmleaf_pricing::{ModelCard, Pricing};
 use llmleaf_provider::{ProviderRegistry, RealtimePeer, RealtimeWire};
@@ -183,9 +183,9 @@ pub async fn serve_with_state(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind(listen).await?;
+    let listener = compio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "llmleaf listening");
-    axum::serve(listener, app)
+    cyper_axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
@@ -620,7 +620,7 @@ async fn handle_realtime(
 /// during the probe. A genuinely broken key/route is not masked — it resurfaces as an ordinary bridge
 /// turn error (principle 7).
 ///
-/// **Phase 2 — committed native (post-first-frame).** Split, pump verbatim both ways, tap usage. A
+/// **Phase 2 — committed native (post-first-frame).** Pump verbatim both ways, tap usage. A
 /// MID-SESSION provider error keeps the error-frame-and-close behavior: the upstream holds session state
 /// the core cannot replay, so a silent restart onto the bridge would fabricate a fresh context
 /// (principle 7). Fallback is a strictly pre-output affordance.
@@ -658,7 +658,8 @@ async fn run_native_realtime(
     let provider = target.provider;
     let cx = target.cx;
     let params = target.params;
-    let provider_task = tokio::spawn(async move { provider.realtime(params, peer, &cx).await });
+    let provider_task =
+        compio::runtime::spawn(async move { provider.realtime(params, peer, &cx).await });
 
     // ---- Phase 1: probe. The socket stays UNSPLIT until the provider proves the session is live.
     // Every non-committed outcome is handled inline and returns here; the loop only *breaks* with the
@@ -734,18 +735,18 @@ async fn run_native_realtime(
                         }
                         // The consumer closed before the upstream produced anything: nothing to proxy.
                         WsMessage::Close(_) => {
-                            provider_task.abort();
+                            let _ = provider_task.cancel().await;
                             events.emit(Event::RequestCompleted {
                                 id: request_id,
                                 finish: None,
                             });
                             return;
                         }
-                        WsMessage::Ping(_) | WsMessage::Pong(_) => {}
+                        WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => {}
                     },
                     // Socket error or end before the upstream produced anything: abort and complete.
                     Some(Err(_)) | None => {
-                        provider_task.abort();
+                        let _ = provider_task.cancel().await;
                         events.emit(Event::RequestCompleted {
                             id: request_id,
                             finish: None,
@@ -757,67 +758,59 @@ async fn run_native_realtime(
         }
     };
 
-    // ---- Phase 2: committed native. Exactly the prior behavior — split, pump verbatim both ways, tap
-    // usage — starting from the frame that committed the session.
-    let (mut ws_tx, mut ws_rx) = socket.split();
-
-    // Consumer → provider: forward every frame verbatim, then signal close.
-    let in_pump = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            let wire = match msg {
-                WsMessage::Text(t) => RealtimeWire::Text(t.as_str().to_owned()),
-                WsMessage::Binary(b) => RealtimeWire::Binary(b),
-                WsMessage::Close(_) => break,
-                WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
-            };
-            if in_tx.send(wire).await.is_err() {
-                return;
-            }
-        }
-        let _ = in_tx.send(RealtimeWire::Close).await;
-    });
-
-    // Provider → consumer: forward verbatim, tapping usage from the terminal frame for the event bus.
-    // The committed first frame is processed through the same match (so usage is tapped even on it),
-    // then the loop drains the rest.
+    // ---- Phase 2: committed native. Cyper's socket deliberately exposes `recv`/`send` rather than
+    // the stream/sink split API. Keep ownership of it here and select between either direction.
+    // The committed first frame is processed through the same match (so usage is tapped even on it).
     let mut pending = Some(committed);
     loop {
-        let wire = match pending.take() {
-            Some(w) => w,
-            None => match out_rx.recv().await {
-                Some(w) => w,
-                None => break,
-            },
-        };
-        match wire {
-            RealtimeWire::Text(t) => {
-                if let Some(usage) = rt_wire::usage_from_server_frame(&t) {
-                    events.emit(Event::Usage {
-                        id: request_id.clone(),
-                        key: key.clone(),
-                        model: model.clone(),
-                        usage: engine.price(&model, usage),
-                    });
-                }
-                if ws_tx.send(WsMessage::Text(t.into())).await.is_err() {
-                    break;
-                }
-            }
-            RealtimeWire::Binary(b) => {
-                if ws_tx.send(WsMessage::Binary(b)).await.is_err() {
-                    break;
-                }
-            }
-            RealtimeWire::Close => {
-                let _ = ws_tx.send(WsMessage::Close(None)).await;
+        if let Some(wire) = pending.take() {
+            if !forward_native_wire(
+                &mut socket,
+                wire,
+                &events,
+                &engine,
+                &request_id,
+                &key,
+                &model,
+            )
+            .await
+            {
                 break;
             }
+            continue;
+        }
+
+        tokio::select! {
+            maybe_wire = out_rx.recv() => match maybe_wire {
+                Some(wire) => {
+                    if !forward_native_wire(&mut socket, wire, &events, &engine, &request_id, &key, &model).await {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            maybe_msg = socket.recv() => match maybe_msg {
+                Some(Ok(msg)) => {
+                    let wire = match msg {
+                        WsMessage::Text(t) => RealtimeWire::Text(t.as_str().to_owned()),
+                        WsMessage::Binary(b) => RealtimeWire::Binary(b),
+                        WsMessage::Close(_) => break,
+                        WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_) => continue,
+                    };
+                    if in_tx.send(wire).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Err(_)) | None => break,
+            },
         }
     }
 
     // The session ended (provider returned ⇒ out_tx dropped ⇒ loop drained). Report its outcome.
+    // Mirror the old inbound pump: once the socket loop ends, tell the provider the consumer side is
+    // closed before awaiting it. Without this, a provider waiting for more consumer frames can hang.
+    let _ = in_tx.send(RealtimeWire::Close).await;
     let outcome = provider_task.await;
-    in_pump.abort();
     match outcome {
         Ok(Ok(())) => {
             events.emit(Event::RequestCompleted {
@@ -830,7 +823,7 @@ async fn run_native_realtime(
             // Realtime error frame and close — never a silent restart onto the bridge, which would
             // fabricate a fresh context the client never asked for (principle 7).
             let frame = rt_wire::error_frame("upstream_error", &e.to_string());
-            let _ = ws_tx.send(WsMessage::Text(frame.to_string().into())).await;
+            let _ = socket.send(WsMessage::Text(frame.to_string().into())).await;
             events.emit(Event::RequestFailed {
                 id: request_id,
                 error: e.to_string(),
@@ -843,7 +836,38 @@ async fn run_native_realtime(
             });
         }
     }
-    let _ = ws_tx.send(WsMessage::Close(None)).await;
+    let _ = socket.send(WsMessage::Close(None)).await;
+}
+
+/// Forward one provider frame to the consumer, reporting terminal usage along the way. `false`
+/// means the session should stop because either peer closed or the consumer write failed.
+async fn forward_native_wire(
+    socket: &mut WebSocket,
+    wire: RealtimeWire,
+    events: &EventBus,
+    engine: &Engine,
+    request_id: &str,
+    key: &str,
+    model: &str,
+) -> bool {
+    match wire {
+        RealtimeWire::Text(t) => {
+            if let Some(usage) = rt_wire::usage_from_server_frame(&t) {
+                events.emit(Event::Usage {
+                    id: request_id.to_owned(),
+                    key: key.to_owned(),
+                    model: model.to_owned(),
+                    usage: engine.price(model, usage),
+                });
+            }
+            socket.send(WsMessage::Text(t.into())).await.is_ok()
+        }
+        RealtimeWire::Binary(b) => socket.send(WsMessage::Binary(b)).await.is_ok(),
+        RealtimeWire::Close => {
+            let _ = socket.send(WsMessage::Close(None)).await;
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

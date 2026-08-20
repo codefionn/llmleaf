@@ -27,8 +27,8 @@ use llmleaf_model::{
 use llmleaf_pricing::Pricing;
 use llmleaf_provider::{Provider, ProviderCx, ProviderFactory, ProviderRegistry, RealtimeParams};
 use serde_json::Value;
+use std::time::Instant;
 use thiserror::Error;
-use tokio::time::Instant;
 
 use crate::batch_id;
 use crate::config::{Config, InterceptPhase, ProviderConfig, RouteConfig, Target};
@@ -1224,7 +1224,7 @@ impl Engine {
                         });
                         return Err(EngineError::RateLimited { retry_after_secs });
                     }
-                    tokio::time::sleep(nap).await;
+                    crate::runtime::sleep(nap).await;
                     wait_budget -= nap;
                     continue;
                 }

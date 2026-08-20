@@ -11,18 +11,19 @@
 //! never in the core (principle 2). A fake [`RealtimeTransport`] can stand in for tests/simulation.
 
 use async_trait::async_trait;
+use compio::ws::connect_async;
+use compio::ws::tungstenite::client::IntoClientRequest;
+use compio::ws::tungstenite::http::HeaderValue;
+use compio::ws::tungstenite::Message;
 use futures::{SinkExt, StreamExt};
 use llmleaf_model::ModelError;
 use llmleaf_provider::{RealtimePeer, RealtimeWire};
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::transport::RealtimeTransport;
 
-/// The production realtime transport: a `tokio-tungstenite` WebSocket client. The only place
-/// `tokio-tungstenite` appears now (mirrored by `reqwest` in [`crate::transport::ReqwestTransport`]).
+/// The production realtime transport: a Compio WebSocket client. Compio socket streams are local to
+/// their runtime thread, while the provider boundary remains `Send`; a dedicated Compio runtime bridges
+/// that deliberate boundary through the existing `RealtimePeer` channels.
 pub struct TungsteniteRealtimeTransport;
 
 #[async_trait]
@@ -36,86 +37,105 @@ impl RealtimeTransport for TungsteniteRealtimeTransport {
         headers: Vec<(String, String)>,
         peer: RealtimePeer,
     ) -> Result<(), ModelError> {
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| ModelError::Unavailable(format!("realtime request: {e}")))?;
-        {
-            let req_headers = request.headers_mut();
-            for (name, value) in &headers {
-                let header_name: tokio_tungstenite::tungstenite::http::HeaderName =
-                    match name.parse() {
-                        Ok(n) => n,
-                        Err(_) => continue,
-                    };
-                if let Ok(v) = HeaderValue::from_str(value) {
-                    req_headers.insert(header_name, v);
-                }
-            }
-        }
-
-        let (ws, _resp) = connect_async(request)
-            .await
-            .map_err(|e| ModelError::Unavailable(format!("realtime connect: {e}")))?;
-        let (mut write, mut read) = ws.split();
-
-        let RealtimePeer {
-            mut inbound,
-            outbound,
-        } = peer;
-
-        // One task drives both directions; whichever side closes first ends the session.
-        loop {
-            tokio::select! {
-                // Consumer → upstream.
-                msg = inbound.recv() => match msg {
-                    Some(RealtimeWire::Text(t)) => {
-                        if write.send(Message::text(t)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(RealtimeWire::Binary(b)) => {
-                        if write.send(Message::binary(b)).await.is_err() {
-                            break;
-                        }
-                    }
-                    // Consumer closed (or the core dropped the sender): close upstream and finish.
-                    Some(RealtimeWire::Close) | None => {
-                        let _ = write.send(Message::Close(None)).await;
-                        break;
-                    }
-                },
-                // Upstream → consumer.
-                frame = read.next() => match frame {
-                    Some(Ok(Message::Text(t))) => {
-                        if outbound.send(RealtimeWire::Text(t.as_str().to_owned())).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(Message::Binary(b))) => {
-                        if outbound.send(RealtimeWire::Binary(b)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        let _ = outbound.send(RealtimeWire::Close).await;
-                        break;
-                    }
-                    // tungstenite answers pings itself; control frames carry nothing to forward.
-                    Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
-                    Some(Err(e)) => {
-                        return Err(ModelError::Unavailable(format!("realtime upstream: {e}")));
-                    }
-                    None => {
-                        let _ = outbound.send(RealtimeWire::Close).await;
-                        break;
-                    }
-                },
-            }
-        }
-
-        Ok(())
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("llmleaf-realtime".to_string())
+            .spawn(move || {
+                let result = compio::runtime::Runtime::new()
+                    .map_err(|e| ModelError::Unavailable(format!("realtime runtime: {e}")))
+                    .and_then(|runtime| runtime.block_on(run_realtime_session(url, headers, peer)));
+                let _ = done_tx.send(result);
+            })
+            .map_err(|e| ModelError::Unavailable(format!("realtime thread: {e}")))?;
+        done_rx.await.map_err(|_| {
+            ModelError::Unavailable("realtime thread stopped unexpectedly".to_string())
+        })?
     }
+}
+
+async fn run_realtime_session(
+    url: String,
+    headers: Vec<(String, String)>,
+    peer: RealtimePeer,
+) -> Result<(), ModelError> {
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| ModelError::Unavailable(format!("realtime request: {e}")))?;
+    {
+        let req_headers = request.headers_mut();
+        for (name, value) in &headers {
+            let header_name: compio::ws::tungstenite::http::HeaderName = match name.parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if let Ok(v) = HeaderValue::from_str(value) {
+                req_headers.insert(header_name, v);
+            }
+        }
+    }
+
+    let (ws, _resp) = connect_async(request)
+        .await
+        .map_err(|e| ModelError::Unavailable(format!("realtime connect: {e}")))?;
+    let (mut write, mut read) = ws.split();
+
+    let RealtimePeer {
+        mut inbound,
+        outbound,
+    } = peer;
+
+    // One task drives both directions; whichever side closes first ends the session.
+    loop {
+        tokio::select! {
+            // Consumer → upstream.
+            msg = inbound.recv() => match msg {
+                Some(RealtimeWire::Text(t)) => {
+                    if write.send(Message::text(t)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(RealtimeWire::Binary(b)) => {
+                    if write.send(Message::binary(b)).await.is_err() {
+                        break;
+                    }
+                }
+                // Consumer closed (or the core dropped the sender): close upstream and finish.
+                Some(RealtimeWire::Close) | None => {
+                    let _ = write.send(Message::Close(None)).await;
+                    break;
+                }
+            },
+            // Upstream → consumer.
+            frame = read.next() => match frame {
+                Some(Ok(Message::Text(t))) => {
+                    if outbound.send(RealtimeWire::Text(t.as_str().to_owned())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Binary(b))) => {
+                    if outbound.send(RealtimeWire::Binary(b)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(Ok(Message::Close(_))) => {
+                    let _ = outbound.send(RealtimeWire::Close).await;
+                    break;
+                }
+                // tungstenite answers pings itself; control frames carry nothing to forward.
+                Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
+                Some(Err(e)) => {
+                    return Err(ModelError::Unavailable(format!("realtime upstream: {e}")));
+                }
+                None => {
+                    let _ = outbound.send(RealtimeWire::Close).await;
+                    break;
+                }
+            },
+        }
+    }
+
+    Ok(())
 }
 
 /// Derive the realtime `wss://…/realtime?model=…` URL from a provider's base endpoint (`https`→`wss`,

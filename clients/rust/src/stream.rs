@@ -1,4 +1,4 @@
-//! Hand-rolled line/frame parsing over `reqwest::Response::bytes_stream()`.
+//! Hand-rolled line/frame parsing over a transport-neutral byte stream.
 //!
 //! Three stream shapes share the same byte-accumulation core:
 //!
@@ -28,7 +28,7 @@ const DONE: &str = "[DONE]";
 /// stopping at the `data: [DONE]` sentinel.
 pub(crate) fn sse_chunks<S>(byte_stream: S) -> impl Stream<Item = Result<ChatCompletionChunk>>
 where
-    S: Stream<Item = reqwest::Result<Bytes>> + Unpin,
+    S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut buf = BytesMut::new();
     let mut byte_stream = byte_stream;
@@ -65,7 +65,7 @@ where
                 }
                 Poll::Ready(Some(Err(e))) => {
                     done = true;
-                    return Poll::Ready(Some(Err(Error::Http(e))));
+                    return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Ready(None) => {
                     // Flush a trailing line with no terminating newline.
@@ -95,7 +95,7 @@ where
 /// closes). Unrecognised event types are skipped; the `"error"` event becomes an `Err`.
 pub(crate) fn sse_responses<S>(byte_stream: S) -> impl Stream<Item = Result<ResponsesStreamEvent>>
 where
-    S: Stream<Item = reqwest::Result<Bytes>> + Unpin,
+    S: Stream<Item = Result<Bytes>> + Unpin,
 {
     let mut buf = BytesMut::new();
     let mut byte_stream = byte_stream;
@@ -131,7 +131,7 @@ where
                 Poll::Ready(Some(Ok(chunk))) => buf.extend_from_slice(&chunk),
                 Poll::Ready(Some(Err(e))) => {
                     done = true;
-                    return Poll::Ready(Some(Err(Error::Http(e))));
+                    return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Ready(None) => {
                     // Flush a trailing frame with no terminating newline.
@@ -164,7 +164,7 @@ where
 /// `BatchResultLine`s — one JSON object per line.
 pub(crate) fn ndjson_lines<S>(byte_stream: S) -> impl Stream<Item = Result<BatchResultLine>>
 where
-    S: Stream<Item = reqwest::Result<Bytes>> + Unpin,
+    S: Stream<Item = Result<Bytes>> + Unpin,
 {
     ndjson::<S, BatchResultLine>(byte_stream)
 }
@@ -172,7 +172,7 @@ where
 /// Generic NDJSON decoder.
 fn ndjson<S, T>(byte_stream: S) -> impl Stream<Item = Result<T>>
 where
-    S: Stream<Item = reqwest::Result<Bytes>> + Unpin,
+    S: Stream<Item = Result<Bytes>> + Unpin,
     T: DeserializeOwned,
 {
     let mut buf = BytesMut::new();
@@ -201,7 +201,7 @@ where
                 Poll::Ready(Some(Ok(chunk))) => buf.extend_from_slice(&chunk),
                 Poll::Ready(Some(Err(e))) => {
                     done = true;
-                    return Poll::Ready(Some(Err(Error::Http(e))));
+                    return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Ready(None) => {
                     if let Some(line) = take_remaining(&mut buf) {
@@ -315,7 +315,7 @@ mod tests {
     use super::*;
     use futures::stream;
 
-    fn bytes_stream(parts: Vec<&'static str>) -> impl Stream<Item = reqwest::Result<Bytes>> {
+    fn bytes_stream(parts: Vec<&'static str>) -> impl Stream<Item = Result<Bytes>> {
         stream::iter(
             parts
                 .into_iter()
@@ -323,7 +323,8 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn sse_parses_chunks_and_stops_on_done() {
         let frames = vec![
             "data: {\"id\":\"a\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"He\"}}]}\n",
@@ -343,7 +344,8 @@ mod tests {
         assert_eq!(text, "Hello");
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn sse_preserves_split_tool_call_deltas() {
         let frames = vec![
             r#"data: {"id":"a","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Par"}}]}}]}
@@ -389,7 +391,8 @@ data: [DONE]
         );
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn sse_handles_split_across_byte_chunks() {
         // A single SSE line delivered in two arbitrary byte slices.
         let frames = vec![
@@ -402,7 +405,8 @@ data: [DONE]
         assert_eq!(out[0].as_ref().unwrap().first_delta_text(), Some("hi"));
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn sse_responses_parses_typed_events_and_stops_on_completed() {
         // A full typed-event turn: created -> output_item.added(function_call) ->
         // function_call_arguments.delta -> output_text.delta x2 -> completed. An
@@ -476,7 +480,8 @@ data: {"type":"response.completed","sequence_number":6,"response":{"id":"resp_1"
         assert_eq!(snapshot.store, Some(false));
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn sse_responses_surfaces_error_event_as_api_error() {
         let frames = vec![
             r#"event: response.created
@@ -506,7 +511,8 @@ data: {"type":"error","sequence_number":1,"code":"server_error","message":"upstr
         }
     }
 
-    #[tokio::test]
+    #[cfg_attr(feature = "tokio", tokio::test)]
+    #[cfg_attr(all(not(feature = "tokio"), feature = "compio"), compio::test)]
     async fn ndjson_parses_lines() {
         let lines = vec![
             "{\"custom_id\":\"a\",\"response\":{\"status_code\":200,\"body\":{\"id\":\"x\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"m\",\"choices\":[]}}}\n",

@@ -9,7 +9,7 @@ the request/response shapes — while on the wire they speak llmleaf's existing
 | Language | Directory | Codegen | Build verified here |
 |----------|-----------|---------|---------------------|
 | Go | [`go/`](go/) | `protoc-gen-go` | ✅ |
-| Rust | [`rust/`](rust/) | `prost-build` (build.rs) | ✅ |
+| Rust | [`rust/`](rust/) | checked-in `prost` output | ✅ |
 | TypeScript / JavaScript | [`typescript/`](typescript/) | `protobuf-es` | ✅ |
 | Zig | [`zig/`](zig/) | vendored `protoc-gen-zig` | ✅ |
 | C# / .NET | [`csharp/`](csharp/) | `protoc --csharp_out` (Google.Protobuf) | ✅ |
@@ -21,7 +21,7 @@ the request/response shapes — while on the wire they speak llmleaf's existing
 clients/
   proto/llmleaf/v1/llmleaf.proto   the contract — edit here, regenerate everywhere
   SPEC.md                          how the proto maps onto the OpenAI/OpenRouter HTTP wire
-  buf.yaml, buf.gen.yaml           `buf generate` regen path (Go, TS, Rust)
+  buf.yaml, buf.gen.yaml           `buf generate` regen path (Go, TS)
   Makefile                         `make gen` / `make gen-<lang>` / `make proto-check`
   <lang>/                          one self-contained SDK per language
 ```
@@ -34,12 +34,17 @@ The proto is the source of truth: change it, then regenerate.
 cd clients
 make proto-check       # validate the schema (protoc)
 make gen               # regenerate all five clients
-# or, the Go/TS/Rust subset in one shot if you have buf:
+# or, the Go/TS subset in one shot if you have buf:
 buf generate
 ```
 
-Each client also carries a `scripts/gen.sh` that regenerates only that language and is wired
-into its native build; see the per-client README for the toolchain it needs.
+Each client also carries a `scripts/gen.sh` that regenerates only that language. Rust contributors
+run it when the proto changes; it writes the checked-in Prost file at
+`rust/src/gen/llmleaf/v1/llmleaf.v1.rs`. Normal Rust builds, package verification, and consumers
+do not run code generation or require `protoc`.
+
+The Rust client defaults to Tokio. Compio users select the Compio-only transport with
+`--no-default-features --features compio`; `--all-features` validates the supported feature set.
 
 ## Surface
 
