@@ -413,6 +413,33 @@ async fn streaming_emits_sse_frames() {
     assert!(text.contains("[DONE]"));
 }
 
+#[test]
+fn streaming_under_compio_needs_no_tokio_reactor() {
+    // Keep this a plain test. `Runtime::block_on` installs Compio's reactor only, which recreates
+    // the production server context and catches any SSE code that reaches for Tokio's clock.
+    let runtime = compio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let (app, _bus) = app_and_bus();
+        let resp = app.oneshot(chat_request("demo", true)).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/event-stream"), "got {ct}");
+
+        let text = body_text(resp).await;
+        assert!(
+            text.contains("chat.completion.chunk"),
+            "missing chunks: {text}"
+        );
+        assert!(text.contains("reply to: hello"));
+        assert!(text.contains("[DONE]"));
+    });
+}
+
 #[tokio::test]
 async fn missing_bearer_is_unauthorized() {
     let (app, _bus) = app_and_bus();

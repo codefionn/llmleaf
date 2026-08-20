@@ -21,7 +21,7 @@ use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -287,7 +287,9 @@ fn sse_from_response(
         }
         yield Ok(SseEvent::default().data(ChunkEncoder::DONE));
     };
-    Sse::new(body).keep_alive(KeepAlive::default())
+    // Axum's optional keep-alive wrapper owns a `tokio::time::Sleep`. The data plane runs on
+    // Compio, so constructing that wrapper would panic before the first frame is written.
+    Sse::new(body)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -400,7 +402,9 @@ fn anthropic_sse_from_response(
             }
         }
     };
-    Sse::new(body).keep_alive(KeepAlive::default())
+    // Keep-alives are intentionally disabled. Axum implements them with a Tokio timer, but Cyper
+    // polls this response on Compio.
+    Sse::new(body)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -507,7 +511,9 @@ fn responses_sse_from_response(
             }
         }
     };
-    Sse::new(body).keep_alive(KeepAlive::default())
+    // Keep-alives are intentionally disabled. Axum implements them with a Tokio timer, but Cyper
+    // polls this response on Compio.
+    Sse::new(body)
 }
 
 /// `GET /v1/responses/{id}` — always 404. Stateful continuation is proxied during create calls, but
