@@ -189,6 +189,28 @@ impl Pricing {
 mod tests {
     use super::*;
 
+    /// Assert `card` is token-priced without pinning exact rates, which change every time the
+    /// collector regenerates the dataset. Only the invariants are checked: an output rate above
+    /// the input rate and, when present, a cached rate that undercuts the input rate.
+    fn assert_token_priced(id: &str, card: &ModelCard) {
+        let input = card
+            .input_per_mtok
+            .unwrap_or_else(|| panic!("{id} must have an input rate"));
+        let output = card
+            .output_per_mtok
+            .unwrap_or_else(|| panic!("{id} must have an output rate"));
+        assert!(
+            output > input,
+            "{id} output rate {output} should exceed input rate {input}"
+        );
+        if let Some(cached) = card.cached_input_per_mtok {
+            assert!(
+                cached < input,
+                "{id} cached rate {cached} should undercut input rate {input}"
+            );
+        }
+    }
+
     #[test]
     fn bundled_dataset_parses() {
         let pricing = Pricing::bundled().expect("bundled prices.json must parse");
@@ -202,9 +224,7 @@ mod tests {
         assert_eq!(v11.modality, Some(Modality::Llm));
         assert_eq!(v11.max_context, Some(1_048_576));
         assert_eq!(v11.supports_reasoning, Some(true));
-        assert_eq!(v11.input_per_mtok, Some(1.25));
-        assert_eq!(v11.cached_input_per_mtok, Some(0.15));
-        assert_eq!(v11.output_per_mtok, Some(4.25));
+        assert_token_priced("muse-spark-1.1", &v11);
         assert_eq!(v11.tier.as_deref(), Some("standard"));
         assert_eq!(v11.prompts_used_for_training, Some(false));
         assert_eq!(
@@ -221,36 +241,49 @@ mod tests {
         assert_eq!(v12.modality, Some(Modality::Llm));
         assert_eq!(v12.max_context, Some(1_048_576));
         assert_eq!(v12.supports_reasoning, Some(true));
-        assert_eq!(v12.input_per_mtok, Some(1.25));
-        assert_eq!(v12.cached_input_per_mtok, Some(0.15));
-        assert_eq!(v12.output_per_mtok, Some(4.25));
+        assert_token_priced("muse-spark-1.2", &v12);
         assert_eq!(
             v12.input_modalities.as_ref().unwrap().join(","),
             "text,image,video,file"
         );
 
         let contributor = pricing.card("muse-spark-1.2-contributor").unwrap();
-        assert_eq!(contributor.input_per_mtok, Some(0.10));
-        assert_eq!(contributor.cached_input_per_mtok, Some(0.002));
-        assert_eq!(contributor.output_per_mtok, Some(0.20));
+        assert_token_priced("muse-spark-1.2-contributor", &contributor);
         assert_eq!(contributor.tier.as_deref(), Some("contributor"));
         assert_eq!(contributor.prompts_used_for_training, Some(true));
     }
 
     #[test]
-    fn bundled_dataset_has_current_openai_gpt_5_6_prices() {
+    fn bundled_dataset_prices_the_openai_gpt_5_6_family() {
         let pricing = Pricing::bundled().unwrap();
-        for (id, input, cached_input, output) in [
-            ("gpt-5.6", 5.0, 0.5, 30.0),
-            ("gpt-5.6-sol", 5.0, 0.5, 30.0),
-            ("gpt-5.6-terra", 2.0, 0.2, 12.0),
-            ("gpt-5.6-luna", 0.2, 0.02, 1.2),
-        ] {
+        // Exact rates change with every dataset refresh; assert only that the flagship variants
+        // are priced in dollar-scale USD per Mtok (not cents) with the usual relationships.
+        for id in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra"] {
             let card = pricing.card(id).unwrap();
-            assert_eq!(card.input_per_mtok, Some(input), "{id}");
-            assert_eq!(card.cached_input_per_mtok, Some(cached_input), "{id}");
-            assert_eq!(card.output_per_mtok, Some(output), "{id}");
+            let input = card
+                .input_per_mtok
+                .unwrap_or_else(|| panic!("{id} input rate"));
+            let output = card
+                .output_per_mtok
+                .unwrap_or_else(|| panic!("{id} output rate"));
+            assert!(
+                input >= 1.0 && output >= 1.0,
+                "{id} rates ({input}, {output}) should be dollar-scale, not cents"
+            );
+            assert_token_priced(id, &card);
         }
+
+        // The mini variant is priced too, and cheaper than the flagship.
+        let flagship = pricing.card("gpt-5.6").unwrap();
+        let mini = pricing.card("gpt-5.6-luna").unwrap();
+        assert!(
+            mini.input_per_mtok.unwrap() < flagship.input_per_mtok.unwrap(),
+            "gpt-5.6-luna should be cheaper to run than gpt-5.6"
+        );
+        assert!(
+            mini.output_per_mtok.unwrap() < flagship.output_per_mtok.unwrap(),
+            "gpt-5.6-luna should be cheaper to run than gpt-5.6"
+        );
     }
 
     #[test]
@@ -268,29 +301,24 @@ mod tests {
         let zai = pricing.card("glm-5.2").unwrap();
         assert_eq!(zai.max_context, Some(1_000_000));
         assert_eq!(zai.max_output, Some(131_072));
-        assert_eq!(zai.input_per_mtok, Some(1.4));
-        assert_eq!(zai.cached_input_per_mtok, Some(0.26));
-        assert_eq!(zai.output_per_mtok, Some(4.4));
+        assert_token_priced("glm-5.2", &zai);
 
         let deepseek = pricing.card("deepseek-v4-flash").unwrap();
-        assert_eq!(deepseek.cached_input_per_mtok, Some(0.0028));
-        assert_eq!(deepseek.output_per_mtok, Some(0.28));
+        assert_token_priced("deepseek-v4-flash", &deepseek);
 
         let minimax = pricing.card("MiniMax-M2.7-highspeed").unwrap();
         assert_eq!(minimax.max_context, Some(204_800));
         assert_eq!(minimax.max_output, None);
-        assert_eq!(minimax.input_per_mtok, Some(0.6));
-        assert_eq!(minimax.output_per_mtok, Some(2.4));
+        assert_token_priced("MiniMax-M2.7-highspeed", &minimax);
 
         let groq = pricing.card("llama-3.3-70b-versatile").unwrap();
-        assert_eq!(groq.cached_input_per_mtok, None);
-        assert_eq!(groq.input_per_mtok, Some(0.59));
-        assert_eq!(groq.output_per_mtok, Some(0.79));
+        assert_token_priced("llama-3.3-70b-versatile", &groq);
     }
 
     #[test]
     fn cost_is_lookup_times_tokens() {
         let pricing = Pricing::bundled().unwrap();
+        let card = pricing.card("gpt-4o").expect("gpt-4o card");
         let usage = Usage {
             prompt_tokens: 1_000_000,
             completion_tokens: 1_000_000,
@@ -300,12 +328,17 @@ mod tests {
             cache_creation_tokens: 0,
         };
         let cost = pricing.cost_usd("gpt-4o", &usage).unwrap();
-        assert!((cost - 12.5).abs() < 1e-9, "got {cost}");
+        // One million uncached prompt tokens plus one million completion tokens.
+        let expected = card.input_per_mtok.unwrap() + card.output_per_mtok.unwrap();
+        assert!((cost - expected).abs() < 1e-9, "got {cost}");
     }
 
     #[test]
     fn cached_input_uses_the_models_discounted_rate() {
         let pricing = Pricing::bundled().unwrap();
+        let card = pricing
+            .card("muse-spark-1.2-contributor")
+            .expect("contributor card");
         let usage = Usage {
             prompt_tokens: 1_000_000,
             completion_tokens: 1_000_000,
@@ -317,7 +350,11 @@ mod tests {
         let cost = pricing
             .cost_usd("muse-spark-1.2-contributor", &usage)
             .unwrap();
-        let expected = 0.6 * 0.10 + 0.4 * 0.002 + 0.20;
+        // Derive the expectation from the card so the test survives rate changes; it still
+        // fails if the cached tokens were billed at the undiscounted input rate.
+        let expected = 0.6 * card.input_per_mtok.unwrap()
+            + 0.4 * card.cached_input_per_mtok.unwrap()
+            + card.output_per_mtok.unwrap();
         assert!((cost - expected).abs() < 1e-9, "got {cost}");
     }
 
@@ -342,7 +379,10 @@ mod tests {
         assert_eq!(card.id, "gpt-4o");
         assert_eq!(card.modality, Some(Modality::Llm));
         assert_eq!(card.max_context, Some(128_000));
-        assert_eq!(card.input_per_mtok, Some(2.5));
+        assert!(
+            card.input_per_mtok.is_some(),
+            "gpt-4o should be token-priced"
+        );
     }
 
     #[test]
@@ -352,13 +392,11 @@ mod tests {
         assert_eq!(k3.modality, Some(Modality::Llm));
         assert_eq!(k3.max_context, Some(1_048_576));
         assert_eq!(k3.supports_reasoning, Some(true));
-        assert_eq!(k3.input_per_mtok, Some(3.0));
-        assert_eq!(k3.output_per_mtok, Some(15.0));
+        assert_token_priced("kimi-k3", &k3);
 
         let classic = pricing.card("moonshot-v1-128k").expect("v1 card");
         assert_eq!(classic.max_context, Some(131_072));
-        assert_eq!(classic.input_per_mtok, Some(2.0));
-        assert_eq!(classic.output_per_mtok, Some(5.0));
+        assert_token_priced("moonshot-v1-128k", &classic);
         assert_eq!(classic.supports_reasoning, None);
     }
 
