@@ -47,6 +47,7 @@ max_body_bytes = 33554432
 # Known kinds:
 #   distinct dialects : anthropic (claude), gemini (google), vertex (vertex-ai, google-vertex), cohere,
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
+#   decisions only    : typesafe (jev; native `/v1/systemone`)
 #   OpenAI-wire family: openai, meta (meta-ai, meta-model-api, muse), openrouter, requesty, groq,
 #                       deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
@@ -313,7 +314,7 @@ model = "demo"
 targets = [{ provider = "echo" }]
 
 # Routes are modality-agnostic: the same logical model resolves to the same chain for chat,
-# embeddings, speech (TTS), and transcription (STT) alike — only the provider method the engine
+# embeddings, rerank, decisions, speech (TTS), and transcription (STT) alike — only the provider method the engine
 # calls at the end differs. So these reuse the very same provider blocks declared above; any
 # modality a provider supports is reachable through its routes. A provider that lacks the requested
 # modality returns Unsupported and is skipped with NO health penalty, so a chat-only target can sit
@@ -337,6 +338,21 @@ model = "rerank-v3.5"
 targets = [
   # { provider = "cohere", model = "rerank-v3.5" },   # native path — needs a `cohere` provider block
   { provider = "openrouter", model = "cohere/rerank-v3.5" },
+]
+
+# Decisions (POST /v1/decisions, /api/alpha/decisions, or /v1/systemone).
+# OpenRouter sends decisions to /api/alpha/decisions, separate from its chat endpoint.
+# To use JEV directly, add this provider block in the providers section above:
+# [[providers]]
+# name = "typesafe"
+# kind = "typesafe"       # alias: jev
+# credential = "env:TYPESAFE_API_KEY"
+# endpoint = "https://api.typesafe.ai/v1"  # default; POST /systemone
+[[routes]]
+model = "jev"
+targets = [
+  # { provider = "typesafe", model = "jev-latest" }, # needs the provider block above
+  { provider = "openrouter", model = "typesafe/jev-1.13" },
 ]
 
 # Text-to-speech (POST /v1/audio/speech) — returns raw audio bytes.

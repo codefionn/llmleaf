@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use llmleaf_model::{
     AudioStream, BatchHandle, BatchResultStream, BatchSpec, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
+    EmbeddingResponse, DecisionsRequest, DecisionsResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
     SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use serde_json::{Map, Value};
@@ -53,6 +53,15 @@ pub trait Provider: Send + Sync {
         _cx: &ProviderCx,
     ) -> Result<RerankResponse, ModelError> {
         Err(unsupported(self.name(), "rerank"))
+    }
+
+    /// Evaluate typed decisions questions against a state. Opt-in like other batch modalities.
+    async fn decisions(
+        &self,
+        _req: DecisionsRequest,
+        _cx: &ProviderCx,
+    ) -> Result<DecisionsResponse, ModelError> {
+        Err(unsupported(self.name(), "decisions"))
     }
 
     /// Synthesize speech (text-to-speech). Opt-in: the default declares the modality unsupported.

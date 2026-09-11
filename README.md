@@ -22,7 +22,7 @@ native performance instead.
 ## Features
 
 - Stable API endpoints for AI generation (OpenAI compatible, OpenRouter like and Anthropic Message API compatbile)
-- Endpoint types: chat, embeddings, rerank, text-to-speech, speech-to-text,
+- Endpoint types: chat, embeddings, rerank, decisions, text-to-speech, speech-to-text,
   realtime (WebSocket), batch jobs
 - Supported modalities: image, audio, video and of course text (though mainly image and text support is focused on)
 - Health-aware AI endpoint switchover
@@ -36,6 +36,7 @@ Please use web sockets, it fixes latency and prompt caching issues.
 ### Supported providers
 
 - **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Ollama, LM Studio.
+- **Decisions:** TypeSafe JEV (`typesafe`, alias `jev`) and OpenRouter.
 - **OpenAI-wire family:** OpenAI, Meta Model API (Muse), OpenRouter, Requesty, Groq, DeepSeek, xAI (Grok), Mistral,
   Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Amazon Bedrock,
   Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,
@@ -85,6 +86,7 @@ Consumer endpoints (OpenAI-compatible unless noted):
 | `POST /v1/responses` | OpenAI Responses dialect (encrypted stateless replay and proxied `store`/`previous_response_id`; GET remains a 404-by-design stub) |
 | `POST /v1/embeddings` | Embeddings |
 | `POST /v1/rerank` | Rerank (Cohere/Jina/OpenRouter dialect) |
+| `POST /v1/decisions`, `POST /api/alpha/decisions`, `POST /v1/systemone` | Decisions (OpenRouter and TypeSafe JEV dialect) |
 | `POST /v1/audio/speech`, `GET /v1/audio/voices` | Text-to-speech |
 | `POST /v1/audio/transcriptions` | Speech-to-text |
 | `GET /v1/realtime` | OpenAI Realtime (WebSocket) |
@@ -93,6 +95,28 @@ Consumer endpoints (OpenAI-compatible unless noted):
 
 Read-only admin (optional token): `GET /admin/routes`, `/admin/health`, `/admin/keys`.
 Official client SDKs for 6 languages live in [`clients/`](clients/).
+
+### Decisions
+
+Send `model`, `state`, and named `questions` to `/v1/decisions`. The OpenRouter path
+`/api/alpha/decisions` and JEV path `/v1/systemone` accept the same body. Questions can
+use `noul`, `choice`, or `score`, including structured instructions and criteria.
+Responses preserve answers, probabilities, confidence, and provider-reported usage.
+
+The `jev` route in `llmleaf.example.toml` uses OpenRouter. To call TypeSafe directly,
+add a provider with `kind = "typesafe"`, `credential = "env:TYPESAFE_API_KEY"`, and
+route to it with upstream model `jev-latest`. The `jev` provider kind is an alias
+for `typesafe`. Decisions use the same key permissions and fallback rules as chat.
+
+```sh
+curl localhost:8080/v1/decisions \
+  -H "Authorization: Bearer $(printf 'local-dev:s3cret' | base64)" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"jev","state":"The export button does nothing.","questions":{"bug":{"type":"noul","instructions":"Does this report broken software?"}}}'
+```
+
+API references: [OpenRouter decisions](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request)
+and [TypeSafe JEV](https://docs.typesafe.ai/api).
 
 ## Architecture
 
