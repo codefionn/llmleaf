@@ -21,33 +21,17 @@ native performance instead.
 
 ## Features
 
-- One stable endpoint in front of every provider — consumers speak OpenAI,
-  OpenRouter, or Anthropic dialects; llmleaf maps them to one internal model
-  and back.
-- Streaming-first (SSE): `settings.upstream_streaming = "always"` is the default, so chat calls use
-  the provider's incremental upstream transport even when the consumer requests a non-streaming
-  response. Set the per-provider policy to `"when_requested"` or `"never"` to opt out.
-- Modalities: chat, embeddings, rerank, text-to-speech, speech-to-text,
-  realtime (WebSocket), batch jobs.
-- Per-model fallback chains with node-local, health-aware switchover — no
-  consensus or shared state, so N nodes run behind a plain load balancer.
-- Opt-in per request/provider: Anthropic prompt caching, a unified
-  thinking/reasoning-effort ladder.
-- Responses API both ways: consumers can `POST /v1/responses` to *any* routed
-  provider — upstreams without a Responses endpoint are served over their
-  chat-completions wire transparently. Upstream, OpenAI and xAI speak their
-  Responses APIs by default; OpenRouter's beta `POST /responses` (signed
-  open-reasoning replay, routed cost), Groq's beta `POST /responses` (open
-  unsigned reasoning), and Azure OpenAI's v1 surface (resource-scoped `POST
-  /openai/v1/responses`) are per-provider opt-ins
-  (`chat_api = "responses"`).
-- Auth via HTTP-Basic key tokens (optional OAuth2/JWT); identity, limits,
-  topology, and usage ride an **outbound** control plane (pull verdicts and
-  provider/route config — diff-reconciled on every refresh — push usage). Fully
-  operable from the config file alone.
+- Stable API endpoints for AI generation (OpenAI compatible, OpenRouter like and Anthropic Message API compatbile)
+- Endpoint types: chat, embeddings, rerank, text-to-speech, speech-to-text,
+  realtime (WebSocket), batch jobs
+- Supported modalities: image, audio, video and of course text (though mainly image and text support is focused on)
+- Health-aware AI endpoint switchover
+- No shared state between instances, which simplifies hosting multiple instances greatly
+- Prompt caching
+- Reasoning effort selection
+- Web socket support (also for SSE and even simple request-response providers)
 
-The use of the websocket api is recommended, this greatly improves the chances
-of prompt caching actually working.
+Please use web sockets, it fixes latency and prompt caching issues.
 
 ### Supported providers
 
