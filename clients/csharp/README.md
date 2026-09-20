@@ -17,6 +17,8 @@ dotnet add reference path/to/clients/csharp/src/Llmleaf.Client.csproj
 
 ```csharp
 using Llmleaf.Client;
+using System.Collections.Generic;
+using System.Text.Json;
 
 using var client = new LlmleafClient(
     "https://gateway.example.com",
@@ -61,6 +63,18 @@ await foreach (var evt in client.CreateResponseStreamAsync(new ResponsesRequest
         Console.Write(evt.Delta);
     }
 }
+
+// Decisions keep state, questions, and answers as structured JSON.
+var decision = await client.CreateDecisionsAsync(new DecisionsRequest
+{
+    Model = "jev",
+    State = JsonDocument.Parse("""{"account_tier":"pro"}""").RootElement.Clone(),
+    Questions = new Dictionary<string, JsonElement>
+    {
+        ["upgrade"] = JsonDocument.Parse("""{"type":"choice","instructions":"Should we offer an upgrade?","criteria":{"yes":"Account needs more capacity","no":"Current plan is sufficient"}}""").RootElement.Clone(),
+    },
+});
+var answer = decision.Answers["upgrade"];
 ```
 
 Streaming tool calls are exposed as `choice.Delta.ToolCalls`. Group fragments by the choice index
@@ -79,6 +93,7 @@ pooling / TLS).
 | `CreateResponseAsync` / `CreateResponseStreamAsync` | `POST /v1/responses` (OpenAI Responses dialect; streaming is typed events with no `[DONE]`) |
 | `CreateEmbeddingAsync` | `POST /v1/embeddings` (base64 decoded to floats) |
 | `CreateRerankAsync` | `POST /v1/rerank` (plain JSON; no vector decode) |
+| `CreateDecisionsAsync` | `POST /v1/decisions` (raw JSON decision schemas and answers) |
 | `ListModelsAsync` | `GET /v1/models` |
 | `CreateSpeechAsync` | `POST /v1/audio/speech` (bytes + `Content-Type`) |
 | `ListVoicesAsync` | `GET /v1/audio/voices` |

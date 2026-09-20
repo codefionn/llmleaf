@@ -673,6 +673,45 @@ internal static class Mapper
         w.Results.Select(r => new RerankResult(r.Index, r.RelevanceScore, r.Document)).ToList(),
         UsageFromWire(w.Usage));
 
+    // ---- decisions ------------------------------------------------------
+
+    internal static byte[] EncodeDecisionsRequest(DecisionsRequest req)
+    {
+        var w = new WireDecisionsRequest
+        {
+            Model = req.Model,
+            State = req.State.Clone(),
+            Questions = req.Questions.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()),
+        };
+        return Json.MergeExtra(w, ExtraObject(req.Extra));
+    }
+
+    internal static DecisionsResponse DecisionsResponseFromWire(WireDecisionsResponse w) => new(
+        w.Model,
+        CloneElements(w.Answers) ?? new Dictionary<string, JsonElement>(),
+        DecisionsUsageFromWire(w.Usage),
+        w.Id,
+        w.Provider,
+        CloneElements(w.Extra));
+
+    private static DecisionsUsage? DecisionsUsageFromWire(WireDecisionsUsage? w) => w is null
+        ? null
+        : new DecisionsUsage(w.InputTokens, w.OutputTokens, w.Cost, CloneElements(w.Extra));
+
+    private static IReadOnlyDictionary<string, JsonElement>? CloneElements(Dictionary<string, JsonElement>? values)
+        => values is null ? null : values.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
+
+    private static JsonObject? ExtraObject(IReadOnlyDictionary<string, JsonElement>? extra)
+    {
+        if (extra is null) return null;
+        var result = new JsonObject();
+        foreach (var pair in extra)
+        {
+            result[pair.Key] = JsonNode.Parse(pair.Value.GetRawText());
+        }
+        return result;
+    }
+
     // ---- speech / voices ------------------------------------------------
 
     internal static byte[] EncodeSpeechRequest(SpeechRequest req)

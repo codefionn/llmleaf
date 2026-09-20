@@ -91,6 +91,11 @@ pub const EmbeddingResponse = gen.EmbeddingResponse;
 pub const RerankRequest = gen.RerankRequest;
 pub const RerankResult = gen.RerankResult;
 pub const RerankResponse = gen.RerankResponse;
+// Decisions
+pub const DecisionsJsonField = gen.DecisionsJsonField;
+pub const DecisionsRequest = gen.DecisionsRequest;
+pub const DecisionsUsage = gen.DecisionsUsage;
+pub const DecisionsResponse = gen.DecisionsResponse;
 // Audio
 pub const SpeechRequest = gen.SpeechRequest;
 pub const Speech = gen.Speech;

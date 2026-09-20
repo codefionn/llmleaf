@@ -92,6 +92,7 @@ wins over `WithTimeout`; for long-lived streams prefer a client with `Timeout: 0
 | `CreateResponse` / `CreateResponseStream` | `POST /v1/responses` (typed SSE, no `[DONE]`) |
 | `CreateEmbeddings` | `POST /v1/embeddings` (decodes base64 vectors) |
 | `CreateRerank` | `POST /v1/rerank` → `RerankResponse{Results, Usage}` |
+| `CreateDecisions` | `POST /v1/decisions` → raw JSON decision answers and metadata |
 | `ListModels` | `GET /v1/models` |
 | `CreateSpeech` | `POST /v1/audio/speech` → `SpeechResult{Audio, ContentType}` |
 | `ListVoices` | `GET /v1/audio/voices` |
@@ -110,6 +111,22 @@ if errors.As(err, &apiErr) {
 Free-form fields (`Extra`, `Parameters`, `JsonSchema`, …) are raw-JSON strings spliced
 verbatim into the body; `Extra` keys merge at the top level (an explicit field of the same
 name wins).
+
+## Decisions
+
+`CreateDecisions` accepts raw JSON state and named raw JSON questions, so the `noul`, `choice`,
+and `score` schemas retain their provider-defined shape:
+
+```go
+result, err := client.CreateDecisions(ctx, llmleaf.DecisionsRequest{
+    Model: "jev",
+    State: json.RawMessage(`{"account_tier":"pro"}`),
+    Questions: map[string]json.RawMessage{
+        "upgrade": json.RawMessage(`{"type":"choice","instructions":"Should we offer an upgrade?","criteria":{"yes":"Account needs more capacity","no":"Current plan is sufficient"}}`),
+    },
+})
+answer := result.Answers["upgrade"] // raw JSON
+```
 
 ## Run the example
 

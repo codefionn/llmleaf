@@ -10,3 +10,4 @@
 *.db-shm
 /.codex-meta-smoke.toml
 *.local.*
+/.zvec-grep

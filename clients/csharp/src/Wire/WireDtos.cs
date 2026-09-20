@@ -4,6 +4,7 @@
 // to/from these; the transport never (de)serialises the public records directly.
 
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
@@ -463,6 +464,33 @@ internal sealed class WireRerankResponse
     [JsonPropertyName("model")] public string Model { get; set; } = "";
     [JsonPropertyName("results")] public List<WireRerankResult> Results { get; set; } = [];
     [JsonPropertyName("usage")] public WireUsage? Usage { get; set; }
+}
+
+// ---- decisions -----------------------------------------------------------
+
+internal sealed class WireDecisionsRequest
+{
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("state")] public JsonElement State { get; set; }
+    [JsonPropertyName("questions")] public Dictionary<string, JsonElement> Questions { get; set; } = [];
+}
+
+internal sealed class WireDecisionsUsage
+{
+    [JsonPropertyName("input_tokens")] public ulong InputTokens { get; set; }
+    [JsonPropertyName("output_tokens")] public ulong OutputTokens { get; set; }
+    [JsonPropertyName("cost")] public double? Cost { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+
+internal sealed class WireDecisionsResponse
+{
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("answers")] public Dictionary<string, JsonElement> Answers { get; set; } = [];
+    [JsonPropertyName("usage")] public WireDecisionsUsage? Usage { get; set; }
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("provider")] public string? Provider { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 // ---- speech / voices -----------------------------------------------------

@@ -481,6 +481,9 @@ public sealed class WireTests
         Assert.Equal("gpt-4o-mini", resp.Data[0].Id);
         Assert.Equal("temperature", resp.Data[0].SupportedParameters[0]);
 
+        await client.ListModelsAsync(new ListModelsOptions { Type = ModelType.Decisions });
+        Assert.Contains("type=decisions", server.LastRequest!.Query);
+
         // Without Admin=true the token must not be sent.
         await client.ListModelsAsync(new ListModelsOptions { Type = ModelType.All });
         Assert.False(server.LastRequest!.Headers.ContainsKey("x-admin-token"));
@@ -611,5 +614,45 @@ public sealed class WireTests
         }));
         Assert.Equal(429, ex.Status);
         Assert.Equal("key suspended", ex.Message);
+    }
+
+    // ---- decisions -----------------------------------------------------
+
+    [Fact]
+    public async Task Decisions_PreservesStructuredJsonAndUnknownMetadata()
+    {
+        using var server = new TestServer(_ => CannedResponse.Json(
+            """{"id":"d_1","model":"jev","provider":"jev","answers":{"pick":{"type":"choice","choice":"yes","legend":["a","b"]}},"usage":{"input_tokens":4,"output_tokens":2,"cost":0,"provider_meter":{"cached":1}},"trace":{"region":"eu"}}"""));
+        using var client = Client(server);
+
+        var response = await client.CreateDecisionsAsync(new DecisionsRequest
+        {
+            Model = "jev",
+            State = Parse("""{"turn":2,"open":true}""").Clone(),
+            Questions = new Dictionary<string, JsonElement>
+            {
+                ["pick"] = Parse("""{"type":"choice","instructions":"Should we offer an upgrade?","criteria":{"yes":"Account needs more capacity","no":"Current plan is sufficient"}}""").Clone(),
+            },
+            Extra = new Dictionary<string, JsonElement>
+            {
+                ["model"] = Parse("\"override\"").Clone(),
+                ["trace"] = Parse("""{"id":"t1"}""").Clone(),
+            },
+        });
+
+        var body = Parse(server.LastRequest!.Body);
+        Assert.Equal("/v1/decisions", server.LastRequest.Path);
+        Assert.Equal("Bearer test-key", server.LastRequest.Headers["Authorization"]);
+        Assert.Equal("jev", body.GetProperty("model").GetString());
+        Assert.Equal(2, body.GetProperty("state").GetProperty("turn").GetInt32());
+        Assert.Equal("choice", body.GetProperty("questions").GetProperty("pick").GetProperty("type").GetString());
+        Assert.Equal("Should we offer an upgrade?", body.GetProperty("questions").GetProperty("pick").GetProperty("instructions").GetString());
+        Assert.Equal("t1", body.GetProperty("trace").GetProperty("id").GetString());
+
+        Assert.Equal("yes", response.Answers["pick"].GetProperty("choice").GetString());
+        Assert.Equal("b", response.Answers["pick"].GetProperty("legend")[1].GetString());
+        Assert.Equal(0d, response.Usage!.Cost);
+        Assert.Equal(1, response.Usage.Extra!["provider_meter"].GetProperty("cached").GetInt32());
+        Assert.Equal("eu", response.Extra!["trace"].GetProperty("region").GetString());
     }
 }

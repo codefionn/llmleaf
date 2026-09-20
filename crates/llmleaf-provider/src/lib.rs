@@ -11,9 +11,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use llmleaf_model::{
-    AudioStream, BatchHandle, BatchResultStream, BatchSpec, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, DecisionsRequest, DecisionsResponse, ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream,
-    SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
+    AudioStream, BatchHandle, BatchResultStream, BatchSpec, ChatRequest, DecisionsRequest,
+    DecisionsResponse, EmbeddingRequest, EmbeddingResponse, ModelError, ModelInfo, RerankRequest,
+    RerankResponse, ResponseStream, SpeechRequest, TranscriptionRequest, TranscriptionResponse,
+    VoiceInfo,
 };
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;

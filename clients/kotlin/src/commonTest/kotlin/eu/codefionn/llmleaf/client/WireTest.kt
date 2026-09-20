@@ -8,6 +8,7 @@ import eu.codefionn.llmleaf.client.model.InputAudio
 import eu.codefionn.llmleaf.client.model.MessageContent
 import eu.codefionn.llmleaf.client.model.ReasoningDetail
 import eu.codefionn.llmleaf.client.model.Role
+import eu.codefionn.llmleaf.client.model.DecisionsRequest
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -30,6 +32,39 @@ import kotlin.test.assertTrue
 private val jsonHeaders = headersOf(HttpHeaders.ContentType, "application/json")
 
 class WireTest {
+    @Test
+    fun decisionsUsesRawJsonAndPreservesUnknownFields() = runTest {
+        val request = DecisionsRequest(
+            model = "m",
+            state = RawJson("""{"customer":"new"}"""),
+            questions = mapOf("eligible" to RawJson("""{"type":"choice","instructions":"Is this customer eligible?","criteria":{"yes":"New customer","no":"Existing customer"}}""")),
+            extra = RawJson("""{"model":"wrong","trace":true}"""),
+        )
+        val body = Json.parseToJsonElement(
+            LenientJson.encodeToString(DecisionsRequest.serializer(), request),
+        ).jsonObject
+        assertEquals("m", body["model"]!!.jsonPrimitive.content)
+        assertTrue(body["state"] is JsonObject)
+        assertTrue(body["questions"]!!.jsonObject["eligible"] is JsonObject)
+        assertEquals("true", body["trace"]!!.jsonPrimitive.content)
+
+        val engine = MockEngine { httpRequest ->
+            assertEquals("/v1/decisions", httpRequest.url.encodedPath)
+            respond(
+                """{"model":"m","answers":{"eligible":{"type":"choice","choice":"yes","probabilities":{"yes":0.8,"no":0.2}}},"usage":{"input_tokens":2,"output_tokens":1,"cost":0,"cached":true},"id":"d1","provider":"jev","trace":{"request":"x"}}""",
+                HttpStatusCode.OK,
+                jsonHeaders,
+            )
+        }
+        val client = LlmleafClient("https://gw.example.com", "test", engine)
+        val response = client.decisions(request)
+        assertTrue(response.answers["eligible"]!!.value.contains("\"choice\":\"yes\""))
+        assertEquals(0.0, response.usage!!.cost)
+        assertTrue(response.usage.extra!!.value.contains("cached"))
+        assertTrue(response.extra!!.value.contains("trace"))
+        client.close()
+    }
+
     @Test
     fun chatRequestSerialisesInlineAudio() {
         val content = MessageContent.Parts(

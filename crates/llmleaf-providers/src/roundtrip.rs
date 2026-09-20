@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use llmleaf_model::{
-    collect, ChatRequest, EmbeddingRequest, FinishReason, Message, ModelError, Role,
+    collect, ChatRequest, DecisionsRequest, EmbeddingRequest, FinishReason, Message, ModelError,
+    Role,
 };
 use llmleaf_provider::Provider;
 use llmleaf_provider::{ProviderCx, RealtimeParams, RealtimePeer, RealtimeWire};
@@ -21,7 +22,8 @@ use tokio::sync::mpsc;
 use crate::fake::{FakeHttpTransport, FakeRealtimeTransport, FakeResponse};
 use crate::transport::{HttpBody, HttpRequest, RealtimeTransport, Transports};
 use crate::{
-    AnthropicProvider, CohereProvider, GeminiProvider, OpenAiCompatProvider, VertexProvider,
+    AnthropicProvider, CohereProvider, GeminiProvider, OpenAiCompatProvider, TypeSafeProvider,
+    VertexProvider,
 };
 
 /// Build a [`Transports`] whose HTTP side is `http` and whose realtime side is a no-op (the chat /
@@ -243,6 +245,160 @@ fn json_body(req: &HttpRequest) -> serde_json::Value {
         HttpBody::Json(v) => v.clone(),
         other => panic!("expected a JSON body, got {other:?}"),
     }
+}
+
+fn decisions_request(model: &str) -> DecisionsRequest {
+    DecisionsRequest {
+        model: model.into(),
+        state: json!({ "ticket": "The checkout screen is blank" }),
+        questions: serde_json::from_value(json!({
+            "team": {
+                "type": "choice",
+                "instructions": { "question": "Who owns it?", "context": ["checkout"] },
+                "criteria": { "payments": "Checkout", "frontend": "Rendering" }
+            }
+        }))
+        .unwrap(),
+        extra: serde_json::from_value(json!({ "metadata": { "case": 12 } })).unwrap(),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Decisions — OpenRouter alpha router and TypeSafe System One
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn openrouter_decisions_uses_alpha_sibling_auth_and_preserves_response_json() {
+    let http = FakeHttpTransport::new(|request| {
+        assert_eq!(request.url, "https://openrouter.ai/api/alpha/decisions");
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Authorization" && value == "Bearer test-key"));
+        let body = json_body(request);
+        assert_eq!(body["model"], "typesafe/jev-1.13");
+        assert_eq!(
+            body["questions"]["team"]["instructions"]["context"][0],
+            "checkout"
+        );
+        assert_eq!(body["metadata"]["case"], 12);
+        Ok(FakeResponse::ok_json(&json!({
+            "id": "gen-dec-1", "provider": "TypeSafe", "model": "typesafe/jev-1.13-20260917",
+            "answers": { "team": { "type": "choice", "choice": "payments", "probabilities": { "payments": 0.84 } } },
+            "usage": { "input_tokens": 476, "output_tokens": 70, "cost": 0.000019992, "provider_metric": "kept" },
+            "trace": { "router": "edge-a" }
+        })))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openrouter", &http_transports(http)).unwrap();
+    let default_cx = ProviderCx {
+        endpoint: None,
+        ..cx()
+    };
+    let response = provider
+        .decisions(decisions_request("typesafe/jev-1.13"), &default_cx)
+        .await
+        .unwrap();
+    assert_eq!(response.model, "typesafe/jev-1.13-20260917");
+    assert_eq!(response.answers["team"]["probabilities"]["payments"], 0.84);
+    assert_eq!(response.usage.prompt_tokens, 476);
+    assert_eq!(response.usage.completion_tokens, 70);
+    assert_eq!(response.usage.total_tokens, 546);
+    assert_eq!(response.usage.cost_usd, Some(0.000019992));
+    assert_eq!(response.extra["id"], "gen-dec-1");
+    assert_eq!(response.extra["provider"], "TypeSafe");
+    assert_eq!(response.usage_extra["provider_metric"], "kept");
+}
+
+#[tokio::test]
+async fn openrouter_decisions_uses_custom_base_alpha_sibling() {
+    let http = FakeHttpTransport::new(|request| {
+        assert_eq!(request.url, "https://router.example/api/alpha/decisions");
+        Ok(FakeResponse::ok_json(
+            &json!({ "model": "jev", "answers": {}, "usage": {} }),
+        ))
+    });
+    let provider = OpenAiCompatProvider::for_kind("openrouter", &http_transports(http)).unwrap();
+    let custom_cx = ProviderCx {
+        endpoint: Some("https://router.example/api/v1/".into()),
+        ..cx()
+    };
+    provider
+        .decisions(decisions_request("jev"), &custom_cx)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn typesafe_decisions_uses_systemone_and_upstream_errors_are_preserved() {
+    let http = FakeHttpTransport::new(|request| {
+        assert_eq!(request.url, "https://api.typesafe.ai/v1/systemone");
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Authorization" && value == "Bearer test-key"));
+        assert_eq!(
+            json_body(request)["state"]["ticket"],
+            "The checkout screen is blank"
+        );
+        Ok(FakeResponse::status(429, "rate limited"))
+    });
+    let provider = TypeSafeProvider::new(&http_transports(http));
+    let default_cx = ProviderCx {
+        endpoint: None,
+        ..cx()
+    };
+    assert!(
+        matches!(provider.decisions(decisions_request("jev-latest"), &default_cx).await,
+        Err(ModelError::Upstream { status: 429, message }) if message == "rate limited")
+    );
+}
+
+#[tokio::test]
+async fn typesafe_decisions_roundtrips_all_answer_shapes() {
+    let http = FakeHttpTransport::new(|request| {
+        assert_eq!(request.url, "https://api.typesafe.ai/v1/systemone");
+        Ok(FakeResponse::ok_json(&json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "urgent": { "type": "noul", "noul": 0.95 },
+                "team": { "type": "choice", "choice": "payments", "probabilities": { "payments": 0.81, "frontend": 0.19 } },
+                "severity": { "type": "score", "score": 1.8, "legend": { "0": "low", "2": "high" }, "probabilities": { "0": 0.1, "2": 0.9 } }
+            },
+            "usage": { "input_tokens": 296, "output_tokens": 20 }
+        })))
+    });
+    let provider = TypeSafeProvider::new(&http_transports(http));
+    let default_cx = ProviderCx {
+        endpoint: None,
+        ..cx()
+    };
+    let response = provider
+        .decisions(decisions_request("jev-latest"), &default_cx)
+        .await
+        .unwrap();
+    assert_eq!(response.model, "jev-1.13.0");
+    assert_eq!(response.answers["urgent"]["noul"], 0.95);
+    assert_eq!(response.answers["team"]["choice"], "payments");
+    assert_eq!(response.answers["severity"]["score"], 1.8);
+    assert_eq!(response.usage.total_tokens, 316);
+}
+
+#[tokio::test]
+async fn decisions_are_unsupported_by_non_decision_and_typesafe_chat_providers() {
+    let openai = OpenAiCompatProvider::for_kind(
+        "openai",
+        &http_transports(FakeHttpTransport::json(json!({}))),
+    )
+    .unwrap();
+    assert!(matches!(
+        openai.decisions(decisions_request("gpt-4o"), &cx()).await,
+        Err(ModelError::Unsupported(_))
+    ));
+    let typesafe = TypeSafeProvider::new(&http_transports(FakeHttpTransport::json(json!({}))));
+    assert!(matches!(
+        typesafe.chat(user_chat("jev-latest", "hello"), &cx()).await,
+        Err(ModelError::Unsupported(_))
+    ));
 }
 
 #[tokio::test]

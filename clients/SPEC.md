@@ -125,9 +125,35 @@ original document back on the result. Response = `RerankResponse` (`object:"list
 array of `{index, relevance_score, document?}` (`document` present only when `return_documents`
 was set, and mirrors the string-or-object shape of the input) plus a `usage` block.
 
+### POST /v1/decisions
+
+Body = `DecisionsRequest`, with `model`, `state`, and a `questions` map. Each question
+is a JSON object with `type` (`noul`, `choice`, or `score`), `instructions`, and any
+`criteria`. State can be a string, object, or array. Instructions and criteria may
+also contain structured JSON. Preserve these values without converting them to text.
+
+The proto represents `state` and each question as raw JSON strings. Public SDK types
+may use their language's JSON value type instead. Encode the JSON value directly,
+never a quoted copy of its JSON representation. Merge `extra` fields at the top
+level, with the explicit `model`, `state`, and `questions` taking precedence.
+
+Response = `DecisionsResponse`. Preserve each named answer as JSON, including its
+probabilities, confidence, and score legend. `DecisionsUsage` uses `input_tokens`,
+`output_tokens`, and optional `cost`, rather than the chat usage field names. Keep a
+reported zero cost distinct from an absent cost. Preserve optional `id` and
+`provider`, plus unknown response and usage fields in their respective `extra` maps.
+
+SDK methods use `/v1/decisions`. The server's `/api/alpha/decisions` and
+`/v1/systemone` aliases accept the same body and return the same response.
+
 ### GET /v1/models
-Query: `type` (`all|llm|tts|stt|embedding|rerank`), `search` (substring). Optional header
+Query: `type` (`all|llm|tts|stt|embedding|rerank|decisions`), `search` (substring). Optional header
 `x-admin-token` adds the per-model `endpoints` array. Response = `ListModelsResponse`.
+
+`type=decisions` requires a known decisions classification and excludes unknown
+models. Decisions entries have `architecture.output_modalities: ["decisions"]`
+and `architecture.modality: "text->decisions"`. Logical routes inherit catalog
+metadata from their primary upstream target.
 
 ### POST /v1/audio/speech
 Body = `SpeechRequest`. Response = **raw audio bytes**; `Content-Type` reflects

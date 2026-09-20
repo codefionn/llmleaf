@@ -25,7 +25,7 @@
 //! merge at the top level of the request object.
 
 use serde::de::{self, Deserializer};
-use serde::ser::{SerializeSeq, Serializer};
+use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -1530,6 +1530,84 @@ pub struct RerankResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/decisions` request body. `state`, each question, and passthrough
+/// values are native JSON, so nested provider-specific shapes survive unchanged.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DecisionsRequest {
+    pub model: String,
+    pub state: serde_json::Value,
+    pub questions: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl DecisionsRequest {
+    /// Build a decisions request from structured JSON state and named questions.
+    pub fn new(
+        model: impl Into<String>,
+        state: serde_json::Value,
+        questions: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self { model: model.into(), state, questions, extra: serde_json::Map::new() }
+    }
+}
+
+impl Serialize for DecisionsRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.extra.len() + 3))?;
+        // Passthrough fields come first. The canonical fields are written last, so an
+        // accidental `extra.model` (or state/questions) can never replace them.
+        for (key, value) in &self.extra {
+            if !matches!(key.as_str(), "model" | "state" | "questions") {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.serialize_entry("model", &self.model)?;
+        map.serialize_entry("state", &self.state)?;
+        map.serialize_entry("questions", &self.questions)?;
+        map.end()
+    }
+}
+
+/// Provider token and cost accounting for a decisions response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DecisionsUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Provider-reported cost. `Some(0.0)` is meaningful and remains distinct from absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    /// Provider-specific usage fields preserved as native JSON values.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `POST /v1/decisions` response. Answers and unknown metadata stay structured JSON.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionsResponse {
+    pub model: String,
+    #[serde(default)]
+    pub answers: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub usage: DecisionsUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Unknown provider response fields preserved as native JSON values.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
 // Audio — speech / voices
 // ---------------------------------------------------------------------------
 
@@ -1732,6 +1810,7 @@ pub enum ModelType {
     Stt,
     Embedding,
     Rerank,
+    Decisions,
 }
 
 impl ModelType {
@@ -1743,6 +1822,7 @@ impl ModelType {
             ModelType::Stt => "stt",
             ModelType::Embedding => "embedding",
             ModelType::Rerank => "rerank",
+            ModelType::Decisions => "decisions",
         }
     }
 }

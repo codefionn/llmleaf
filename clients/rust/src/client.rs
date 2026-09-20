@@ -76,6 +76,8 @@ impl Client {
     pub async fn embeddings(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse> { let raw: RawEmbeddingResponse = self.send(self.json(Method::Post, "/v1/embeddings", &request)?).await?.json().await?; raw.into_public() }
     /// `POST /v1/rerank`.
     pub async fn rerank(&self, request: RerankRequest) -> Result<RerankResponse> { self.send(self.json(Method::Post, "/v1/rerank", &request)?).await?.json().await }
+    /// `POST /v1/decisions`.
+    pub async fn decisions(&self, request: DecisionsRequest) -> Result<DecisionsResponse> { self.send(self.json(Method::Post, "/v1/decisions", &request)?).await?.json().await }
     /// `GET /v1/models` with optional type and search filters.
     pub async fn list_models(&self, model_type: Option<ModelType>, search: Option<&str>) -> Result<ListModelsResponse> { let mut pairs = Vec::new(); if let Some(kind) = model_type { pairs.push(("type", kind.as_str().to_string())); } if let Some(search) = search { pairs.push(("search", search.to_string())); } self.send(self.query(Method::Get, "/v1/models", &pairs)?).await?.json().await }
     /// `POST /v1/audio/speech`, returning bytes and content type.

@@ -612,6 +612,39 @@ pub const RerankResponse = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Decisions  (POST /v1/decisions)
+// ---------------------------------------------------------------------------
+
+/// A map member whose value is raw JSON. The JSON wire names map members by `key`.
+pub const DecisionsJsonField = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const DecisionsRequest = struct {
+    model: []const u8,
+    state: []const u8, // raw JSON string, object, or array
+    questions: []const DecisionsJsonField, // raw JSON question values
+    extra: ?[]const u8 = null, // raw JSON object merged at the top level
+};
+
+pub const DecisionsUsage = struct {
+    input_tokens: u64 = 0,
+    output_tokens: u64 = 0,
+    cost: ?f64 = null, // zero is distinct from absent
+    extra: ?[]const u8 = null, // unknown usage fields as raw JSON object
+};
+
+pub const DecisionsResponse = struct {
+    model: []const u8,
+    answers: []const DecisionsJsonField, // raw JSON answer values
+    usage: ?DecisionsUsage = null,
+    id: ?[]const u8 = null,
+    provider: ?[]const u8 = null,
+    extra: ?[]const u8 = null, // unknown top-level fields as raw JSON object
+};
+
+// ---------------------------------------------------------------------------
 // Audio — text to speech / voices
 // ---------------------------------------------------------------------------
 
@@ -722,6 +755,7 @@ pub const ModelType = enum {
     stt,
     embedding,
     rerank,
+    decisions,
 };
 
 // ---------------------------------------------------------------------------

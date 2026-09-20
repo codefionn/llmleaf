@@ -619,6 +619,43 @@ pub fn encodeRerankRequest(gpa: Allocator, req: gen.RerankRequest) ![]u8 {
     return aw.toOwnedSlice();
 }
 
+/// Serialise a Decisions request. State and question values are validated then written as raw
+/// JSON, which avoids the easy-to-miss double-encoding bug in this API.
+pub fn encodeDecisionsRequest(gpa: Allocator, req: gen.DecisionsRequest) ![]u8 {
+    var aw: Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+    var s: Stringify = .{ .writer = &aw.writer, .options = .{} };
+    try s.beginObject();
+    try s.objectField("model");
+    try s.write(req.model);
+    try rawField(&s, gpa, "state", req.state);
+    try s.objectField("questions");
+    try s.beginObject();
+    for (req.questions) |question| try rawField(&s, gpa, question.key, question.value);
+    try s.endObject();
+    // Unlike the generic helper, filter canonical keys: duplicate JSON keys leave behavior
+    // parser-dependent, while the SDK promises explicit fields win.
+    if (req.extra) |raw| try mergeDecisionsExtra(&s, gpa, raw);
+    try s.endObject();
+    return aw.toOwnedSlice();
+}
+
+fn mergeDecisionsExtra(s: *Stringify, gpa: Allocator, raw: []const u8) !void {
+    const parsed = std.json.parseFromSlice(Value, gpa, raw, .{}) catch return error.InvalidRawJson;
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return error.InvalidRawJson,
+    };
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "model") or std.mem.eql(u8, key, "state") or std.mem.eql(u8, key, "questions")) continue;
+        try s.objectField(key);
+        try s.write(entry.value_ptr.*);
+    }
+}
+
 pub fn encodeSpeechRequest(gpa: Allocator, req: gen.SpeechRequest) ![]u8 {
     var aw: Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
@@ -1184,6 +1221,78 @@ pub fn decodeRerankResponse(arena: Allocator, root: Value) !gen.RerankResponse {
         .model = getStr(root, "model") orelse "",
         .results = results,
         .usage = parseUsage(root, "usage"),
+    };
+}
+
+fn isKnown(key: []const u8, known: []const []const u8) bool {
+    for (known) |name| if (std.mem.eql(u8, key, name)) return true;
+    return false;
+}
+
+/// Re-encodes unknown members as one raw JSON object so newer server metadata survives a
+/// decode/inspect/re-encode cycle.
+fn unknownObject(arena: Allocator, root: Value, known: []const []const u8) !?[]const u8 {
+    const obj = switch (root) {
+        .object => |o| o,
+        else => return null,
+    };
+    var found = false;
+    var aw: Writer.Allocating = .init(arena);
+    var s: Stringify = .{ .writer = &aw.writer, .options = .{} };
+    try s.beginObject();
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        if (isKnown(entry.key_ptr.*, known)) continue;
+        found = true;
+        try s.objectField(entry.key_ptr.*);
+        try s.write(entry.value_ptr.*);
+    }
+    try s.endObject();
+    if (!found) {
+        aw.deinit();
+        return null;
+    }
+    return @as(?[]const u8, try aw.toOwnedSlice());
+}
+
+fn decodeDecisionsFields(arena: Allocator, root: ?Value) ![]const gen.DecisionsJsonField {
+    const obj = switch (root orelse return &.{}) {
+        .object => |o| o,
+        else => return error.MalformedResponse,
+    };
+    var fields: std.ArrayList(gen.DecisionsJsonField) = .empty;
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        try fields.append(arena, .{
+            .key = entry.key_ptr.*,
+            .value = try std.json.Stringify.valueAlloc(arena, entry.value_ptr.*, .{}),
+        });
+    }
+    return fields.toOwnedSlice(arena);
+}
+
+fn decodeDecisionsUsage(arena: Allocator, root: Value) !gen.DecisionsUsage {
+    return .{
+        .input_tokens = getInt(u64, root, "input_tokens") orelse 0,
+        .output_tokens = getInt(u64, root, "output_tokens") orelse 0,
+        .cost = getFloat(root, "cost"),
+        .extra = try unknownObject(arena, root, &.{ "input_tokens", "output_tokens", "cost" }),
+    };
+}
+
+/// Decode `POST /v1/decisions`, keeping answer values and unknown metadata as raw JSON.
+pub fn decodeDecisionsResponse(arena: Allocator, root: Value) !gen.DecisionsResponse {
+    var usage: ?gen.DecisionsUsage = null;
+    if (objGet(root, "usage")) |u| {
+        if (u == .object) usage = try decodeDecisionsUsage(arena, u);
+    }
+    return .{
+        .model = getStr(root, "model") orelse "",
+        .answers = try decodeDecisionsFields(arena, objGet(root, "answers")),
+        .usage = usage,
+        .id = getStr(root, "id"),
+        .provider = getStr(root, "provider"),
+        .extra = try unknownObject(arena, root, &.{ "model", "answers", "usage", "id", "provider" }),
     };
 }
 
@@ -1888,4 +1997,33 @@ test "encode multimodal content parts" {
     try testing.expect(std.mem.indexOf(u8, body, "{\"type\":\"text\",\"text\":\"look:\"}") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"image_url\":{\"url\":\"http://x/y.png\",\"detail\":\"low\"}") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"input_audio\":{\"data\":\"UklGRg==\",\"format\":\"wav\"}") != null);
+}
+
+test "decisions keeps raw JSON and canonical fields win extra" {
+    const req = gen.DecisionsRequest{
+        .model = "m",
+        .state = "{\"score\":1}",
+        .questions = &.{.{ .key = "approve", .value = "{\"type\":\"choice\",\"instructions\":\"Approve this?\",\"criteria\":{\"yes\":\"Meets policy\",\"no\":\"Does not meet policy\"}}" }},
+        .extra = "{\"model\":\"wrong\",\"state\":null,\"trace\":true}",
+    };
+    const body = try encodeDecisionsRequest(testing.allocator, req);
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("m", getStr(parsed.value, "model").?);
+    try testing.expect(objGet(parsed.value, "state").? == .object);
+    try testing.expect(getBool(parsed.value, "trace").?);
+}
+
+test "decode decisions preserves raw answers and unknown metadata" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(Value, a, "{\"model\":\"m\",\"answers\":{\"approve\":{\"type\":\"choice\",\"choice\":\"yes\",\"probabilities\":{\"yes\":0.8,\"no\":0.2}}},\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"cost\":0,\"cached\":true},\"id\":\"d1\",\"provider\":\"jev\",\"trace\":{\"x\":1}}", .{});
+    const response = try decodeDecisionsResponse(a, parsed);
+    try testing.expectEqual(@as(usize, 1), response.answers.len);
+    try testing.expect(std.mem.indexOf(u8, response.answers[0].value, "\"choice\":\"yes\"") != null);
+    try testing.expectEqual(@as(f64, 0), response.usage.?.cost.?);
+    try testing.expect(std.mem.indexOf(u8, response.usage.?.extra.?, "cached") != null);
+    try testing.expect(std.mem.indexOf(u8, response.extra.?, "trace") != null);
 }

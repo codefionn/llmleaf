@@ -78,6 +78,23 @@ client.responsesStream(ResponsesRequest("gpt-4o-mini", ResponsesInput.text("Coun
     .collect { event -> if (event.type == "response.output_text.delta") print(event.delta) }
 ```
 
+### Decisions (`POST /v1/decisions`)
+
+`state`, questions, answers, and unknown fields use `RawJson`, so their JSON values are sent
+and returned without string escaping.
+
+```kotlin
+import eu.codefionn.llmleaf.client.RawJson
+import eu.codefionn.llmleaf.client.model.DecisionsRequest
+
+val decision = client.decisions(DecisionsRequest(
+    model = "jev",
+    state = RawJson("""{"customer":"new"}"""),
+    questions = mapOf("eligible" to RawJson("""{"type":"choice","instructions":"Is this customer eligible?","criteria":{"yes":"New customer","no":"Existing customer"}}""")),
+))
+println(decision.answers["eligible"])
+```
+
 ## Endpoints
 
 | SDK call | Endpoint |
@@ -86,6 +103,7 @@ client.responsesStream(ResponsesRequest("gpt-4o-mini", ResponsesInput.text("Coun
 | `responses` / `responsesStream` | `POST /v1/responses` (stream → `Flow<ResponsesStreamEvent>`, no `[DONE]`) |
 | `embeddings` | `POST /v1/embeddings` (decodes base64 little-endian f32) |
 | `rerank` | `POST /v1/rerank` (documents scored against a query, returned in relevance order) |
+| `decisions` | `POST /v1/decisions` |
 | `listModels` | `GET /v1/models` |
 | `speech` | `POST /v1/audio/speech` → `SpeechResult` |
 | `voices` | `GET /v1/audio/voices` |

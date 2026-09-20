@@ -824,6 +824,54 @@ pub struct RerankResponse {
     pub usage: ::core::option::Option<Usage>,
 }
 // ----------------------------------------------------------------------------
+// Decisions (POST /v1/decisions; also /api/alpha/decisions and /v1/systemone)
+// ----------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DecisionsRequest {
+    #[prost(string, tag="1")]
+    pub model: ::prost::alloc::string::String,
+    /// raw JSON string, object, or array; never double-encode
+    #[prost(string, tag="2")]
+    pub state: ::prost::alloc::string::String,
+    /// each value is a raw JSON noul, choice, or score question
+    #[prost(map="string, string", tag="3")]
+    pub questions: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    /// raw JSON fields merged into the request object
+    #[prost(map="string, string", tag="4")]
+    pub extra: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DecisionsUsage {
+    #[prost(uint64, tag="1")]
+    pub input_tokens: u64,
+    #[prost(uint64, tag="2")]
+    pub output_tokens: u64,
+    /// provider-reported cost; zero is distinct from absent
+    #[prost(double, optional, tag="3")]
+    pub cost: ::core::option::Option<f64>,
+    /// unknown usage fields as raw JSON
+    #[prost(map="string, string", tag="4")]
+    pub extra: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DecisionsResponse {
+    #[prost(string, tag="1")]
+    pub model: ::prost::alloc::string::String,
+    /// raw JSON answers, including probabilities and legends
+    #[prost(map="string, string", tag="2")]
+    pub answers: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    #[prost(message, optional, tag="3")]
+    pub usage: ::core::option::Option<DecisionsUsage>,
+    #[prost(string, optional, tag="4")]
+    pub id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub provider: ::core::option::Option<::prost::alloc::string::String>,
+    /// unknown response fields as raw JSON
+    #[prost(map="string, string", tag="6")]
+    pub extra: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+}
+// ----------------------------------------------------------------------------
 // Audio — text to speech  (POST /v1/audio/speech  ->  raw audio bytes)
 //          voice catalog    (GET  /v1/audio/voices)
 // ----------------------------------------------------------------------------

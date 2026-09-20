@@ -10,8 +10,8 @@ import (
 
 // ListModelsOptions are the optional query filters for ListModels.
 type ListModelsOptions struct {
-	// Type filters the catalog: "all", "llm", "tts", "stt", "embedding", or
-	// "rerank". Empty means unset (server default).
+	// Type filters the catalog: "all", "llm", "tts", "stt", "embedding",
+	// "rerank", or "decisions". Empty means unset (server default).
 	Type string
 	// Search is a case-insensitive substring filter over model ids/names.
 	Search string

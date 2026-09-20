@@ -8,6 +8,8 @@ import eu.codefionn.llmleaf.client.model.ChatRequest
 import eu.codefionn.llmleaf.client.model.ChatResponse
 import eu.codefionn.llmleaf.client.model.EmbeddingRequest
 import eu.codefionn.llmleaf.client.model.EmbeddingResponse
+import eu.codefionn.llmleaf.client.model.DecisionsRequest
+import eu.codefionn.llmleaf.client.model.DecisionsResponse
 import eu.codefionn.llmleaf.client.model.ErrorResponse
 import eu.codefionn.llmleaf.client.model.ListModelsResponse
 import eu.codefionn.llmleaf.client.model.ModelType
@@ -246,6 +248,17 @@ public class LlmleafClient private constructor(
         }.execute { resp ->
             ensureSuccess(resp)
             decode(resp.bodyAsText(), RerankResponse.serializer())
+        }
+
+    /** Submits a Decisions request (`POST /v1/decisions`). */
+    public suspend fun decisions(request: DecisionsRequest): DecisionsResponse =
+        http.prepareRequest {
+            method = HttpMethod.Post
+            url("$base/v1/decisions")
+            jsonBody(request, DecisionsRequest.serializer())
+        }.execute { resp ->
+            ensureSuccess(resp)
+            decode(resp.bodyAsText(), DecisionsResponse.serializer())
         }
 
     // --- Models ------------------------------------------------------------

@@ -35,6 +35,9 @@ import type {
   RerankRequest,
   RerankResponse,
   RerankResult,
+  DecisionsRequest,
+  DecisionsResponse,
+  DecisionsUsage,
   SpeechRequest,
   VoicesResponse,
   Voice,
@@ -569,6 +572,58 @@ export function decodeRerankResponse(v: unknown): RerankResponse {
     results: arr(o["results"]).map(decodeRerankResult),
     usage: decodeUsage(o["usage"]),
   };
+}
+
+// ===========================================================================
+// Decisions
+// ===========================================================================
+
+/** Encode a decisions request without stringifying its structured JSON values. */
+export function encodeDecisionsRequest(req: DecisionsRequest): Json {
+  const extra = req.extra;
+  if (extra !== undefined && (typeof extra !== "object" || extra === null || Array.isArray(extra))) {
+    throw new TypeError("DecisionsRequest.extra must be a JSON object");
+  }
+  const passthrough = Object.fromEntries(
+    Object.entries(extra ?? {}).filter(([key]) => key !== "model" && key !== "state" && key !== "questions"),
+  );
+  // Explicit fields are spread last, so passthrough metadata cannot override them.
+  return { ...passthrough, model: req.model, state: req.state, questions: req.questions };
+}
+
+function extras(o: Json, known: readonly string[]): Record<string, unknown> | undefined {
+  const extra = Object.fromEntries(Object.entries(o).filter(([key]) => !known.includes(key)));
+  return Object.keys(extra).length === 0 ? undefined : extra;
+}
+
+function decodeDecisionsUsage(v: unknown): DecisionsUsage {
+  const o = obj(v) ?? {};
+  const usage: DecisionsUsage = {
+    inputTokens: num(o["input_tokens"]),
+    outputTokens: num(o["output_tokens"]),
+  };
+  const cost = optNum(o["cost"]);
+  if (cost !== undefined) usage.cost = cost;
+  const extra = extras(o, ["input_tokens", "output_tokens", "cost"]);
+  if (extra !== undefined) usage.extra = extra;
+  return usage;
+}
+
+export function decodeDecisionsResponse(v: unknown): DecisionsResponse {
+  const o = obj(v) ?? {};
+  const answers = obj(o["answers"]) ?? {};
+  const response: DecisionsResponse = {
+    model: str(o["model"]),
+    answers,
+    usage: decodeDecisionsUsage(o["usage"]),
+  };
+  const id = optStr(o["id"]);
+  if (id !== undefined) response.id = id;
+  const provider = optStr(o["provider"]);
+  if (provider !== undefined) response.provider = provider;
+  const extra = extras(o, ["model", "answers", "usage", "id", "provider"]);
+  if (extra !== undefined) response.extra = extra;
+  return response;
 }
 
 // ===========================================================================

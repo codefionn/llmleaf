@@ -31,6 +31,7 @@ mod baidu;
 mod batch;
 mod cohere;
 mod compat;
+mod decisions;
 mod gemini;
 mod http;
 mod lmstudio;
@@ -43,6 +44,7 @@ mod openai_wire;
 mod realtime_ws;
 mod thinking;
 pub mod transport;
+mod typesafe;
 mod vertex;
 
 /// Injectable fakes for unit tests, benches, and the seeded simulation — never compiled into the
@@ -74,6 +76,7 @@ pub use transport::{
     HttpRequest, HttpResponse, HttpTransport, Method, RealtimeTransport, ReqwestTransport,
     Transports,
 };
+pub use typesafe::TypeSafeProvider;
 pub use vertex::VertexProvider;
 
 /// Instantiate a first-party provider by its config `kind`. Returns `None` for unknown kinds so the
@@ -93,6 +96,7 @@ pub fn build(kind: &str, transports: &Transports) -> Option<Arc<dyn Provider>> {
         // (NDJSON streaming, native model management) and LM Studio's `/api/v0/*` (rich catalog).
         "ollama" => Some(Arc::new(OllamaProvider::new(transports))),
         "lmstudio" | "lm-studio" => Some(Arc::new(LmStudioProvider::new(transports))),
+        "typesafe" | "jev" => Some(Arc::new(TypeSafeProvider::new(transports))),
         // Baidu and Moonshot kinds resolve to thin provider-edge wrappers around their compat rows:
         // Baidu normalizes CNY catalog pricing and blocks incompatible audio dialects; Moonshot
         // rewrites tool JSON schemas into the upstream's "flavored" subset. Everything else falls
@@ -125,6 +129,8 @@ pub fn known_kinds() -> Vec<&'static str> {
         "ollama",
         "lmstudio",
         "lm-studio",
+        "typesafe",
+        "jev",
     ];
     kinds.extend_from_slice(Brand::kinds());
     kinds

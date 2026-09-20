@@ -67,6 +67,7 @@ await client.responses(req);         // POST /v1/responses (OpenAI Responses dia
 client.responsesStream(req);         // stream:true, async iterable of typed events (no [DONE])
 await client.embeddings(req);        // base64 vectors decoded to floats
 await client.rerank(req);            // POST /v1/rerank; results by relevance (plain JSON)
+await client.decisions(req);          // POST /v1/decisions; structured decision answers
 await client.listModels({ type: "llm" });
 await client.speech(req);            // -> { bytes, contentType }
 await client.voices("tts-1");
@@ -80,6 +81,22 @@ client.batchResults(id);             // async iterable of result lines
 Free-form fields (`extra`, `responseFormat.jsonSchema`, `functionDef.parameters`, …) are raw
 JSON strings — pass `JSON.stringify(obj)` and the transport splices the parsed value in;
 `extra` keys merge at the top level of the request.
+
+## Decisions
+
+```ts
+const decision = await client.decisions({
+  model: "jev",
+  state: { turn: 2 },
+  questions: {
+    route: { type: "choice", instructions: "Which route?", criteria: { left: null, right: null } },
+  },
+});
+console.log(decision.answers.route);
+```
+
+`state`, `questions`, answers, and decisions metadata use native JSON values. `extra` is a
+structured object merged into the body; it cannot override `model`, `state`, or `questions`.
 
 ## Errors
 

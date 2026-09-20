@@ -50,7 +50,21 @@ The Rust client defaults to Tokio. Compio users select the Compio-only transport
 
 All clients cover the same endpoints (see [SPEC.md](SPEC.md)): chat completions (streaming +
 non-streaming), the OpenAI Responses dialect (streaming + non-streaming; llmleaf serves it
-statelessly, so there is no retrieval call), embeddings, model catalog, text-to-speech,
+statelessly, so there is no retrieval call), embeddings, rerank, decisions, model catalog, text-to-speech,
 speech-to-text (multipart), and batches. Auth is `Authorization: Bearer <key>`; errors surface
 as a typed `ApiError`. The realtime WebSocket surface is intentionally out of scope for these
 SDKs.
+
+Decisions methods send requests to `/v1/decisions` and work with both OpenRouter and
+direct TypeSafe/JEV routes. Pass a model, a state, and named `noul`, `choice`, or
+`score` questions. Each SDK preserves structured question and answer JSON and exposes
+the decisions usage fields (`input_tokens`, `output_tokens`, and optional `cost`).
+
+| SDK | Decisions method |
+|-----|------------------|
+| Rust | `client.decisions(request).await` |
+| TypeScript | `await client.decisions(request)` |
+| Go | `client.CreateDecisions(ctx, request)` |
+| C# | `await client.CreateDecisionsAsync(request)` |
+| Kotlin | `client.decisions(request)` |
+| Zig | `client.decisions(request, &api_error)` |

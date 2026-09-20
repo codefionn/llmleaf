@@ -346,6 +346,41 @@ export interface RerankResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+/** POST /v1/decisions. State and questions are native JSON values. */
+export interface DecisionsRequest {
+  model: string;
+  state: unknown;
+  /** Named `noul`, `choice`, or `score` questions, kept as structured JSON. */
+  questions: Record<string, unknown>;
+  /** Provider passthrough fields merged into the request body. */
+  extra?: Record<string, unknown>;
+}
+
+/** Provider token and cost accounting for a decisions response. */
+export interface DecisionsUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Provider-reported cost. `0` is distinct from an absent cost. */
+  cost?: number;
+  /** Unknown usage metadata, preserved as structured JSON. */
+  extra?: Record<string, unknown>;
+}
+
+/** POST /v1/decisions response. */
+export interface DecisionsResponse {
+  model: string;
+  answers: Record<string, unknown>;
+  usage: DecisionsUsage;
+  id?: string;
+  provider?: string;
+  /** Unknown response metadata, preserved as structured JSON. */
+  extra?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
 
@@ -458,7 +493,7 @@ export interface ListModelsResponse {
 }
 
 /** Filter for {@link "./client".LlmleafClient.listModels}. */
-export type ModelType = "all" | "llm" | "tts" | "stt" | "embedding" | "rerank";
+export type ModelType = "all" | "llm" | "tts" | "stt" | "embedding" | "rerank" | "decisions";
 
 export interface ListModelsOptions {
   type?: ModelType;

@@ -10,8 +10,8 @@
 mod audio;
 mod batch;
 mod catalog;
-mod embed;
 mod decisions;
+mod embed;
 mod error;
 mod request;
 mod rerank;
@@ -27,8 +27,8 @@ pub use batch::{
     BatchStatus,
 };
 pub use catalog::ModelInfo;
-pub use embed::{Embedding, EmbeddingRequest, EmbeddingResponse};
 pub use decisions::{DecisionsRequest, DecisionsResponse};
+pub use embed::{Embedding, EmbeddingRequest, EmbeddingResponse};
 pub use error::ModelError;
 pub use request::{
     ChatRequest, ContentPart, Message, Modality, Role, Thinking, ToolCall, ToolChoice, ToolDef,

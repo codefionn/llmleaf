@@ -232,6 +232,18 @@ public sealed class LlmleafClient : IDisposable
         return Mapper.RerankResponseFromWire(wire);
     }
 
+    // ---- decisions ------------------------------------------------------
+
+    /// <summary>Submit state and named decision questions (POST /v1/decisions). Raw JSON values
+    /// are preserved for provider-specific question and answer schemas.</summary>
+    public async Task<DecisionsResponse> CreateDecisionsAsync(DecisionsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = Mapper.EncodeDecisionsRequest(request);
+        var wire = await SendJsonForJsonAsync<WireDecisionsResponse>(HttpMethod.Post, "v1/decisions", body, cancellationToken).ConfigureAwait(false);
+        return Mapper.DecisionsResponseFromWire(wire);
+    }
+
     // ---- models ---------------------------------------------------------
 
     /// <summary>List the model catalog (GET /v1/models).</summary>

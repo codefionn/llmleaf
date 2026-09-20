@@ -13,10 +13,10 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use llmleaf_core::{build_router, build_state, Config, Event, EventBus, KeyStore, Verdict};
 use llmleaf_model::{
-    AudioChunk, AudioStream, ChatRequest, Embedding, EmbeddingRequest, EmbeddingResponse,
-    FinishReason, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse, RerankResult,
-    ResponseStream, SpeechRequest, StreamChunk, TranscriptionRequest, TranscriptionResponse, Usage,
-    VoiceInfo,
+    AudioChunk, AudioStream, ChatRequest, DecisionsRequest, DecisionsResponse, Embedding,
+    EmbeddingRequest, EmbeddingResponse, FinishReason, Modality, ModelError, ModelInfo,
+    RerankRequest, RerankResponse, RerankResult, ResponseStream, SpeechRequest, StreamChunk,
+    TranscriptionRequest, TranscriptionResponse, Usage, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, ProviderRegistry};
 use serde_json::{json, Value};
@@ -121,6 +121,42 @@ impl Provider for MockProvider {
         })
     }
 
+    async fn decisions(
+        &self,
+        req: DecisionsRequest,
+        _cx: &ProviderCx,
+    ) -> Result<DecisionsResponse, ModelError> {
+        Ok(DecisionsResponse {
+            model: req.model,
+            answers: req
+                .questions
+                .into_iter()
+                .map(|(id, question)| {
+                    let answer = match question.get("type").and_then(Value::as_str) {
+                        Some("choice") => {
+                            json!({"type":"choice", "choice":"support", "confidence": 0.8})
+                        }
+                        Some("score") => json!({"type":"score", "score": 1.0, "confidence": 0.8}),
+                        _ => json!({"type":"noul", "noul": 0.9}),
+                    };
+                    (id, answer)
+                })
+                .collect(),
+            usage: Usage {
+                prompt_tokens: 7,
+                completion_tokens: 2,
+                total_tokens: 9,
+                cost_usd: Some(0.123),
+                ..Default::default()
+            },
+            extra: serde_json::Map::from_iter([
+                ("id".into(), json!("decision-1")),
+                ("provider".into(), json!("mock")),
+            ]),
+            usage_extra: serde_json::Map::from_iter([("upstream_metric".into(), json!(4))]),
+        })
+    }
+
     async fn speech(
         &self,
         req: SpeechRequest,
@@ -181,12 +217,18 @@ impl Provider for MockProvider {
         gamma.modality = Some(Modality::Tts);
         let mut delta = ModelInfo::new("delta-stt");
         delta.modality = Some(Modality::Stt);
+        let mut decisions = ModelInfo::new("zeta-decisions");
+        decisions.modality = Some(Modality::Decisions);
+        let mut jev_latest = ModelInfo::new("jev-latest");
+        jev_latest.modality = Some(Modality::Decisions);
         // id-only — the provider reports nothing; gaps are enhanced from the bundled dataset by bare id.
         let gpt = ModelInfo::new("gpt-4o");
         // id-only reasoning model — the dataset records the sampling params it REJECTS (a reasoning
         // model 400s on temperature) and its pinned defaults; the catalog must surface both.
         let reasoning = ModelInfo::new("gpt-5");
-        Ok(vec![alpha, beta, epsilon, gamma, delta, gpt, reasoning])
+        Ok(vec![
+            alpha, beta, epsilon, gamma, delta, decisions, jev_latest, gpt, reasoning,
+        ])
     }
 
     async fn voices(&self, _model: &str, _cx: &ProviderCx) -> Result<Vec<VoiceInfo>, ModelError> {
@@ -234,9 +276,9 @@ impl Provider for ChatOnlyProvider {
 }
 
 /// A provider that enumerates a catalog but never tags a modality — i.e. it does NOT support model
-/// types. Used to prove the listing surface IGNORES a `?type=` filter for such a provider (its models
-/// pass through unfiltered) instead of hiding its whole catalog. Ids are synthetic so the bundled
-/// dataset cannot enrich a modality back in.
+/// types. Used to prove the listing surface ignores legacy `?type=` filters for such a provider.
+/// Its models pass through unfiltered instead of disappearing. Decisions stays strict. The ids are
+/// synthetic, so the bundled dataset cannot enrich a modality back in.
 struct TypelessProvider;
 
 #[async_trait]
@@ -288,6 +330,10 @@ prefix = "tl"
 [[routes]]
 model = "demo"
 targets = [{ provider = "mock" }]
+
+[[routes]]
+model = "jev"
+targets = [{ provider = "mock", model = "jev-latest" }]
 
 # A chat-only provider ahead of the full provider: non-chat requests must fall through to `mock`.
 [[routes]]
@@ -451,6 +497,23 @@ async fn missing_bearer_is_unauthorized() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn decisions_aliases_require_bearers() {
+    for path in ["/v1/decisions", "/api/alpha/decisions", "/v1/systemone"] {
+        let (app, _bus) = app_and_bus();
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }
 
 #[tokio::test]
@@ -923,6 +986,107 @@ async fn rerank_round_trip() {
 }
 
 #[tokio::test]
+async fn decisions_aliases_share_auth_routing_and_wire_shape() {
+    for path in ["/v1/decisions", "/api/alpha/decisions", "/v1/systemone"] {
+        let (app, bus) = app_and_bus();
+        let mut events = bus.subscribe();
+        let req = Request::builder()
+            .method("POST").uri(path)
+            .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+            .header("content-type", "application/json")
+            .header("x-session-id", "header-session")
+            .body(Body::from(serde_json::to_vec(&json!({
+                "model": "demo", "state": {"ticket": "needs help"},
+                "questions": {"urgent": {"type": "noul", "instructions": {"question": "Urgent?"}}}
+            })).unwrap())).unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let body = body_json(response).await;
+        assert_eq!(body["id"], "decision-1");
+        assert_eq!(body["provider"], "mock");
+        assert_eq!(body["answers"]["urgent"]["type"], "noul");
+        assert_eq!(body["usage"]["input_tokens"], 7);
+        assert_eq!(body["usage"]["output_tokens"], 2);
+        assert_eq!(body["usage"]["cost"], 0.123);
+        assert_eq!(body["usage"]["upstream_metric"], 4);
+        let mut saw_usage = false;
+        for _ in 0..4 {
+            if let Event::Usage { usage, .. } = &events.recv().await.unwrap().event {
+                assert_eq!(usage.cost_usd, Some(0.123));
+                saw_usage = true;
+                break;
+            }
+        }
+        assert!(saw_usage, "decisions must emit its provider cost");
+    }
+}
+
+#[tokio::test]
+async fn decisions_fallback_preserves_health_and_enforces_model_permissions() {
+    let (app, _bus, keys) = app_bus_keys();
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/decisions")
+            .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "model": "fallback", "state": "text",
+                    "questions": {"urgent": {"type": "noul", "instructions": "Urgent?"}}
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+    let response = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["provider"], "mock");
+
+    let health = Request::builder()
+        .uri("/admin/health")
+        .header("x-admin-token", "test-admin")
+        .body(Body::empty())
+        .unwrap();
+    let health = body_json(app.clone().oneshot(health).await.unwrap()).await;
+    for provider in health["providers"].as_array().unwrap() {
+        assert_eq!(provider["down"], false, "{provider}");
+    }
+
+    keys.install_verdicts(HashMap::from([(
+        "local".into(),
+        Verdict {
+            allowed_models: Some(HashSet::from(["demo".into()])),
+            ..Default::default()
+        },
+    )]));
+    assert_eq!(
+        app.oneshot(request()).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn decisions_body_session_takes_precedence_over_header() {
+    let (app, _bus) = app_and_bus();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/alpha/decisions")
+        .header("authorization", format!("Bearer {LOCAL_TOKEN}"))
+        .header("content-type", "application/json")
+        .header("x-session-id", "x".repeat(300))
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "model": "demo", "state": "text", "session_id": "body-session",
+                "questions": {"urgent": {"type": "noul", "instructions": "Urgent?"}}
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn rerank_return_documents() {
     let (app, _bus) = app_and_bus();
     let req = Request::builder()
@@ -1251,6 +1415,10 @@ async fn models_architecture_modality_mapping() {
         find_model(&v, "m/delta-stt").unwrap()["architecture"]["modality"],
         "audio->text"
     );
+    assert_eq!(
+        find_model(&v, "m/zeta-decisions").unwrap()["architecture"]["modality"],
+        "text->decisions"
+    );
 }
 
 #[tokio::test]
@@ -1353,6 +1521,16 @@ async fn models_supported_parameters_by_modality() {
     let esp = emb["supported_parameters"].as_array().unwrap();
     assert!(esp.iter().any(|p| p == "dimensions"));
     assert!(!esp.iter().any(|p| p == "temperature"));
+    // Decisions models accept the decisions API payload, not chat parameters.
+    let decisions = find_model(&v, "m/zeta-decisions").unwrap();
+    assert_eq!(
+        decisions["supported_parameters"],
+        json!(["state", "questions"])
+    );
+    assert_eq!(
+        decisions["architecture"]["output_modalities"],
+        json!(["decisions"])
+    );
 }
 
 #[tokio::test]
@@ -1447,8 +1625,31 @@ async fn models_type_filter_rerank() {
     );
 }
 
-/// A provider that reports no modality for any model does not support model types, so a `?type=` filter
-/// is ignored for it: its whole catalog passes through under every filter rather than being hidden.
+#[tokio::test]
+async fn models_type_filter_decisions() {
+    let (app, _bus) = app_and_bus();
+    let v = body_json(
+        app.oneshot(models_request("?type=decisions", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // A logical alias inherits its primary target's identified capability. Unknown catalog entries
+    // are excluded because they cannot safely accept a decisions payload.
+    assert!(find_model(&v, "jev").is_some());
+    assert!(find_model(&v, "m/zeta-decisions").is_some());
+    assert!(find_model(&v, "m/alpha").is_none());
+    assert!(find_model(&v, "tl/synth-a").is_none());
+    let model = find_model(&v, "m/zeta-decisions").unwrap();
+    assert_eq!(model["architecture"]["modality"], "text->decisions");
+    assert_eq!(
+        model["architecture"]["output_modalities"],
+        json!(["decisions"])
+    );
+}
+
+/// A provider that reports no modality for any model does not support model types, so legacy `?type=`
+/// filters are ignored for it. Decisions remains strict because unknown models might not accept that API.
 #[tokio::test]
 async fn models_type_filter_ignored_for_untyped_provider() {
     let (app, _bus) = app_and_bus();
@@ -1595,6 +1796,9 @@ async fn openapi_documents_every_served_consumer_path() {
         "/v1/responses/{id}",
         "/v1/embeddings",
         "/v1/rerank",
+        "/v1/decisions",
+        "/api/alpha/decisions",
+        "/v1/systemone",
         "/v1/audio/speech",
         "/v1/audio/voices",
         "/v1/audio/transcriptions",

@@ -966,6 +966,12 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
         let has_vision = |m: &[&str]| m.iter().any(|x| *x == "image" || *x == "video");
         let outs = list("output_modalities");
         let ins = list("input_modalities");
+        // Decisions is a separate output kind in OpenRouter's catalog. It must win before the
+        // general text branch: a decisions model may also accept text, but it does not implement
+        // chat and would otherwise be advertised as an LLM.
+        if outs.contains(&"decisions") {
+            return Some(Modality::Decisions);
+        }
         if has_audio(&outs) {
             return Some(Modality::Tts);
         }
@@ -1194,6 +1200,38 @@ mod tests {
         assert_eq!(
             openai_wire_models_to_canonical(v)[0].modality,
             Some(Modality::Tts)
+        );
+    }
+
+    #[test]
+    fn models_openrouter_decisions_output_is_decisions_and_keeps_architecture() {
+        // This is the explicit signal emitted by OpenRouter's Decisions catalog. Do not infer
+        // this from a model id or provider name.
+        let v = json!({ "data": [{
+            "id": "typesafe/jev-1.13",
+            "architecture": {
+                "modality": "text->decisions",
+                "input_modalities": ["text"],
+                "output_modalities": ["decisions"]
+            }
+        }]});
+        let model = &openai_wire_models_to_canonical(v)[0];
+        assert_eq!(model.modality, Some(Modality::Decisions));
+        assert_eq!(
+            model.extra["architecture"]["output_modalities"],
+            json!(["decisions"])
+        );
+    }
+
+    #[test]
+    fn models_without_a_decisions_output_are_not_classified_as_decisions() {
+        let v = json!({ "data": [{
+            "id": "typesafe/jev-looking-chat-model",
+            "architecture": { "output_modalities": ["text"] }
+        }]});
+        assert_eq!(
+            openai_wire_models_to_canonical(v)[0].modality,
+            Some(Modality::Llm)
         );
     }
 

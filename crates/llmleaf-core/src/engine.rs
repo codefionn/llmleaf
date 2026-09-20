@@ -20,9 +20,9 @@ use async_stream::stream;
 use futures::StreamExt;
 use llmleaf_model::{
     AudioChunk, AudioStream, BatchHandle, BatchOutcome, BatchResultStream, BatchSpec, ChatRequest,
-    EmbeddingRequest, EmbeddingResponse, FinishReason, ModelError, ModelInfo, RerankRequest,
-    RerankResponse, ResponseStream, SpeechRequest, StreamChunk, TranscriptionRequest,
-    TranscriptionResponse, VoiceInfo,
+    DecisionsRequest, DecisionsResponse, EmbeddingRequest, EmbeddingResponse, FinishReason,
+    ModelError, ModelInfo, RerankRequest, RerankResponse, ResponseStream, SpeechRequest,
+    StreamChunk, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_pricing::Pricing;
 use llmleaf_provider::{Provider, ProviderCx, ProviderFactory, ProviderRegistry, RealtimeParams};
@@ -721,6 +721,56 @@ impl Engine {
             guard,
         } = dispatched;
         resp.usage = self.pricing.price(&logical_model, resp.usage);
+        rate.debit_tokens(
+            &provider,
+            &upstream_model,
+            resp.usage.total_tokens,
+            Instant::now(),
+        );
+        self.emit_batch_tail(&request_id, &key, &logical_model, resp.usage);
+        drop(guard);
+        Ok(resp)
+    }
+
+    /// Evaluate a state against typed decisions questions. This is a batch modality, so unsupported
+    /// targets fall through the route without changing their health, just like rerank.
+    pub async fn decisions(
+        &self,
+        req: DecisionsRequest,
+        key: String,
+        request_id: String,
+        now: u64,
+    ) -> Result<DecisionsResponse, EngineError> {
+        let logical_model = req.model.clone();
+        let req = self.screen_request(req, &key, &logical_model).await?;
+        let payload = self.payload(&req);
+        let dispatched = self
+            .dispatch(
+                logical_model,
+                key,
+                request_id,
+                now,
+                payload,
+                move |provider, cx, upstream| {
+                    let mut preq = req.clone();
+                    preq.model = upstream;
+                    async move { provider.decisions(preq, &cx).await }
+                },
+            )
+            .await?;
+        let Dispatched {
+            value: mut resp,
+            request_id,
+            key,
+            logical_model,
+            provider,
+            upstream_model,
+            rate,
+            guard,
+        } = dispatched;
+        if resp.usage.cost_usd.is_none() {
+            resp.usage = self.pricing.price(&logical_model, resp.usage);
+        }
         rate.debit_tokens(
             &provider,
             &upstream_model,

@@ -522,6 +522,7 @@ mod tests {
             (Modality::Stt, "\"stt\""),
             (Modality::Embedding, "\"embedding\""),
             (Modality::Rerank, "\"rerank\""),
+            (Modality::Decisions, "\"decisions\""),
         ] {
             assert_eq!(serde_json::to_string(&modality).unwrap(), json);
             assert_eq!(serde_json::from_str::<Modality>(json).unwrap(), modality);

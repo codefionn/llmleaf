@@ -98,6 +98,8 @@ pub enum Modality {
     Embedding,
     /// A rerank / relevance-scoring model (query + documents in, ordered scores out).
     Rerank,
+    /// A structured decision model (state + questions in, answers out).
+    Decisions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

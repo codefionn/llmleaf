@@ -79,6 +79,20 @@ Streaming tool calls are exposed as `choice.delta.tool_calls`. Group fragments b
 and each `ToolCallDelta.index`; copy `id` / `type` / function `name` whenever present, and append every
 function `arguments` fragment before calling `next()` again, until `finish_reason == .tool_calls`.
 
+## Decisions (`POST /v1/decisions`)
+
+State, questions, answers, and unknown metadata are raw JSON slices. They are not encoded as JSON strings.
+
+```zig
+const decision = try client.decisions(.{
+    .model = "jev",
+    .state = "{\"customer\":\"new\"}",
+    .questions = &.{.{ .key = "eligible", .value = "{\"type\":\"choice\",\"instructions\":\"Is this customer eligible?\",\"criteria\":{\"yes\":\"New customer\",\"no\":\"Existing customer\"}}" }},
+}, null);
+defer decision.deinit();
+std.debug.print("{s}\n", .{decision.value.answers[0].value});
+```
+
 ## Responses (`POST /v1/responses`)
 
 The OpenAI Responses dialect on the same canonical core. `input` is a bare string or an array

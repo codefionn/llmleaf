@@ -11,7 +11,7 @@
 //! The core never depends on the control plane: with no admin token configured the read-only admin
 //! surface simply closes, and the proxy keeps proxying from config + last-good cache alone (principle 6).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -40,7 +40,7 @@ use crate::compat::openai::{self, ChunkEncoder};
 use crate::compat::realtime::{session as rt_session, wire as rt_wire};
 use crate::compat::transcription::TranscriptionBody;
 use crate::compat::{
-    anthropic, batch, embeddings, openapi, rerank, responses, speech, transcription,
+    anthropic, batch, decisions, embeddings, openapi, rerank, responses, speech, transcription,
 };
 use crate::config::Config;
 use crate::engine::{Engine, EngineError};
@@ -144,6 +144,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses/{id}", get(get_response))
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/rerank", post(rerank_handler))
+        .route("/v1/decisions", post(decisions_handler))
+        .route("/api/alpha/decisions", post(decisions_handler))
+        .route("/v1/systemone", post(decisions_handler))
         .route("/v1/audio/speech", post(audio_speech))
         .route("/v1/audio/voices", get(audio_voices))
         .route("/v1/models", get(list_models))
@@ -949,6 +952,54 @@ async fn rerank_handler(
     }
 }
 
+// Decisions is exposed through the native path and the OpenRouter and TypeSafe aliases. They share
+// one canonical mapping and therefore the same authentication, ACL, fallback, pricing, and events.
+async fn decisions_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "missing bearer token");
+    };
+    let now = now_secs();
+    if let Err(e) = authorize_token_identity(&state, &token, now).await {
+        return auth_error(e);
+    }
+    let body_has_session = matches!(&body, Value::Object(obj) if obj.contains_key("session_id"));
+    if !body_has_session {
+        if let Some(session_header) = headers.get("x-session-id") {
+            let session_id = match session_header.to_str() {
+                Ok(value) if value.chars().count() <= 256 => value,
+                _ => {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "`x-session-id` must be valid text of at most 256 characters",
+                    )
+                }
+            };
+            if let Value::Object(obj) = &mut body {
+                obj.entry("session_id")
+                    .or_insert_with(|| Value::String(session_id.into()));
+            }
+        }
+    }
+    let req = match decisions::parse_decisions_request(body) {
+        Ok(request) => request,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let model = req.model.clone();
+    let key = match authorize_token(&state, &token, &model, now).await {
+        Ok(id) => id,
+        Err(e) => return auth_error(e),
+    };
+    let request_id = next_request_id(&state.request_seq);
+    match state.engine.decisions(req, key, request_id, now).await {
+        Ok(response) => Json(decisions::response_to_wire(&response)).into_response(),
+        Err(e) => engine_error(e),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Speech surface (`POST /v1/audio/speech`, text-to-speech) — raw audio body, not SSE
 // ---------------------------------------------------------------------------------------------
@@ -1083,7 +1134,7 @@ async fn audio_voices(
 #[derive(Debug, Default, Deserialize)]
 struct ModelsQuery {
     /// Modality filter: absent / `all` ⇒ no filter; else `llm` | `tts` | `stt` | `embedding` |
-    /// `rerank`.
+    /// `rerank` | `decisions`.
     #[serde(default, rename = "type")]
     kind: Option<String>,
     /// Case-insensitive substring over the model id.
@@ -1151,18 +1202,66 @@ async fn list_models(
     // topology swap lands mid-request.
     let topology = engine.topology();
 
-    // 1. Explicitly-routed models (logical ids). Enrich from the bundled dataset by the logical id,
-    //    then by the first target's upstream model id — never inventing metadata, only looking it up.
-    for model in topology.router().models() {
-        let card = engine.pricing().card(model).or_else(|| {
+    let routes: Vec<(String, Vec<_>)> = topology
+        .router()
+        .models()
+        .filter_map(|model| {
             engine
                 .resolve_targets(model)
-                .and_then(|t| t.first().and_then(|t| t.model.clone()))
-                .and_then(|upstream| engine.pricing().card(&upstream))
+                .map(|targets| (model.to_string(), targets))
+        })
+        .collect();
+    let prefixes: Vec<(String, String)> = topology
+        .router()
+        .prefixes()
+        .map(|(p, n)| (p.to_string(), n.to_string()))
+        .collect();
+
+    // Fetch each involved upstream catalog once. The same snapshot supplies prefix passthroughs and
+    // logical routes, so an alias such as `jev` inherits the metadata of its primary target
+    // (`jev-latest`) without treating the bundled pricing data as an availability source. Failed or
+    // unsupported catalogs remain an honest metadata gap and never hide a configured route.
+    let mut provider_names: HashSet<String> = prefixes
+        .iter()
+        .map(|(_, provider)| provider.clone())
+        .collect();
+    provider_names.extend(
+        routes
+            .iter()
+            .filter_map(|(_, targets)| targets.first().map(|target| target.provider.clone())),
+    );
+    let mut catalogs = HashMap::new();
+    for provider in provider_names {
+        let request_id = next_request_id(&state.request_seq);
+        if let Ok(models) = engine.provider_models(&provider, &request_id).await {
+            catalogs.insert(provider, models);
+        }
+    }
+
+    // 1. Explicitly-routed models. A route takes metadata from its primary target, matching actual
+    // dispatch preference. Fallbacks are deliberately not merged: they may describe a different
+    // model, and combining their capabilities would promise something no one upstream guarantees.
+    for (model, targets) in routes {
+        let primary = targets.first();
+        let upstream = primary
+            .and_then(|target| target.model.as_deref())
+            .unwrap_or(&model);
+        let upstream_info = primary.and_then(|target| {
+            catalogs
+                .get(&target.provider)
+                .and_then(|models| models.iter().find(|info| info.id == upstream))
         });
-        let meta = enrich(ModelInfo::new(model), card);
+        let card = engine
+            .pricing()
+            .card(&model)
+            .or_else(|| engine.pricing().card(upstream));
+        let mut info = upstream_info
+            .cloned()
+            .unwrap_or_else(|| ModelInfo::new(&model));
+        info.id = model.clone();
+        let meta = enrich(info, card);
         entries.insert(
-            model.to_string(),
+            model,
             ModelEntry {
                 source: Source::Route,
                 meta: Some(meta),
@@ -1177,19 +1276,13 @@ async fn list_models(
     //    from the bundled dataset for whatever the provider's list-models API does not report. A
     //    provider that cannot enumerate (Unsupported) — or a fetch that fails — degrades to a single
     //    non-callable `<prefix>/*` marker rather than failing the whole listing or guessing members.
-    let prefixes: Vec<(String, String)> = topology
-        .router()
-        .prefixes()
-        .map(|(p, n)| (p.to_string(), n.to_string()))
-        .collect();
     for (prefix, provider) in prefixes {
-        let request_id = next_request_id(&state.request_seq);
-        match engine.provider_models(&provider, &request_id).await {
-            Ok(models) => {
+        match catalogs.get(&provider) {
+            Some(models) => {
                 for info in models {
                     let bare = info.id.clone();
                     let id = format!("{prefix}/{bare}");
-                    let mut meta = enrich(info, engine.pricing().card(&bare));
+                    let mut meta = enrich(info.clone(), engine.pricing().card(&bare));
                     // Tag the display name with the namespace so a consumer can tell which prefix
                     // serves the model without parsing the id.
                     let display = meta.name.take().unwrap_or_else(|| bare.clone());
@@ -1203,7 +1296,7 @@ async fn list_models(
                     });
                 }
             }
-            Err(_) => {
+            None => {
                 entries.entry(format!("{prefix}/*")).or_insert(ModelEntry {
                     source: Source::Prefix,
                     meta: None,
@@ -1226,8 +1319,9 @@ async fn list_models(
     // Which prefix providers classify their catalog by type at all. A provider whose list-models API
     // reports a modality for at least one of its models "supports model types"; one that reports none
     // does not (e.g. a bare OpenAI-compatible endpoint, or a speech-only upstream that never tags its
-    // models). For a provider that does not support model types, applying a `?type=` filter would hide
-    // its whole catalog, so the filter below is IGNORED for it — its models pass through unfiltered.
+    // models). For a provider that does not support model types, applying a legacy `?type=` filter
+    // would hide its whole catalog, so those filters pass it through. `?type=decisions` is strict:
+    // unknown models cannot safely receive a decisions payload.
     // Built only when a filter is active; route entries (no provider) keep the strict rule below.
     let typed_providers: HashSet<String> = match modality_filter {
         None => HashSet::new(),
@@ -1243,7 +1337,11 @@ async fn list_models(
         .into_iter()
         .filter(|(_, e)| match modality_filter {
             None => true,
-            // A provider that does not classify its catalog by type ignores the filter (pass through).
+            // `decisions` is strict: an unknown capability cannot safely receive a decisions payload.
+            Some(Modality::Decisions) => {
+                e.meta.as_ref().and_then(|m| m.modality) == Some(Modality::Decisions)
+            }
+            // A provider that does not classify its catalog by type ignores the legacy filters.
             Some(_) if matches!(&e.provider, Some(p) if !typed_providers.contains(p)) => true,
             // Otherwise a specific filter keeps only entries whose modality is known AND matches; an
             // unknown modality is excluded — you can only filter by what you know.
@@ -1341,8 +1439,9 @@ fn parse_modality_filter(raw: Option<&str>) -> Result<Option<Modality>, String> 
         Some("stt") => Ok(Some(Modality::Stt)),
         Some("embedding") => Ok(Some(Modality::Embedding)),
         Some("rerank") => Ok(Some(Modality::Rerank)),
+        Some("decisions") => Ok(Some(Modality::Decisions)),
         Some(other) => Err(format!(
-            "unknown type '{other}' (expected all|llm|tts|stt|embedding|rerank)"
+            "unknown type '{other}' (expected all|llm|tts|stt|embedding|rerank|decisions)"
         )),
     }
 }
@@ -1464,6 +1563,7 @@ fn architecture_json(modality: Option<Modality>) -> Value {
         Some(Modality::Stt) => (&["audio"], &["text"], Some("audio->text")),
         Some(Modality::Embedding) => (&["text"], &["embeddings"], Some("text->embeddings")),
         Some(Modality::Rerank) => (&["text"], &["scores"], Some("text->scores")),
+        Some(Modality::Decisions) => (&["text"], &["decisions"], Some("text->decisions")),
         None => (&[], &[], None),
     };
     json!({
@@ -1548,6 +1648,7 @@ fn supported_parameters(
         Some(Modality::Stt) => vec!["language", "prompt", "response_format", "temperature"],
         Some(Modality::Embedding) => vec!["encoding_format", "dimensions"],
         Some(Modality::Rerank) => vec!["query", "documents", "top_n", "return_documents"],
+        Some(Modality::Decisions) => vec!["state", "questions"],
         None => vec![],
     };
     if has_thinking {

@@ -18,6 +18,8 @@ import {
   decodeEmbeddingResponse,
   encodeRerankRequest,
   decodeRerankResponse,
+  encodeDecisionsRequest,
+  decodeDecisionsResponse,
   encodeSpeechRequest,
   decodeVoicesResponse,
   decodeTranscriptionResponse,
@@ -37,6 +39,8 @@ import type {
   EmbeddingResponse,
   RerankRequest,
   RerankResponse,
+  DecisionsRequest,
+  DecisionsResponse,
   SpeechRequest,
   SpeechResult,
   VoicesResponse,
@@ -261,6 +265,13 @@ export class LlmleafClient {
     const body = encodeRerankRequest(req);
     const json = await this.sendJson(this.url("/v1/rerank"), body);
     return decodeRerankResponse(json);
+  }
+
+  /** POST /v1/decisions. Submits structured state and named decision questions. */
+  async decisions(req: DecisionsRequest): Promise<DecisionsResponse> {
+    const body = encodeDecisionsRequest(req);
+    const json = await this.sendJson(this.url("/v1/decisions"), body);
+    return decodeDecisionsResponse(json);
   }
 
   // -------------------------------------------------------------------------

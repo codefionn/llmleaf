@@ -108,6 +108,7 @@ fn build() -> Value {
             { "name": "chat", "description": "Chat completions" },
             { "name": "embeddings", "description": "Vector embeddings" },
             { "name": "rerank", "description": "Document reranking" },
+            { "name": "decisions", "description": "Typed questions and answers" },
             { "name": "audio", "description": "Text-to-speech, speech-to-text, and voices" },
             { "name": "models", "description": "Model discovery" },
             { "name": "batches", "description": "Asynchronous batch jobs" },
@@ -288,6 +289,9 @@ fn paths() -> Value {
                 })),
             }
         },
+        "/v1/decisions": decisions_path("createDecisions"),
+        "/api/alpha/decisions": decisions_path("createOpenRouterDecisions"),
+        "/v1/systemone": decisions_path("createSystemOneDecisions"),
         "/v1/audio/speech": {
             "post": {
                 "tags": ["audio"],
@@ -365,7 +369,7 @@ fn paths() -> Value {
                         "name": "type",
                         "in": "query",
                         "required": false,
-                        "schema": { "type": "string", "enum": ["all", "llm", "tts", "stt", "embedding", "rerank"] },
+                        "schema": { "type": "string", "enum": ["all", "llm", "tts", "stt", "embedding", "rerank", "decisions"] },
                         "description": "Modality filter (llmleaf extension). An unknown value is a 400.",
                     },
                     {
@@ -464,6 +468,16 @@ fn paths() -> Value {
             }
         },
     })
+}
+
+fn decisions_path(operation_id: &str) -> Value {
+    json!({ "post": {
+        "tags": ["decisions"], "operationId": operation_id,
+        "summary": "Evaluate typed decisions questions",
+        "description": "Evaluate a string, object, or array state against named `noul`, `choice`, and `score` questions.",
+        "requestBody": json_body("DecisionsRequest"),
+        "responses": error_responses(json!({ "200": json_ok("Decisions answers", "DecisionsResponse"), "404": json_err("No route for the requested model") }))
+    }})
 }
 
 /// The shared `{id}` path parameter of the batch sub-resources.
@@ -893,6 +907,54 @@ fn components() -> Value {
                     },
                     "usage": schema_ref("Usage"),
                 },
+            },
+            "DecisionsRequest": {
+                "type": "object",
+                "properties": {
+                    "model": { "type": "string" },
+                    "state": { "oneOf": [{ "type": "string" }, { "type": "object" }, { "type": "array" }] },
+                    "questions": { "type": "object", "additionalProperties": schema_ref("DecisionsQuestion") },
+                    "session_id": { "type": "string", "maxLength": 256 }
+                },
+                "required": ["model", "state", "questions"],
+                "additionalProperties": true,
+            },
+            "DecisionsResponse": {
+                "type": "object",
+                "properties": {
+                    "model": { "type": "string" },
+                    "answers": { "type": "object", "additionalProperties": true },
+                    "usage": {
+                        "type": "object",
+                        "properties": {
+                            "input_tokens": { "type": "integer" },
+                            "output_tokens": { "type": "integer" },
+                            "cost": { "type": "number" }
+                        },
+                        "required": ["input_tokens", "output_tokens"]
+                    }
+                },
+                "required": ["model", "answers", "usage"],
+                "additionalProperties": true,
+            },
+            "DecisionsQuestion": {
+                "oneOf": [
+                    { "type": "object", "properties": {
+                        "type": { "const": "noul" }, "instructions": schema_ref("DecisionsStructuredValue"),
+                        "criteria": { "type": "object", "additionalProperties": schema_ref("DecisionsStructuredValue") }
+                    }, "required": ["type", "instructions"], "additionalProperties": true },
+                    { "type": "object", "properties": {
+                        "type": { "const": "choice" }, "instructions": schema_ref("DecisionsStructuredValue"),
+                        "criteria": { "type": "object", "minProperties": 1, "additionalProperties": { "oneOf": [{ "type": "null" }, schema_ref("DecisionsStructuredValue")] } }
+                    }, "required": ["type", "instructions", "criteria"], "additionalProperties": true },
+                    { "type": "object", "properties": {
+                        "type": { "const": "score" }, "instructions": schema_ref("DecisionsStructuredValue"),
+                        "criteria": { "type": "array", "minItems": 1, "items": schema_ref("DecisionsStructuredValue") }
+                    }, "required": ["type", "instructions", "criteria"], "additionalProperties": true }
+                ]
+            },
+            "DecisionsStructuredValue": {
+                "oneOf": [{ "type": "string" }, { "type": "object" }, { "type": "array" }]
             },
             "SpeechRequest": {
                 "type": "object",

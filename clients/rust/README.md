@@ -112,6 +112,7 @@ let client = Client::builder("https://gateway.example.com", "sk-...")
 | Chat | `chat` / `chat_stream` | stream yields `ChatCompletionChunk`, stops on `[DONE]` |
 | Responses | `responses` / `responses_stream` | stream yields `ResponsesStreamEvent`, ends on the terminal event (no `[DONE]`) |
 | Embeddings | `embeddings` | decodes base64 vectors → `Vec<f32>` |
+| Decisions | `decisions` | structured state, named `noul` / `choice` / `score` questions |
 | Models | `list_models` | `type` filter + `search` |
 | Speech (TTS) | `speech` | returns `(bytes, content_type)` |
 | Voices | `voices` | |
@@ -120,6 +121,23 @@ let client = Client::builder("https://gateway.example.com", "sk-...")
 
 Gateway errors come back as `Error::Api { status, message }`, parsed from
 `{"error":{"message":"..."}}`.
+
+## Decisions
+
+```rust
+use llmleaf_client::DecisionsRequest;
+use serde_json::json;
+
+let response = client.decisions(DecisionsRequest::new(
+    "jev",
+    json!({ "turn": 2 }),
+    serde_json::Map::from_iter([(
+        "route".into(),
+        json!({ "type": "choice", "instructions": "Which route?", "criteria": { "left": null, "right": null } }),
+    )]),
+)).await?;
+println!("{:?}", response.answers["route"]);
+```
 
 ## Run the example
 

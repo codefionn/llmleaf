@@ -59,3 +59,8 @@ required-features = ["compio"]
 name = "responses"
 path = "tests/responses.rs"
 required-features = ["tokio"]
+
+[[test]]
+name = "decisions"
+path = "tests/decisions.rs"
+required-features = ["tokio"]

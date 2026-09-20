@@ -20,6 +20,7 @@
 
 pub mod anthropic;
 pub mod batch;
+pub mod decisions;
 pub mod embeddings;
 pub mod openai;
 pub mod openapi;

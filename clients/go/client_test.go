@@ -663,6 +663,73 @@ func TestCreateRerank(t *testing.T) {
 	}
 }
 
+func TestCreateDecisions(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/decisions" || r.Method != http.MethodPost {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		body := readBody(t, r)
+		if body["model"] != "jev" || body["state"].(map[string]any)["turn"] != float64(2) {
+			t.Errorf("body = %#v", body)
+		}
+		question := body["questions"].(map[string]any)["pick"].(map[string]any)
+		if question["type"] != "choice" || question["instructions"] != "Should we offer an upgrade?" {
+			t.Errorf("questions = %#v", body["questions"])
+		}
+		if _, exists := body["model_override"]; exists {
+			t.Errorf("canonical model was overwritten: %#v", body)
+		}
+		if body["trace"].(map[string]any)["id"] != "t1" {
+			t.Errorf("extra = %#v", body["trace"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"d_1","model":"jev","provider":"jev","answers":{"pick":{"type":"choice","choice":"yes","confidence":0.9}},"usage":{"input_tokens":12,"output_tokens":3,"cost":0,"provider_meter":{"cached":2}},"trace":{"region":"eu"}}`)
+	})
+	defer srv.Close()
+
+	resp, err := client.CreateDecisions(context.Background(), DecisionsRequest{
+		Model: "jev",
+		State: json.RawMessage(`{"turn":2,"flags":[true]}`),
+		Questions: map[string]json.RawMessage{
+			"pick": json.RawMessage(`{"type":"choice","instructions":"Should we offer an upgrade?","criteria":{"yes":"Account needs more capacity","no":"Current plan is sufficient"}}`),
+		},
+		Extra: map[string]json.RawMessage{
+			"model": json.RawMessage(`"model_override"`),
+			"trace": json.RawMessage(`{"id":"t1"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateDecisions: %v", err)
+	}
+	if resp.ID == nil || *resp.ID != "d_1" || resp.Provider == nil || *resp.Provider != "jev" {
+		t.Errorf("identity = %#v", resp)
+	}
+	if string(resp.Answers["pick"]) != `{"type":"choice","choice":"yes","confidence":0.9}` {
+		t.Errorf("answer = %s", resp.Answers["pick"])
+	}
+	if resp.Usage == nil || resp.Usage.Cost == nil || *resp.Usage.Cost != 0 || resp.Usage.InputTokens != 12 {
+		t.Errorf("usage = %#v", resp.Usage)
+	}
+	if string(resp.Usage.Extra["provider_meter"]) != `{"cached":2}` || string(resp.Extra["trace"]) != `{"region":"eu"}` {
+		t.Errorf("extra = %#v / %#v", resp.Usage.Extra, resp.Extra)
+	}
+}
+
+func TestCreateDecisionsRejectsInvalidRawQuestion(t *testing.T) {
+	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) { t.Error("request must not be sent") })
+	defer srv.Close()
+	_, err := client.CreateDecisions(context.Background(), DecisionsRequest{
+		Model: "m", State: json.RawMessage(`{}`),
+		Questions: map[string]json.RawMessage{"bad": json.RawMessage(`{`)},
+	})
+	if err == nil {
+		t.Fatal("expected malformed raw question error")
+	}
+}
+
 func TestApiErrorEnvelope(t *testing.T) {
 	client, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

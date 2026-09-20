@@ -16,7 +16,7 @@ pub mod collect {
     use super::*;
 
     const COMMENT: &str = "Bundled pricing dataset. Generated OFFLINE by the llmleaf-pricing-collector crate; the runtime llmleaf-pricing library only reads this bundled information. Rates are USD per 1,000,000 tokens.";
-    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank), exact input_modalities/output_modalities where published, limits max_context/max_output/max_thinking, reasoning support, provider tier, and training-data policy. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
+    const COMMENT_METADATA: &str = "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank|decisions), exact input_modalities/output_modalities where published, limits max_context/max_output/max_thinking, reasoning support, provider tier, and training-data policy. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.";
     const COMMENT_PARAMS: &str = "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.";
 
     /// The default location of the committed dataset when the collector is run from the workspace root.
@@ -944,6 +944,10 @@ pub mod collect {
             .filter(|s| *s != info.id)
             .map(str::to_string);
         info.modality = list_item_modality(&obj);
+        if let Some(architecture) = obj.get("architecture").filter(|v| v.is_object()) {
+            info.extra
+                .insert("architecture".into(), architecture.clone());
+        }
         info.max_context = first_u32(
             &obj,
             &["context_window", "context_length", "max_context_length"],
@@ -992,6 +996,7 @@ pub mod collect {
                 "chat" | "language" | "code" | "llm" | "vlm" => return Some(Modality::Llm),
                 "embedding" | "embeddings" | "embed" => return Some(Modality::Embedding),
                 "rerank" | "reranker" | "rank" => return Some(Modality::Rerank),
+                "decisions" => return Some(Modality::Decisions),
                 _ => {}
             }
         }
@@ -1002,6 +1007,9 @@ pub mod collect {
             .and_then(Value::as_array)
         {
             let outs: Vec<&str> = outs.iter().filter_map(Value::as_str).collect();
+            if outs.contains(&"decisions") {
+                return Some(Modality::Decisions);
+            }
             if outs.iter().any(|o| *o == "audio" || *o == "speech") {
                 return Some(Modality::Tts);
             }
@@ -1820,6 +1828,27 @@ mod tests {
         assert_eq!(rows[0].output_per_mtok, Some(15.0));
         assert_eq!(rows[0].max_context, Some(128_000));
         assert_eq!(rows[0].modality, Some(Modality::Llm));
+    }
+
+    #[test]
+    fn list_endpoint_parser_preserves_decisions_output() {
+        let rows = collect::parse_priced_list_endpoint(serde_json::json!({
+            "data": [{
+                "id": "typesafe/jev-1.13",
+                "pricing": { "prompt": "0.000000042", "completion": "0" },
+                "architecture": {
+                    "modality": "text->decisions",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["decisions"]
+                }
+            }]
+        }));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].modality, Some(Modality::Decisions));
+        assert_eq!(
+            rows[0].extra["architecture"]["output_modalities"],
+            serde_json::json!(["decisions"])
+        );
     }
 
     #[test]

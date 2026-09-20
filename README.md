@@ -107,16 +107,27 @@ The `jev` route in `llmleaf.example.toml` uses OpenRouter. To call TypeSafe dire
 add a provider with `kind = "typesafe"`, `credential = "env:TYPESAFE_API_KEY"`, and
 route to it with upstream model `jev-latest`. The `jev` provider kind is an alias
 for `typesafe`. Decisions use the same key permissions and fallback rules as chat.
+Set `LLMLEAF_API_KEY` to a consumer bearer token allowed to use the `jev` route.
 
 ```sh
 curl localhost:8080/v1/decisions \
-  -H "Authorization: Bearer $(printf 'local-dev:s3cret' | base64)" \
+  -H "Authorization: Bearer $LLMLEAF_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"jev","state":"The export button does nothing.","questions":{"bug":{"type":"noul","instructions":"Does this report broken software?"}}}'
 ```
 
+Use `GET /v1/models?type=decisions` to list models identified as producing decisions.
+Their `architecture.output_modalities` contains `"decisions"`, and their
+`architecture.modality` is `"text->decisions"`. Configured aliases use metadata from
+their primary upstream target. Models without known metadata are excluded from
+this filter, including pinned TypeSafe versions absent from its catalog.
+
 API references: [OpenRouter decisions](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request)
 and [TypeSafe JEV](https://docs.typesafe.ai/api).
+
+For an example with all three question types, run
+`cargo run -p llmleaf --example decisions -- --state "The export button does nothing."`
+against a server with the `jev` route configured.
 
 ## Architecture
 

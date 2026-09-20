@@ -1,5 +1,5 @@
 // llmleaf client contract — the single source of truth for every official client
-// library under clients/ (Kotlin Multiplatform, Go, Rust, TypeScript, Zig).
+// library under clients/ (Kotlin Multiplatform, Go, Rust, TypeScript, Zig, C#).
 //
 // SOUL.md: "Official consumer client libraries live in clients/ ... generated from a
 // single Protocol Buffers schema ... the source of truth for the canonical
@@ -559,6 +559,33 @@ message RerankResponse {
   string model = 1;
   repeated RerankResult results = 2;
   Usage usage = 3;
+}
+
+// ----------------------------------------------------------------------------
+// Decisions (POST /v1/decisions; also /api/alpha/decisions and /v1/systemone)
+// ----------------------------------------------------------------------------
+
+message DecisionsRequest {
+  string model = 1;
+  string state = 2; // raw JSON string, object, or array; never double-encode
+  map<string, string> questions = 3; // each value is a raw JSON noul, choice, or score question
+  map<string, string> extra = 4; // raw JSON fields merged into the request object
+}
+
+message DecisionsUsage {
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  optional double cost = 3; // provider-reported cost; zero is distinct from absent
+  map<string, string> extra = 4; // unknown usage fields as raw JSON
+}
+
+message DecisionsResponse {
+  string model = 1;
+  map<string, string> answers = 2; // raw JSON answers, including probabilities and legends
+  DecisionsUsage usage = 3;
+  optional string id = 4;
+  optional string provider = 5;
+  map<string, string> extra = 6; // unknown response fields as raw JSON
 }
 
 // ----------------------------------------------------------------------------

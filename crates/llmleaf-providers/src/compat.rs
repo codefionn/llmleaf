@@ -10,9 +10,10 @@ use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use llmleaf_model::{
     collect_chunks, AudioChunk, AudioStream, BatchCounts, BatchHandle, BatchItem, BatchOutcome,
-    BatchResult, BatchResultStream, BatchSpec, BatchStatus, ChatRequest, EmbeddingRequest,
-    EmbeddingResponse, Modality, ModelError, ModelInfo, RerankRequest, RerankResponse,
-    ResponseStream, SpeechRequest, TranscriptionRequest, TranscriptionResponse, VoiceInfo,
+    BatchResult, BatchResultStream, BatchSpec, BatchStatus, ChatRequest, DecisionsRequest,
+    DecisionsResponse, EmbeddingRequest, EmbeddingResponse, Modality, ModelError, ModelInfo,
+    RerankRequest, RerankResponse, ResponseStream, SpeechRequest, TranscriptionRequest,
+    TranscriptionResponse, VoiceInfo,
 };
 use llmleaf_provider::{Provider, ProviderCx, RealtimeParams, RealtimePeer};
 use serde_json::{json, Map, Value};
@@ -20,6 +21,7 @@ use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 use crate::batch::{build_jsonl, jsonl_result_stream};
+use crate::decisions::{decisions_request_to_wire, decisions_response_from_wire};
 use crate::http::{post_json, send_checked};
 use crate::openai_responses_wire::{
     needs_chat_completions, openai_responses_sse_to_stream, openai_responses_to_chunks,
@@ -732,6 +734,19 @@ impl OpenAiCompatProvider {
 
     fn build_url(&self, cx: &ProviderCx, model: &str) -> String {
         self.url_for(cx, model, "chat/completions")
+    }
+
+    /// Decisions is an alpha sibling of OpenRouter's `/api/v1` API, not an operation below it.
+    /// An endpoint override ending in `/v1` follows the same sibling rule; other overrides are
+    /// treated as an API root and receive `/alpha/decisions` directly.
+    fn decisions_url(&self, cx: &ProviderCx) -> String {
+        let endpoint = cx
+            .endpoint
+            .as_deref()
+            .unwrap_or(self.brand.default_endpoint)
+            .trim_end_matches('/');
+        let root = endpoint.strip_suffix("/v1").unwrap_or(endpoint);
+        format!("{root}/alpha/decisions")
     }
 
     /// The Responses API URL (`POST /responses`). Standard brands append the path to the base like any
@@ -1461,6 +1476,26 @@ impl Provider for OpenAiCompatProvider {
             return Err(err);
         }
         Ok(openai_to_embeddings(value, &req.model))
+    }
+
+    async fn decisions(
+        &self,
+        req: DecisionsRequest,
+        cx: &ProviderCx,
+    ) -> Result<DecisionsResponse, ModelError> {
+        if self.brand.name != "openrouter" {
+            return Err(ModelError::Unsupported(format!(
+                "provider '{}' does not support decisions",
+                self.brand.name
+            )));
+        }
+        let url = self.decisions_url(cx);
+        let request = self.apply_auth(
+            HttpRequest::post(url).json(decisions_request_to_wire(&req)),
+            cx,
+        );
+        let response = post_json(&*self.http, request).await?;
+        decisions_response_from_wire(response, &req.model)
     }
 
     async fn rerank(

@@ -613,6 +613,40 @@ public sealed record RerankResult(uint Index, float RelevanceScore, System.Text.
 public sealed record RerankResponse(string Object, string Model, IReadOnlyList<RerankResult> Results, Usage? Usage = null);
 
 // ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+/// <summary>POST /v1/decisions request body. State and questions are raw JSON because the
+/// decisions dialect accepts structured provider-defined data.</summary>
+public sealed record DecisionsRequest
+{
+    public required string Model { get; init; }
+    public required System.Text.Json.JsonElement State { get; init; }
+    public required IReadOnlyDictionary<string, System.Text.Json.JsonElement> Questions { get; init; }
+
+    /// <summary>Provider-specific top-level fields. Explicit request fields win on a key collision.</summary>
+    public IReadOnlyDictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
+}
+
+/// <summary>Token and cost accounting returned by a decisions provider. A null <see cref="Cost"/>
+/// means the provider omitted it; zero is retained as a real cost.</summary>
+public sealed record DecisionsUsage(
+    ulong InputTokens,
+    ulong OutputTokens,
+    double? Cost = null,
+    IReadOnlyDictionary<string, System.Text.Json.JsonElement>? Extra = null);
+
+/// <summary>POST /v1/decisions response. Answer values and unknown fields retain their original
+/// JSON shape for decision types such as noul, choice, and score.</summary>
+public sealed record DecisionsResponse(
+    string Model,
+    IReadOnlyDictionary<string, System.Text.Json.JsonElement> Answers,
+    DecisionsUsage? Usage = null,
+    string? Id = null,
+    string? Provider = null,
+    IReadOnlyDictionary<string, System.Text.Json.JsonElement>? Extra = null);
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
 
@@ -727,6 +761,7 @@ public enum ModelType
     Stt,
     Embedding,
     Rerank,
+    Decisions,
 }
 
 /// <summary>Options for <see cref="LlmleafClient.ListModelsAsync"/>.</summary>
