@@ -192,14 +192,24 @@ pub mod collect {
                 rate.output_modalities = Some(v);
             }
         }
-        if let Some(v) = info.input_per_mtok {
-            rate.input_per_mtok = Some(v);
-        }
-        if let Some(v) = info.cached_input_per_mtok {
-            rate.cached_input_per_mtok = Some(v);
-        }
-        if let Some(v) = info.output_per_mtok {
-            rate.output_per_mtok = Some(v);
+        let clear_seed_prices = info.allow_pricing_enrichment == Some(false)
+            && info.input_per_mtok.is_none()
+            && info.cached_input_per_mtok.is_none()
+            && info.output_per_mtok.is_none();
+        if clear_seed_prices {
+            rate.input_per_mtok = None;
+            rate.cached_input_per_mtok = None;
+            rate.output_per_mtok = None;
+        } else {
+            if let Some(v) = info.input_per_mtok {
+                rate.input_per_mtok = Some(v);
+            }
+            if let Some(v) = info.cached_input_per_mtok {
+                rate.cached_input_per_mtok = Some(v);
+            }
+            if let Some(v) = info.output_per_mtok {
+                rate.output_per_mtok = Some(v);
+            }
         }
         if let Some(v) = info.extra.get("tier").and_then(Value::as_str) {
             rate.tier = Some(v.to_string());
@@ -415,8 +425,11 @@ pub mod collect {
             };
             let mut page_infos = match normalized_kind(&p.kind).as_str() {
                 "cohere" => parse_cohere_pricing_lines(&lines),
-                "anthropic" => parse_anthropic_pricing_lines(&lines),
-                "mistral" => parse_mistral_pricing_lines(&lines),
+                // Anthropic's current page puts every price in a separate DOM node. Preserve the
+                // table rows here instead of relying on text-node line breaks, which are an
+                // incidental detail of the documentation site's renderer.
+                "anthropic" => parse_anthropic_pricing_html(&body),
+                "mistral" => parse_mistral_pricing_html(&body),
                 "openai" => parse_openai_pricing_lines(&lines),
                 "moonshot" | "kimi" | "kimi-k2" => parse_moonshot_pricing_lines(&lines),
                 _ => {
@@ -520,16 +533,13 @@ pub mod collect {
     }
 
     /// Z.AI's general API has no documented rich model-list endpoint. These global pay-as-you-go
-    /// rows were verified on 2026-08-14 against the official pricing, overview, core-parameter, and
+    /// rows were verified on 2026-09-24 against the official pricing, overview, core-parameter, and
     /// individual model references:
     /// - <https://docs.z.ai/guides/overview/pricing>
     /// - <https://docs.z.ai/guides/overview/overview>
     /// - <https://docs.z.ai/guides/overview/concept-param>
     ///
-    /// GLM-5.3 is included as a metadata-only row: its guide says the general API is "coming soon"
-    /// and only the subscription Coding Plan currently serves it, so no per-token price is
-    /// published. Image/video generation is absent because this dataset only represents token
-    /// pricing.
+    /// Image/video generation is absent because this dataset only represents token pricing.
     fn zai_documented_catalog() -> Vec<ModelInfo> {
         const TEXT: &[&str] = &["text"];
         const VISION: &[&str] = &["text", "image", "video", "file"];
@@ -543,7 +553,27 @@ pub mod collect {
                 Some(true),
                 TEXT,
                 TEXT,
-                (None, None, None),
+                (Some(1.4), Some(0.26), Some(4.4)),
+            ),
+            documented_model(
+                "glm-5.3-flash",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(131_072),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.15), Some(0.03), Some(0.5)),
+            ),
+            documented_model(
+                "glm-5.3-flashx",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(131_072),
+                Some(true),
+                VISION,
+                TEXT,
+                (Some(0.37), Some(0.075), Some(1.25)),
             ),
             documented_model(
                 "glm-5.2",
@@ -748,23 +778,36 @@ pub mod collect {
         ]
     }
 
-    /// DeepSeek's `/models` API is id-only. The two rows below are the complete direct API catalog
-    /// published on 2026-08-14; the former `deepseek-chat` and `deepseek-reasoner` ids were retired.
+    /// DeepSeek's `/models` API is id-only. Its pricing now varies by peak and off-peak hours, which
+    /// llmleaf's single-rate schema cannot represent. Keep these current request IDs as metadata-only
+    /// rows rather than selecting one time-dependent rate. `deepseek-v4-flash` remains an accepted
+    /// legacy alias for `deepseek-flash`.
     /// Sources: <https://api-docs.deepseek.com/api/list-models/>,
     /// <https://api-docs.deepseek.com/quick_start/pricing>, and
     /// <https://api-docs.deepseek.com/news/news260424/>.
     fn deepseek_documented_catalog() -> Vec<ModelInfo> {
         const TEXT: &[&str] = &["text"];
+        const VISION: &[&str] = &["text", "image"];
         vec![
+            documented_model(
+                "deepseek-flash",
+                Modality::Llm,
+                Some(1_000_000),
+                Some(384_000),
+                Some(true),
+                VISION,
+                TEXT,
+                (None, None, None),
+            ),
             documented_model(
                 "deepseek-v4-flash",
                 Modality::Llm,
                 Some(1_000_000),
                 Some(384_000),
                 Some(true),
+                VISION,
                 TEXT,
-                TEXT,
-                (Some(0.14), Some(0.0028), Some(0.28)),
+                (None, None, None),
             ),
             documented_model(
                 "deepseek-v4-pro",
@@ -774,15 +817,21 @@ pub mod collect {
                 Some(true),
                 TEXT,
                 TEXT,
-                (Some(0.435), Some(0.003625), Some(0.87)),
+                (None, None, None),
             ),
         ]
+        .into_iter()
+        .map(|mut info| {
+            info.allow_pricing_enrichment = Some(false);
+            info
+        })
+        .collect()
     }
 
     /// MiniMax documents no list-models endpoint on its OpenAI-compatible API. These are the flat,
     /// standard-priority M2 pay-as-you-go rows whose complete charge fits llmleaf's three token-rate
     /// schema. M3 (length-tiered), priority service, explicit Anthropic cache writes, and non-token
-    /// media products are intentionally excluded. Verified 2026-08-14 from:
+    /// media products are intentionally excluded. Verified 2026-09-24 from:
     /// <https://platform.minimax.io/docs/guides/text-generation> and
     /// <https://platform.minimax.io/docs/guides/pricing-paygo>.
     fn minimax_documented_catalog() -> Vec<ModelInfo> {
@@ -822,21 +871,22 @@ pub mod collect {
         .collect()
     }
 
-    /// Groq's authenticated list endpoint is id-only. Restrict the static catalog to direct models
-    /// whose official card has ordinary text-token rates *and* whose ids are Groq-specific. Generic
-    /// slash-qualified ids are omitted because the runtime table is keyed only by model id and another
-    /// provider can charge a different rate for the same id. Compound, audio, TTS, and provisioned
-    /// throughput also have billing dimensions this schema cannot represent. Verified 2026-08-14 from
+    /// Groq's authenticated list endpoint is id-only. The existing Llama rows are kept only as
+    /// metadata: they were retired on 2026-08-16 and the models page now marks them contact-sales
+    /// only. Their former token rates must not be retained during a merge. Other Groq text models
+    /// use generic slash-qualified IDs that can have different rates at other providers, so this
+    /// catalog does not assign them a Groq-specific price. Compound, audio, TTS, and provisioned
+    /// throughput have billing dimensions this schema cannot represent. Verified 2026-09-24 from
     /// <https://console.groq.com/docs/models>.
     fn groq_documented_catalog() -> Vec<ModelInfo> {
         const TEXT: &[&str] = &["text"];
         [
-            ("llama-3.1-8b-instant", 131_072, 131_072, 0.05, 0.08),
-            ("llama-3.3-70b-versatile", 131_072, 32_768, 0.59, 0.79),
+            ("llama-3.1-8b-instant", 131_072, 131_072),
+            ("llama-3.3-70b-versatile", 131_072, 32_768),
         ]
         .into_iter()
-        .map(|(id, context, output_limit, input, output)| {
-            documented_model(
+        .map(|(id, context, output_limit)| {
+            let mut info = documented_model(
                 id,
                 Modality::Llm,
                 Some(context),
@@ -844,8 +894,10 @@ pub mod collect {
                 None,
                 TEXT,
                 TEXT,
-                (Some(input), None, Some(output)),
-            )
+                (None, None, None),
+            );
+            info.allow_pricing_enrichment = Some(false);
+            info
         })
         .collect()
     }
@@ -1052,10 +1104,9 @@ pub mod collect {
         (!strings.is_empty()).then_some(strings)
     }
 
-    /// Parse Moonshot's official MDX pricing rows. Current families use either three prices
-    /// (cache-hit input, cache-miss input, output) or two (input, output); llmleaf's base input rate
-    /// is the cache-miss rate. Context windows ride in the same row, so the offline dataset can
-    /// enrich explicitly routed models even when no live catalog is queried.
+    /// Parse Moonshot's official MDX token prices. K3 prepends two cache-write rates to the
+    /// cached-input, input, and output columns. Cache-write charges require separate usage
+    /// accounting and are not represented by this dataset.
     pub(crate) fn parse_moonshot_pricing_lines(lines: &[String]) -> Vec<ModelInfo> {
         let mut out = Vec::new();
         for line in lines {
@@ -1067,9 +1118,10 @@ pub mod collect {
                 continue;
             };
             let prices = moonshot_mdx_prices(line);
-            let (input, output) = match prices.as_slice() {
-                [input, output] => (*input, *output),
-                [_, cache_miss, output, ..] => (*cache_miss, *output),
+            let (input, cached, output) = match prices.as_slice() {
+                [input, output] => (*input, None, *output),
+                [cached, input, output] => (*input, Some(*cached), *output),
+                [_, _, cached, input, output] => (*input, Some(*cached), *output),
                 _ => continue,
             };
             let context = line
@@ -1088,6 +1140,7 @@ pub mod collect {
             info.modality = Some(Modality::Llm);
             info.max_context = context;
             info.input_per_mtok = Some(input);
+            info.cached_input_per_mtok = cached;
             info.output_per_mtok = Some(output);
             out.push(info);
         }
@@ -1261,6 +1314,58 @@ pub mod collect {
         parse_anthropic_pricing_lines_at(lines, current_utc_date_key())
     }
 
+    pub(crate) fn parse_anthropic_pricing_html(html: &str) -> Vec<ModelInfo> {
+        let document = scraper::Html::parse_document(html);
+        let table_selector = scraper::Selector::parse("table").expect("valid table selector");
+        let row_selector = scraper::Selector::parse("tr").expect("valid row selector");
+        let cell_selector = scraper::Selector::parse("td").expect("valid cell selector");
+        let link_selector = scraper::Selector::parse("a").expect("valid link selector");
+
+        let rows = document
+            .select(&table_selector)
+            .filter(|table| {
+                let text = table.text().collect::<String>();
+                text.contains("Base tokens")
+                    && text.contains("Prompt caching")
+                    && text.contains("Hits and refreshes")
+            })
+            .flat_map(|table| table.select(&row_selector))
+            .filter_map(|row| {
+                let cells = row.select(&cell_selector).collect::<Vec<_>>();
+                let name = cells
+                    .first()?
+                    .select(&link_selector)
+                    .next()?
+                    .text()
+                    .collect::<String>();
+                if !name.starts_with("Claude ") {
+                    return None;
+                }
+                let row_text = row.text().collect::<String>();
+                if !anthropic_row_applies(Some(&row_text), current_utc_date_key()) {
+                    return None;
+                }
+                let prices = dollar_prices(&row_text);
+                // The standard model table has input, output, two cache-write rates, and a
+                // cache-read rate. This rejects the two-column fast and batch tables.
+                (prices.len() >= 5).then(|| {
+                    let mut info = ModelInfo::new(anthropic_label_to_model_id(&name));
+                    info.modality = Some(Modality::Llm);
+                    info.input_per_mtok = prices.first().copied();
+                    info.output_per_mtok = prices.get(1).copied();
+                    info.cached_input_per_mtok = prices.get(4).copied();
+                    info.unsupported_parameters = anthropic_unsupported_parameters(&name);
+                    info
+                })
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            parse_anthropic_pricing_lines(&html_lines(html))
+        } else {
+            rows
+        }
+    }
+
     pub(crate) fn parse_anthropic_pricing_lines_at(lines: &[String], today: u32) -> Vec<ModelInfo> {
         let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
@@ -1331,10 +1436,10 @@ pub mod collect {
         let Some(qualifier) = qualifier else {
             return true;
         };
-        if let Some(raw) = qualifier.strip_prefix("through ") {
+        if let Some((_, raw)) = qualifier.split_once("through ") {
             return parse_english_date_key(raw).is_none_or(|last_day| today <= last_day);
         }
-        if let Some(raw) = qualifier.strip_prefix("starting ") {
+        if let Some((_, raw)) = qualifier.split_once("starting ") {
             return parse_english_date_key(raw).is_none_or(|first_day| today >= first_day);
         }
         true
@@ -1359,7 +1464,13 @@ pub mod collect {
             _ => return None,
         };
         let day = parts.next()?.parse::<u32>().ok()?;
-        let year = parts.next()?.parse::<u32>().ok()?;
+        let year = parts
+            .next()?
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u32>()
+            .ok()?;
         (parts.next().is_none() && (1..=31).contains(&day))
             .then_some(year * 10_000 + month * 100 + day)
     }
@@ -1480,7 +1591,7 @@ pub mod collect {
             if input.is_none() && output.is_none() {
                 continue;
             }
-            let mut info = ModelInfo::new(label_to_model_id(line));
+            let mut info = ModelInfo::new(mistral_label_to_model_id(line));
             let lower = line.to_ascii_lowercase();
             info.modality = Some(if lower.contains("embed") {
                 Modality::Embedding
@@ -1494,6 +1605,35 @@ pub mod collect {
             out.push(info);
         }
         out
+    }
+
+    /// Parse only the API catalogue cards. The page also has featured cards above the catalogue;
+    /// their text is interleaved with the next card when flattened, so parsing whole-page text can
+    /// accidentally give an audio-only card a later model's token prices.
+    pub(crate) fn parse_mistral_pricing_html(html: &str) -> Vec<ModelInfo> {
+        let document = scraper::Html::parse_document(html);
+        let card_selector = scraper::Selector::parse(".model-item")
+            .expect("valid Mistral API catalogue card selector");
+        let rows = document
+            .select(&card_selector)
+            .flat_map(|card| {
+                let lines = card
+                    .text()
+                    .flat_map(|text| text.split('\n'))
+                    .map(|line| line.replace('\u{a0}', " "))
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>();
+                parse_mistral_pricing_lines(&lines)
+            })
+            .collect::<Vec<_>>();
+        rows
+    }
+
+    fn mistral_label_to_model_id(label: &str) -> String {
+        // Mistral differentiates its Ministral 3 API models solely by the parenthetical size.
+        // The generic label normalizer drops it, merging 3B, 8B, and 14B into `ministral-3`.
+        label_to_model_id(&label.replace(['(', ')'], " "))
     }
 
     fn is_mistral_model_heading(line: &str) -> bool {
@@ -1778,6 +1918,30 @@ mod tests {
     }
 
     #[test]
+    fn collector_merge_clears_unrepresentable_rates_when_catalog_forbids_enrichment() {
+        let mut seed = HashMap::new();
+        seed.insert(
+            "deepseek-v4-pro".to_string(),
+            ModelPricing {
+                input_per_mtok: Some(0.435),
+                cached_input_per_mtok: Some(0.003_625),
+                output_per_mtok: Some(0.87),
+                modality: Some(Modality::Llm),
+                ..ModelPricing::default()
+            },
+        );
+
+        let mut info = ModelInfo::new("deepseek-v4-pro");
+        info.allow_pricing_enrichment = Some(false);
+        let out = collect::merge_model_infos(seed, [info], false);
+        let rate = out.get("deepseek-v4-pro").unwrap();
+        assert_eq!(rate.input_per_mtok, None);
+        assert_eq!(rate.cached_input_per_mtok, None);
+        assert_eq!(rate.output_per_mtok, None);
+        assert_eq!(rate.modality, Some(Modality::Llm));
+    }
+
+    #[test]
     fn collector_merge_updates_reported_fields_and_can_prune() {
         let mut seed = HashMap::new();
         seed.insert(
@@ -1927,15 +2091,26 @@ mod tests {
     fn zai_documented_catalog_has_current_paid_free_and_vision_rows() {
         for kind in ["zai", "z.ai", "glm"] {
             let rows = collect::documented_catalog(kind).unwrap();
-            assert_eq!(rows.len(), 21, "{kind}");
+            assert_eq!(rows.len(), 23, "{kind}");
 
             let newest = rows.iter().find(|row| row.id == "glm-5.3").unwrap();
             assert_eq!(newest.max_context, Some(1_000_000));
             assert_eq!(newest.max_output, Some(131_072));
-            assert_eq!(newest.input_per_mtok, None);
-            assert_eq!(newest.cached_input_per_mtok, None);
-            assert_eq!(newest.output_per_mtok, None);
+            assert_eq!(newest.input_per_mtok, Some(1.4));
+            assert_eq!(newest.cached_input_per_mtok, Some(0.26));
+            assert_eq!(newest.output_per_mtok, Some(4.4));
             assert_eq!(newest.supports_reasoning, Some(true));
+
+            let flash = rows.iter().find(|row| row.id == "glm-5.3-flash").unwrap();
+            assert_eq!(flash.max_context, Some(1_000_000));
+            assert_eq!(flash.max_output, Some(131_072));
+            assert_eq!(flash.input_per_mtok, Some(0.15));
+            assert_eq!(flash.cached_input_per_mtok, Some(0.03));
+            assert_eq!(flash.output_per_mtok, Some(0.5));
+            assert_eq!(
+                flash.extra["architecture"]["input_modalities"],
+                serde_json::json!(["text", "image", "video", "file"])
+            );
 
             let flagship = rows.iter().find(|row| row.id == "glm-5.2").unwrap();
             assert_eq!(flagship.max_context, Some(1_000_000));
@@ -1961,16 +2136,18 @@ mod tests {
     #[test]
     fn documented_provider_gaps_keep_only_schema_exact_prices() {
         let deepseek = collect::documented_catalog("deepseek").unwrap();
-        assert_eq!(deepseek.len(), 2);
+        assert_eq!(deepseek.len(), 3);
         let flash = deepseek
             .iter()
-            .find(|row| row.id == "deepseek-v4-flash")
+            .find(|row| row.id == "deepseek-flash")
             .unwrap();
         assert_eq!(flash.max_context, Some(1_000_000));
         assert_eq!(flash.max_output, Some(384_000));
-        assert_eq!(flash.input_per_mtok, Some(0.14));
-        assert_eq!(flash.cached_input_per_mtok, Some(0.0028));
-        assert_eq!(flash.output_per_mtok, Some(0.28));
+        assert_eq!(flash.input_per_mtok, None);
+        assert_eq!(flash.cached_input_per_mtok, None);
+        assert_eq!(flash.output_per_mtok, None);
+        assert_eq!(flash.allow_pricing_enrichment, Some(false));
+        assert!(deepseek.iter().any(|row| row.id == "deepseek-v4-flash"));
 
         let minimax = collect::documented_catalog("minimax").unwrap();
         assert_eq!(minimax.len(), 8);
@@ -1990,8 +2167,17 @@ mod tests {
 
         let groq = collect::documented_catalog("groq").unwrap();
         assert_eq!(groq.len(), 2);
-        assert!(groq.iter().all(|row| row.cached_input_per_mtok.is_none()));
-        assert!(groq.iter().all(|row| !row.id.contains('/')));
+        assert!(groq
+            .iter()
+            .all(|row| row.allow_pricing_enrichment == Some(false)));
+        let llama_8b = groq
+            .iter()
+            .find(|row| row.id == "llama-3.1-8b-instant")
+            .unwrap();
+        assert_eq!(llama_8b.max_context, Some(131_072));
+        assert_eq!(llama_8b.max_output, Some(131_072));
+        assert_eq!(llama_8b.input_per_mtok, None);
+        assert_eq!(llama_8b.output_per_mtok, None);
     }
 
     #[test]
@@ -2100,6 +2286,18 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_pricing_parser_reads_cache_write_columns() {
+        let lines = vec![
+            r#"["kimi-k3", "1M tokens", <>{"$"}3.00</>, <>{"$"}6.00</>, <>{"$"}0.30</>, <>{"$"}3.00</>, <>{"$"}15.00</>, "1,048,576 tokens"],"#.to_string(),
+        ];
+        let rows = collect::parse_moonshot_pricing_lines(&lines);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_per_mtok, Some(3.0));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.3));
+        assert_eq!(rows[0].output_per_mtok, Some(15.0));
+    }
+
+    #[test]
     fn moonshot_pricing_parser_reads_cached_and_classic_rows() {
         let lines = vec![
             r#"["kimi-k3", "1M tokens", <>{"$"}0.30</>, <>{"$"}3.00</>, <>{"$"}15.00</>, "1,048,576 tokens"],"#,
@@ -2113,6 +2311,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "kimi-k3");
         assert_eq!(rows[0].input_per_mtok, Some(3.0));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.3));
         assert_eq!(rows[0].output_per_mtok, Some(15.0));
         assert_eq!(rows[0].max_context, Some(1_048_576));
         assert_eq!(rows[1].id, "moonshot-v1-8k");
@@ -2139,6 +2338,34 @@ mod tests {
         assert!(rows[0]
             .unsupported_parameters
             .contains(&"frequency_penalty".to_string()));
+    }
+
+    #[test]
+    fn anthropic_pricing_html_parser_preserves_standard_table_rows() {
+        let html = r#"
+            <table>
+              <thead><tr><th>Model</th><th>Base tokens</th><th>Prompt caching</th><th>Hits and refreshes</th></tr></thead>
+              <tbody>
+                <tr><td><a>Claude Opus 5.5</a></td><td>$4</td><td>$20</td><td>$5</td><td>$8</td><td>$0.20</td></tr>
+                <tr><td><a>Claude Haiku 4.5</a></td><td>$1</td><td>$5</td><td>$1.25</td><td>$2</td><td>$0.10</td></tr>
+                <tr><td><a>Claude Sonnet 4.5</a> through January 1, 2000</td><td>$999</td><td>$999</td><td>$999</td><td>$999</td><td>$999</td></tr>
+              </tbody>
+            </table>
+            <table>
+              <thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead>
+              <tbody><tr><td>Claude Opus 5.5</td><td>$8</td><td>$40</td></tr></tbody>
+            </table>
+        "#;
+
+        let rows = collect::parse_anthropic_pricing_html(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "claude-opus-5-5");
+        assert_eq!(rows[0].input_per_mtok, Some(4.0));
+        assert_eq!(rows[0].output_per_mtok, Some(20.0));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.20));
+        assert_eq!(rows[1].id, "claude-haiku-4-5");
+        assert_eq!(rows[1].input_per_mtok, Some(1.0));
+        assert_eq!(rows[1].output_per_mtok, Some(5.0));
     }
 
     #[test]
@@ -2303,5 +2530,44 @@ mod tests {
         assert_eq!(embed.len(), 1);
         assert_eq!(embed[0].id, "codestral-embed");
         assert_eq!(embed[0].modality, Some(Modality::Embedding));
+    }
+
+    #[test]
+    fn mistral_pricing_html_parser_keeps_card_boundaries_and_model_sizes() {
+        let html = r#"
+            <section>
+              <article>
+                <p>Voxtral Mini Transcribe 2</p>
+                <p>Audio Input/min</p><p>$0.003</p>
+              </article>
+              <article>
+                <p>GLM 5.3</p>
+                <p>Input (/M tokens)</p><p>$1.4</p>
+                <p>Output (/M tokens)</p><p>$4.4</p>
+              </article>
+            </section>
+            <div class="model-item">
+              <p>Ministral 3 (3B)</p>
+              <p>Input (/M tokens)</p><p>$0.1</p>
+              <p>Output (/M tokens)</p><p>$0.1</p>
+            </div>
+            <div class="model-item">
+              <p>Ministral 3 (14B)</p>
+              <p>Input (/M tokens)</p><p>$0.2</p>
+              <p>Output (/M tokens)</p><p>$0.2</p>
+            </div>
+        "#;
+
+        let rows = collect::parse_mistral_pricing_html(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "ministral-3-3b");
+        assert_eq!(rows[0].input_per_mtok, Some(0.1));
+        assert_eq!(rows[0].output_per_mtok, Some(0.1));
+        assert_eq!(rows[1].id, "ministral-3-14b");
+        assert_eq!(rows[1].input_per_mtok, Some(0.2));
+        assert_eq!(rows[1].output_per_mtok, Some(0.2));
+        assert!(!rows
+            .iter()
+            .any(|row| row.id.contains("voxtral-mini-transcribe")));
     }
 }

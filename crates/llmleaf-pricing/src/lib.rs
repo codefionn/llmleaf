@@ -293,9 +293,7 @@ mod tests {
         let zai_newest = pricing.card("glm-5.3").unwrap();
         assert_eq!(zai_newest.max_context, Some(1_000_000));
         assert_eq!(zai_newest.max_output, Some(131_072));
-        assert_eq!(zai_newest.input_per_mtok, None);
-        assert_eq!(zai_newest.cached_input_per_mtok, None);
-        assert_eq!(zai_newest.output_per_mtok, None);
+        assert_token_priced("glm-5.3", &zai_newest);
         assert_eq!(zai_newest.supports_reasoning, Some(true));
 
         let zai = pricing.card("glm-5.2").unwrap();
@@ -303,16 +301,25 @@ mod tests {
         assert_eq!(zai.max_output, Some(131_072));
         assert_token_priced("glm-5.2", &zai);
 
-        let deepseek = pricing.card("deepseek-v4-flash").unwrap();
-        assert_token_priced("deepseek-v4-flash", &deepseek);
+        // Time-dependent DeepSeek rates and retired Groq rates must not survive a refresh.
+        for id in [
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile",
+        ] {
+            let card = pricing.card(id).unwrap();
+            assert_eq!(card.input_per_mtok, None, "{id}");
+            assert_eq!(card.cached_input_per_mtok, None, "{id}");
+            assert_eq!(card.output_per_mtok, None, "{id}");
+            assert_eq!(pricing.cost_usd(id, &Usage::default()), None, "{id}");
+        }
 
         let minimax = pricing.card("MiniMax-M2.7-highspeed").unwrap();
         assert_eq!(minimax.max_context, Some(204_800));
         assert_eq!(minimax.max_output, None);
         assert_token_priced("MiniMax-M2.7-highspeed", &minimax);
-
-        let groq = pricing.card("llama-3.3-70b-versatile").unwrap();
-        assert_token_priced("llama-3.3-70b-versatile", &groq);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "_comment": "Bundled pricing dataset. Generated OFFLINE by the llmleaf-pricing-collector crate; the runtime llmleaf-pricing library only reads this bundled information. Rates are USD per 1,000,000 tokens.",
-  "_comment_metadata": "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank), exact input_modalities/output_modalities where published, limits max_context/max_output/max_thinking, reasoning support, provider tier, and training-data policy. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.",
+  "_comment_metadata": "Each row may carry capability metadata for GET /v1/models: modality (llm|tts|stt|embedding|rerank|decisions), exact input_modalities/output_modalities where published, limits max_context/max_output/max_thinking, reasoning support, provider tier, and training-data policy. Missing fields mean 'not collected' and must be rendered as unknown, never guessed or zeroed.",
   "_comment_params": "unsupported_parameters lists canonical sampling params the model rejects; default_parameters carries provider- or dataset-recommended defaults. Missing means 'not collected'.",
   "version": 7,
   "models": {
@@ -127,6 +127,7 @@
     },
     "claude-fable-5": {
       "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 1.0,
       "output_per_mtok": 50.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -141,6 +142,7 @@
     },
     "claude-fable-5-1": {
       "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 0.25,
       "output_per_mtok": 50.0,
       "modality": "llm",
       "unsupported_parameters": [
@@ -162,6 +164,7 @@
     },
     "claude-haiku-4-5": {
       "input_per_mtok": 1.0,
+      "cached_input_per_mtok": 0.1,
       "output_per_mtok": 5.0,
       "modality": "llm",
       "max_context": 200000,
@@ -173,6 +176,7 @@
     },
     "claude-mythos-5": {
       "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 1.0,
       "output_per_mtok": 50.0,
       "modality": "llm",
       "unsupported_parameters": [
@@ -182,6 +186,7 @@
     },
     "claude-mythos-5-1": {
       "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 0.25,
       "output_per_mtok": 50.0,
       "modality": "llm",
       "unsupported_parameters": [
@@ -214,6 +219,7 @@
     },
     "claude-opus-4-5": {
       "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
       "output_per_mtok": 25.0,
       "modality": "llm",
       "max_context": 200000,
@@ -225,6 +231,7 @@
     },
     "claude-opus-4-6": {
       "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
       "output_per_mtok": 25.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -236,6 +243,7 @@
     },
     "claude-opus-4-7": {
       "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
       "output_per_mtok": 25.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -250,6 +258,7 @@
     },
     "claude-opus-4-8": {
       "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
       "output_per_mtok": 25.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -264,7 +273,18 @@
     },
     "claude-opus-5": {
       "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
       "output_per_mtok": 25.0,
+      "modality": "llm",
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-opus-5-5": {
+      "input_per_mtok": 4.0,
+      "cached_input_per_mtok": 0.2,
+      "output_per_mtok": 20.0,
       "modality": "llm",
       "unsupported_parameters": [
         "frequency_penalty",
@@ -285,6 +305,7 @@
     },
     "claude-sonnet-4-5": {
       "input_per_mtok": 3.0,
+      "cached_input_per_mtok": 0.3,
       "output_per_mtok": 15.0,
       "modality": "llm",
       "max_context": 200000,
@@ -296,6 +317,7 @@
     },
     "claude-sonnet-4-6": {
       "input_per_mtok": 3.0,
+      "cached_input_per_mtok": 0.3,
       "output_per_mtok": 15.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -307,6 +329,7 @@
     },
     "claude-sonnet-5": {
       "input_per_mtok": 2.0,
+      "cached_input_per_mtok": 0.2,
       "output_per_mtok": 10.0,
       "modality": "llm",
       "unsupported_parameters": [
@@ -360,25 +383,33 @@
         "temperature": 0.3
       }
     },
-    "deepseek-v4-flash": {
-      "input_per_mtok": 0.14,
-      "cached_input_per_mtok": 0.0028,
-      "output_per_mtok": 0.28,
+    "deepseek-flash": {
       "modality": "llm",
       "max_context": 1000000,
       "max_output": 384000,
       "supports_reasoning": true,
       "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
         "text"
+      ]
+    },
+    "deepseek-v4-flash": {
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 384000,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image"
       ],
       "output_modalities": [
         "text"
       ]
     },
     "deepseek-v4-pro": {
-      "input_per_mtok": 0.435,
-      "cached_input_per_mtok": 0.003625,
-      "output_per_mtok": 0.87,
       "modality": "llm",
       "max_context": 1000000,
       "max_output": 384000,
@@ -699,12 +730,51 @@
       ]
     },
     "glm-5.3": {
+      "input_per_mtok": 1.4,
+      "cached_input_per_mtok": 0.26,
+      "output_per_mtok": 4.4,
       "modality": "llm",
       "max_context": 1000000,
       "max_output": 131072,
       "supports_reasoning": true,
       "input_modalities": [
         "text"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5.3-flash": {
+      "input_per_mtok": 0.15,
+      "cached_input_per_mtok": 0.03,
+      "output_per_mtok": 0.5,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
+    "glm-5.3-flashx": {
+      "input_per_mtok": 0.37,
+      "cached_input_per_mtok": 0.075,
+      "output_per_mtok": 1.25,
+      "modality": "llm",
+      "max_context": 1000000,
+      "max_output": 131072,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "file"
       ],
       "output_modalities": [
         "text"
@@ -766,35 +836,40 @@
       "output_per_mtok": 8.0,
       "modality": "llm",
       "max_context": 1047576,
-      "max_output": 32768
+      "max_output": 32768,
+      "cached_input_per_mtok": 0.5
     },
     "gpt-4.1-mini": {
       "input_per_mtok": 0.4,
       "output_per_mtok": 1.6,
       "modality": "llm",
       "max_context": 1047576,
-      "max_output": 32768
+      "max_output": 32768,
+      "cached_input_per_mtok": 0.1
     },
     "gpt-4.1-nano": {
       "input_per_mtok": 0.1,
       "output_per_mtok": 0.4,
       "modality": "llm",
       "max_context": 1047576,
-      "max_output": 32768
+      "max_output": 32768,
+      "cached_input_per_mtok": 0.025
     },
     "gpt-4o": {
       "input_per_mtok": 2.5,
       "output_per_mtok": 10.0,
       "modality": "llm",
       "max_context": 128000,
-      "max_output": 16384
+      "max_output": 16384,
+      "cached_input_per_mtok": 1.25
     },
     "gpt-4o-mini": {
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "modality": "llm",
       "max_context": 128000,
-      "max_output": 16384
+      "max_output": 16384,
+      "cached_input_per_mtok": 0.075
     },
     "gpt-4o-mini-transcribe": {
       "input_per_mtok": 1.25,
@@ -824,14 +899,16 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.125
     },
     "gpt-5-chat-latest": {
       "input_per_mtok": 1.25,
       "output_per_mtok": 10.0,
       "modality": "llm",
       "max_context": 128000,
-      "max_output": 16384
+      "max_output": 16384,
+      "cached_input_per_mtok": 0.125
     },
     "gpt-5-mini": {
       "input_per_mtok": 0.25,
@@ -848,7 +925,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.025
     },
     "gpt-5-nano": {
       "input_per_mtok": 0.05,
@@ -865,7 +943,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.005
     },
     "gpt-5-pro": {
       "input_per_mtok": 15.0,
@@ -899,7 +978,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.125
     },
     "gpt-5.4": {
       "input_per_mtok": 2.5,
@@ -916,7 +996,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.25
     },
     "gpt-5.4-mini": {
       "input_per_mtok": 0.75,
@@ -933,7 +1014,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.075
     },
     "gpt-5.4-nano": {
       "input_per_mtok": 0.2,
@@ -949,7 +1031,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.02
     },
     "gpt-5.4-pro": {
       "input_per_mtok": 30.0,
@@ -982,7 +1065,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.5
     },
     "gpt-5.5-pro": {
       "input_per_mtok": 30.0,
@@ -1045,6 +1129,24 @@
       "max_output": 128000,
       "supports_reasoning": true
     },
+    "gpt-6-luna": {
+      "input_per_mtok": 0.1,
+      "cached_input_per_mtok": 0.01,
+      "output_per_mtok": 0.5,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-6-sol": {
+      "input_per_mtok": 2.0,
+      "cached_input_per_mtok": 0.2,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
     "kimi-k2.5": {
       "input_per_mtok": 0.6,
       "output_per_mtok": 3.0,
@@ -1054,6 +1156,7 @@
     },
     "kimi-k2.6": {
       "input_per_mtok": 0.95,
+      "cached_input_per_mtok": 0.16,
       "output_per_mtok": 4.0,
       "modality": "llm",
       "max_context": 262144,
@@ -1061,6 +1164,7 @@
     },
     "kimi-k2.7-code": {
       "input_per_mtok": 0.95,
+      "cached_input_per_mtok": 0.19,
       "output_per_mtok": 4.0,
       "modality": "llm",
       "max_context": 262144,
@@ -1068,6 +1172,7 @@
     },
     "kimi-k2.7-code-highspeed": {
       "input_per_mtok": 1.9,
+      "cached_input_per_mtok": 0.38,
       "output_per_mtok": 8.0,
       "modality": "llm",
       "max_context": 262144,
@@ -1075,14 +1180,13 @@
     },
     "kimi-k3": {
       "input_per_mtok": 3.0,
+      "cached_input_per_mtok": 0.3,
       "output_per_mtok": 15.0,
       "modality": "llm",
       "max_context": 1048576,
       "supports_reasoning": true
     },
     "llama-3.1-8b-instant": {
-      "input_per_mtok": 0.05,
-      "output_per_mtok": 0.08,
       "modality": "llm",
       "max_context": 131072,
       "max_output": 131072,
@@ -1094,8 +1198,6 @@
       ]
     },
     "llama-3.3-70b-versatile": {
-      "input_per_mtok": 0.59,
-      "output_per_mtok": 0.79,
       "modality": "llm",
       "max_context": 131072,
       "max_output": 32768,
@@ -1276,7 +1378,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 7.5
     },
     "o1-pro": {
       "input_per_mtok": 150.0,
@@ -1310,7 +1413,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.5
     },
     "o3-mini": {
       "input_per_mtok": 1.1,
@@ -1327,7 +1431,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.55
     },
     "o3-pro": {
       "input_per_mtok": 20.0,
@@ -1361,7 +1466,8 @@
       "default_parameters": {
         "temperature": 1,
         "top_p": 1
-      }
+      },
+      "cached_input_per_mtok": 0.275
     },
     "text-embedding-004": {
       "input_per_mtok": 0.0,
