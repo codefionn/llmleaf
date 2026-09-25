@@ -21,15 +21,20 @@ native performance instead.
 
 ## Features
 
-- Stable API endpoints for AI generation (OpenAI compatible, OpenRouter like and Anthropic Message API compatbile)
-- Endpoint types: chat, embeddings, rerank, decisions, text-to-speech, speech-to-text,
-  realtime (WebSocket), batch jobs
-- Supported modalities: image, audio, video and of course text (though mainly image and text support is focused on)
+- Stable API endpoints for AI generation (OpenAI compatible, OpenRouter like
+  and Anthropic Message API compatbile)
+- Endpoint types: chat, embeddings, rerank, decisions, text-to-speech,
+  speech-to-text, realtime (WebSocket), batch jobs
+- Supported modalities: image, audio, video and of course text (though mainly
+  image and text support is focused on)
 - Health-aware AI endpoint switchover
-- No shared state between instances, which simplifies hosting multiple instances greatly
+- No shared state between instances, which simplifies hosting multiple
+  instances greatly
 - Prompt caching
 - Reasoning effort selection
 - Web socket support (also for SSE and even simple request-response providers)
+- Great model list endpoint with all the information you need even from
+  providers that don't support this!
 
 Please use web sockets, it fixes latency and prompt caching issues.
 
