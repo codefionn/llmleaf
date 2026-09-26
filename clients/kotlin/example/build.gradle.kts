@@ -11,8 +11,8 @@ plugins {
     application
 }
 
-val ktorVersion = "3.0.3"
-val coroutinesVersion = "1.9.0"
+val ktorVersion = "3.6.0"
+val coroutinesVersion = "1.11.0"
 
 dependencies {
     // Consume the KMP library; Gradle resolves its JVM ("jvm") variant automatically.

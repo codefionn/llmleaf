@@ -12,7 +12,7 @@ pluginManagement {
 dependencyResolutionManagement {
     // Repositories are declared centrally here for the JVM/native dependency graph.
     //
-    // Mode is PREFER_SETTINGS rather than FAIL_ON_PROJECT_REPOS: the Kotlin 2.0 Kotlin/JS
+    // Mode is PREFER_SETTINGS rather than FAIL_ON_PROJECT_REPOS: the Kotlin/JS
     // toolchain tasks (`kotlinNodeJsSetup`, `kotlinYarnSetup`) unconditionally register their
     // own project-scoped Ivy "distribution" repositories at task time to fetch Node.js / Yarn,
     // and FAIL_ON_PROJECT_REPOS rejects that outright ("repository '...' was added by unknown
@@ -29,7 +29,7 @@ dependencyResolutionManagement {
         // repositories. Declaring them centrally (rather than letting the plugin's task-time
         // project repo serve them) keeps resolution under settings control; `exclusiveContent`
         // pins each to its single module so it never shadows mavenCentral/google. The pattern
-        // layouts and module ids mirror the Kotlin 2.0 plugin's NodeJsSetupTask / YarnSetupTask.
+        // layouts and module ids mirror the Kotlin plugin's NodeJsSetupTask / YarnSetupTask.
         exclusiveContent {
             forRepository {
                 ivy("https://nodejs.org/dist") {

@@ -1,4 +1,3 @@
-import com.vanniktech.maven.publish.SonatypeHost
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 // ----------------------------------------------------------------------------
@@ -17,25 +16,23 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 //      lowercase enum tokens, snake_case keys, free-form raw-JSON splicing), so Wire
 //      compiles the proto while kotlinx.serialization drives the wire. See SPEC.md.
 //
-// NOTE: this project was authored WITHOUT a local Gradle run (no toolchain in the
-// authoring environment). A first `./gradlew build` on a normal machine is required to
-// confirm it. Versions are pinned to recent stable releases and kept consistent below.
+// Versions are pinned to stable releases and kept consistent below.
 // ----------------------------------------------------------------------------
 
 plugins {
-    kotlin("multiplatform") version "2.0.21"
-    kotlin("plugin.serialization") version "2.0.21"
-    id("com.squareup.wire") version "5.1.0"
+    kotlin("multiplatform") version "2.4.20"
+    kotlin("plugin.serialization") version "2.4.20"
+    id("com.squareup.wire") version "5.5.0"
     // Maven Central publishing for the whole Kotlin Multiplatform artifact set (the root
     // `kotlinMultiplatform` metadata module plus the per-target jvm / js / linuxX64 modules),
     // including POM generation, in-memory GPG signing and the Central Portal upload. Hand-rolling
     // `maven-publish` + `signing` across every KMP publication is brittle; this plugin owns it.
     // The release workflow drives it with `./gradlew publishToMavenCentral`. See RELEASING.md.
-    id("com.vanniktech.maven.publish") version "0.30.0"
+    id("com.vanniktech.maven.publish") version "0.35.0"
     // Declared (not applied) here so the Kotlin/JVM plugin is resolved onto the build classpath
     // once at the root; the :example subproject applies it WITHOUT a version, avoiding the
     // "plugin already on the classpath must not include a version" error.
-    kotlin("jvm") version "2.0.21" apply false
+    kotlin("jvm") version "2.4.20" apply false
 }
 
 group = "eu.codefionn.llmleaf"
@@ -50,16 +47,15 @@ version = (findProperty("version") as? String)?.takeUnless { it.isBlank() || it 
 // FAIL_ON_PROJECT_REPOS); declaring them here too would fail configuration, so we don't.
 
 // Pinned, mutually-consistent dependency versions.
-val ktorVersion = "3.0.3"
-val coroutinesVersion = "1.9.0"
-val serializationVersion = "1.7.3"
+val ktorVersion = "3.6.0"
+val coroutinesVersion = "1.11.0"
+val serializationVersion = "1.11.0"
 
 kotlin {
     // Note: explicit-API mode is intentionally NOT enabled. The public types below already
     // carry `public` on their top-level declarations; enabling strict explicit-API would also
-    // demand it on every data-class constructor property, and since this project could not be
-    // compiled in the authoring environment that is a needless first-build risk. Re-enable with
-    // `explicitApi()` once a local Gradle run can confirm every member is annotated.
+    // demand it on every data-class constructor property. Enable `explicitApi()` only after
+    // annotating those members.
 
     jvm {
         compilerOptions {
@@ -160,7 +156,7 @@ wire {
 mavenPublishing {
     // Upload to the Central Portal (central.sonatype.com) and auto-release the deployment once
     // its validation passes, so a tag push needs no manual "release" click in the Portal UI.
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    publishToMavenCentral(automaticRelease = true)
     // Sign every KMP publication with the in-memory GPG key (Central requires signatures).
     signAllPublications()
 

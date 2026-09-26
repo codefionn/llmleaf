@@ -5,10 +5,8 @@ LLM proxy. Speaks llmleaf's OpenAI/OpenRouter-shaped JSON over HTTP (see
 [`../SPEC.md`](../SPEC.md)) on JVM, native (linuxX64), and JS (Node) via Ktor. All calls are
 `suspend`; streaming surfaces are `kotlinx.coroutines.flow.Flow`.
 
-> **Not built in the authoring environment** — written without a local Gradle/Kotlin
-> toolchain, so run `./gradlew build` once before depending on it. Versions are pinned to
-> recent stable releases (Kotlin 2.0.21, Ktor 3.0.3, kotlinx.serialization 1.7.3,
-> coroutines 1.9.0, Square Wire 5.1.0).
+Versions are pinned to Kotlin 2.4.20, Ktor 3.6.0, kotlinx.serialization 1.11.0,
+coroutines 1.11.0, and Square Wire 5.5.0.
 
 ## Build & run
 
@@ -21,8 +19,8 @@ LLMLEAF_API_KEY=sk-... \
   ./gradlew :example:run        # runs the JVM demo
 ```
 
-The Gradle wrapper pins 8.11.1; `gradle-wrapper.jar` is not vendored, so the first `./gradlew`
-needs network access to fetch it (copy one from any Gradle 8.11.x checkout if you're offline).
+The Gradle wrapper pins 8.14.4. The first `./gradlew` run needs network access to fetch
+that distribution if it is not already cached.
 
 ## Example
 

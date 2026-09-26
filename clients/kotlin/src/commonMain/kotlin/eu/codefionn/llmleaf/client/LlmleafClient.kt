@@ -54,7 +54,7 @@ import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -135,7 +135,8 @@ public class LlmleafClient private constructor(
      * emits one [ChatCompletionChunk] per `data:` frame, stopping at `data: [DONE]` (the
      * sentinel is never JSON-parsed). The flow is cold; collecting it runs the request.
      */
-    public fun chatStream(request: ChatRequest): Flow<ChatCompletionChunk> = flow {
+    // Ktor may invoke execute callbacks on another dispatcher, so streaming flows use channelFlow.
+    public fun chatStream(request: ChatRequest): Flow<ChatCompletionChunk> = channelFlow {
         val body = request.copy(stream = true)
         http.prepareRequest {
             method = HttpMethod.Post
@@ -153,7 +154,7 @@ public class LlmleafClient private constructor(
                 if (!line.startsWith(SSE_DATA_PREFIX)) continue // ignore comments / event: lines
                 val data = line.substring(SSE_DATA_PREFIX.length).trim()
                 if (data == SSE_DONE) break // sentinel — do NOT parse it
-                emit(decode(data, ChatCompletionChunk.serializer()))
+                send(decode(data, ChatCompletionChunk.serializer()))
             }
         }
     }
@@ -186,7 +187,7 @@ public class LlmleafClient private constructor(
      * (or when the connection closes). A mid-stream `error` event is surfaced as a thrown
      * [ApiError]. The flow is cold; collecting it runs the request.
      */
-    public fun responsesStream(request: ResponsesRequest): Flow<ResponsesStreamEvent> = flow {
+    public fun responsesStream(request: ResponsesRequest): Flow<ResponsesStreamEvent> = channelFlow {
         val body = request.copy(stream = true)
         http.prepareRequest {
             method = HttpMethod.Post
@@ -212,7 +213,7 @@ public class LlmleafClient private constructor(
                     throw ApiError(0, (obj["message"] as? JsonPrimitive)?.content ?: "responses stream error")
                 }
                 if (type !in RESPONSES_KNOWN_EVENTS) continue // ignore unrecognised event types
-                emit(decodeElement(obj, ResponsesStreamEvent.serializer()))
+                send(decodeElement(obj, ResponsesStreamEvent.serializer()))
                 if (type in RESPONSES_TERMINAL_EVENTS) break // terminal event — no sentinel follows
             }
         }
@@ -385,7 +386,7 @@ public class LlmleafClient private constructor(
      * Streams a completed batch's results as a [Flow] of [BatchResultLine], one per NDJSON line
      * (`application/x-ndjson`). Cold; collecting it runs the request.
      */
-    public fun batchResults(id: String): Flow<BatchResultLine> = flow {
+    public fun batchResults(id: String): Flow<BatchResultLine> = channelFlow {
         http.prepareGet("$base/v1/batches/$id/results") {
             timeout { requestTimeoutMillis = Long.MAX_VALUE }
         }.execute { resp ->
@@ -394,7 +395,7 @@ public class LlmleafClient private constructor(
             while (true) {
                 val line = channel.readUTF8Line() ?: break
                 if (line.isBlank()) continue
-                emit(decode(line, BatchResultLine.serializer()))
+                send(decode(line, BatchResultLine.serializer()))
             }
         }
     }
