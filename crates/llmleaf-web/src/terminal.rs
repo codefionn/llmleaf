@@ -257,7 +257,7 @@ async fn require_terminal_auth(
     state: &crate::state::AppState,
     headers: HeaderMap,
     jar: CookieJar,
-) -> Result<(), Response> {
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     // bearer check (sync)
     if let Some(expected) = state
         .config
@@ -300,9 +300,10 @@ async fn require_terminal_auth(
 
     Err((
         StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({ "error": "terminal: authentication required (session or control bearer)" })),
-    )
-        .into_response())
+        Json(
+            serde_json::json!({ "error": "terminal: authentication required (session or control bearer)" }),
+        ),
+    ))
 }
 
 // ---------- handlers ----------
@@ -314,7 +315,7 @@ async fn create_handler(
     Json(req): Json<Option<CreateReq>>,
 ) -> Response {
     if let Err(resp) = require_terminal_auth(&state, headers, jar).await {
-        return resp;
+        return resp.into_response();
     }
     let manager = state.terminal.clone();
     let cols = req.as_ref().and_then(|r| r.cols).unwrap_or(80);
@@ -335,7 +336,7 @@ async fn list_handler(
     jar: CookieJar,
 ) -> Response {
     if let Err(resp) = require_terminal_auth(&state, headers, jar).await {
-        return resp;
+        return resp.into_response();
     }
     let sessions = state.terminal.list().await;
     Json(ListResp { sessions }).into_response()
@@ -348,7 +349,7 @@ async fn delete_handler(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Response {
     if let Err(resp) = require_terminal_auth(&state, headers, jar).await {
-        return resp;
+        return resp.into_response();
     }
     if state.terminal.remove(id).await {
         Json(serde_json::json!({ "removed": id })).into_response()
@@ -371,7 +372,7 @@ async fn attach_handler(
     // WS upgrade auth must be checked before upgrade; we cannot do async DB lookup after upgrade easily,
     // so we check here.
     if let Err(resp) = require_terminal_auth(&state, headers, jar).await {
-        return resp;
+        return resp.into_response();
     }
     // verify session exists
     {

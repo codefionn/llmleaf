@@ -778,13 +778,13 @@ pub mod collect {
         ]
     }
 
-    /// DeepSeek's `/models` API is id-only. Its pricing now varies by peak and off-peak hours, which
-    /// llmleaf's single-rate schema cannot represent. Keep these current request IDs as metadata-only
+    /// DeepSeek's `/models` API supplies limits and modalities. Pricing varies by peak and off-peak
+    /// hours, which llmleaf's single-rate schema cannot represent. Keep these request IDs as metadata-only
     /// rows rather than selecting one time-dependent rate. `deepseek-v4-flash` remains an accepted
-    /// legacy alias for `deepseek-flash`.
+    /// legacy alias for `deepseek-flash`, as does `deepseek-v4-flash-vision-exp`.
     /// Sources: <https://api-docs.deepseek.com/api/list-models/>,
     /// <https://api-docs.deepseek.com/quick_start/pricing>, and
-    /// <https://api-docs.deepseek.com/news/news260424/>.
+    /// <https://api-docs.deepseek.com/news/news260910/>.
     fn deepseek_documented_catalog() -> Vec<ModelInfo> {
         const TEXT: &[&str] = &["text"];
         const VISION: &[&str] = &["text", "image"];
@@ -792,8 +792,8 @@ pub mod collect {
             documented_model(
                 "deepseek-flash",
                 Modality::Llm,
-                Some(1_000_000),
-                Some(384_000),
+                Some(1_048_576),
+                Some(393_216),
                 Some(true),
                 VISION,
                 TEXT,
@@ -802,8 +802,18 @@ pub mod collect {
             documented_model(
                 "deepseek-v4-flash",
                 Modality::Llm,
-                Some(1_000_000),
-                Some(384_000),
+                Some(1_048_576),
+                Some(393_216),
+                Some(true),
+                VISION,
+                TEXT,
+                (None, None, None),
+            ),
+            documented_model(
+                "deepseek-v4-flash-vision-exp",
+                Modality::Llm,
+                Some(1_048_576),
+                Some(393_216),
                 Some(true),
                 VISION,
                 TEXT,
@@ -812,8 +822,8 @@ pub mod collect {
             documented_model(
                 "deepseek-v4-pro",
                 Modality::Llm,
-                Some(1_000_000),
-                Some(384_000),
+                Some(1_048_576),
+                Some(393_216),
                 Some(true),
                 TEXT,
                 TEXT,
@@ -830,8 +840,9 @@ pub mod collect {
 
     /// MiniMax documents no list-models endpoint on its OpenAI-compatible API. These are the flat,
     /// standard-priority M2 pay-as-you-go rows whose complete charge fits llmleaf's three token-rate
-    /// schema. M3 (length-tiered), priority service, explicit Anthropic cache writes, and non-token
-    /// media products are intentionally excluded. Verified 2026-09-24 from:
+    /// schema. M3 and M3.1 Flash Preview are metadata-only: M3 pricing depends on input length and
+    /// the preview has no published pay-as-you-go rate. Priority service, explicit Anthropic cache
+    /// writes, and non-token media products are excluded. Verified 2026-10-01 from:
     /// <https://platform.minimax.io/docs/guides/text-generation> and
     /// <https://platform.minimax.io/docs/guides/pricing-paygo>.
     fn minimax_documented_catalog() -> Vec<ModelInfo> {
@@ -858,6 +869,16 @@ pub mod collect {
                 (Some(input), Some(cached), Some(output)),
             )
         })
+        .chain(["MiniMax-M3", "MiniMax-M3.1-Flash-Preview"].map(|id| {
+            let mut info = ModelInfo::new(id);
+            info.modality = Some(Modality::Llm);
+            info.max_context = Some(1_000_000);
+            if id == "MiniMax-M3.1-Flash-Preview" {
+                info.supports_reasoning = Some(true);
+            }
+            info.allow_pricing_enrichment = Some(false);
+            info
+        }))
         .chain(std::iter::once(documented_model(
             "M2-her",
             Modality::Llm,
@@ -1523,6 +1544,9 @@ pub mod collect {
 
     fn anthropic_removes_sampling_parameters(label: &str) -> bool {
         let id = anthropic_label_to_model_id(label);
+        if id == "claude-sonnet-5-5" {
+            return true;
+        }
         if id.starts_with("claude-fable-") {
             return true;
         }
@@ -2136,21 +2160,42 @@ mod tests {
     #[test]
     fn documented_provider_gaps_keep_only_schema_exact_prices() {
         let deepseek = collect::documented_catalog("deepseek").unwrap();
-        assert_eq!(deepseek.len(), 3);
+        assert_eq!(deepseek.len(), 4);
         let flash = deepseek
             .iter()
             .find(|row| row.id == "deepseek-flash")
             .unwrap();
-        assert_eq!(flash.max_context, Some(1_000_000));
-        assert_eq!(flash.max_output, Some(384_000));
+        assert_eq!(flash.max_context, Some(1_048_576));
+        assert_eq!(flash.max_output, Some(393_216));
+        assert_eq!(
+            flash.extra["architecture"]["input_modalities"],
+            serde_json::json!(["text", "image"])
+        );
         assert_eq!(flash.input_per_mtok, None);
         assert_eq!(flash.cached_input_per_mtok, None);
         assert_eq!(flash.output_per_mtok, None);
         assert_eq!(flash.allow_pricing_enrichment, Some(false));
-        assert!(deepseek.iter().any(|row| row.id == "deepseek-v4-flash"));
+        for id in ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] {
+            let alias = deepseek.iter().find(|row| row.id == id).unwrap();
+            assert_eq!(alias.max_context, flash.max_context);
+            assert_eq!(alias.max_output, flash.max_output);
+            assert_eq!(alias.extra["architecture"], flash.extra["architecture"]);
+            assert_eq!(alias.allow_pricing_enrichment, Some(false));
+        }
+        let pro = deepseek
+            .iter()
+            .find(|row| row.id == "deepseek-v4-pro")
+            .unwrap();
+        assert_eq!(pro.max_context, flash.max_context);
+        assert_eq!(pro.max_output, flash.max_output);
+        assert_eq!(
+            pro.extra["architecture"]["input_modalities"],
+            serde_json::json!(["text"])
+        );
+        assert_eq!(pro.allow_pricing_enrichment, Some(false));
 
         let minimax = collect::documented_catalog("minimax").unwrap();
-        assert_eq!(minimax.len(), 8);
+        assert_eq!(minimax.len(), 10);
         let highspeed = minimax
             .iter()
             .find(|row| row.id == "MiniMax-M2.7-highspeed")
@@ -2164,6 +2209,21 @@ mod tests {
         assert_eq!(roleplay.max_context, Some(64_000));
         assert_eq!(roleplay.max_output, Some(2_048));
         assert_eq!(roleplay.cached_input_per_mtok, None);
+        for id in ["MiniMax-M3", "MiniMax-M3.1-Flash-Preview"] {
+            let model = minimax.iter().find(|row| row.id == id).unwrap();
+            assert_eq!(model.max_context, Some(1_000_000));
+            assert_eq!(model.max_output, None);
+            assert_eq!(model.input_per_mtok, None);
+            assert_eq!(model.cached_input_per_mtok, None);
+            assert_eq!(model.output_per_mtok, None);
+            assert_eq!(model.allow_pricing_enrichment, Some(false));
+            assert!(!model.extra.contains_key("architecture"));
+        }
+        let preview = minimax
+            .iter()
+            .find(|row| row.id == "MiniMax-M3.1-Flash-Preview")
+            .unwrap();
+        assert_eq!(preview.supports_reasoning, Some(true));
 
         let groq = collect::documented_catalog("groq").unwrap();
         assert_eq!(groq.len(), 2);
@@ -2325,19 +2385,31 @@ mod tests {
         let lines = vec![
             "Claude Opus 4.8$5 / MTok$6.25 / MTok$10 / MTok$0.50 / MTok$25 / MTok",
             "Claude Sonnet 4.6$3 / MTok$3.75 / MTok$6 / MTok$0.30 / MTok$15 / MTok",
+            "Claude Sonnet 5.5$2 / MTok$2.50 / MTok$4 / MTok$0.20 / MTok$10 / MTok",
         ]
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
 
         let rows = collect::parse_anthropic_pricing_lines(&lines);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].id, "claude-opus-4-8");
         assert_eq!(rows[0].input_per_mtok, Some(5.0));
         assert_eq!(rows[0].output_per_mtok, Some(25.0));
         assert!(rows[0]
             .unsupported_parameters
             .contains(&"frequency_penalty".to_string()));
+        let sonnet = rows
+            .iter()
+            .find(|row| row.id == "claude-sonnet-5-5")
+            .unwrap();
+        assert_eq!(sonnet.input_per_mtok, Some(2.0));
+        assert_eq!(sonnet.output_per_mtok, Some(10.0));
+        for parameter in ["temperature", "top_p", "top_k"] {
+            assert!(sonnet
+                .unsupported_parameters
+                .contains(&parameter.to_string()));
+        }
     }
 
     #[test]

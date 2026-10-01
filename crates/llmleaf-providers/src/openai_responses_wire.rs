@@ -1007,7 +1007,7 @@ mod tests {
                 ..
             }
         ));
-        let collected = llmleaf_model::collect_chunks(chunks.into_iter());
+        let collected = llmleaf_model::collect_chunks(chunks);
         let mut req = user_req("continue");
         req.model = "gpt-5.3-codex".into();
         req.extra.insert(
