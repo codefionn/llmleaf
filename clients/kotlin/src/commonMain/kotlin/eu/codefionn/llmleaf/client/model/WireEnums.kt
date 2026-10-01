@@ -26,6 +26,7 @@ public enum class FinishReason(override val wire: String) : WireEnum {
     LENGTH("length"),
     TOOL_CALLS("tool_calls"),
     CONTENT_FILTER("content_filter"),
+    COMPACTION("compaction"),
 }
 
 public object FinishReasonSerializer :

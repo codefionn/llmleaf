@@ -97,6 +97,13 @@ pub trait Provider: Send + Sync {
         Err(unsupported(self.name(), "model listing"))
     }
 
+    /// Whether this provider can compact context through its model API. `None` means the provider
+    /// cannot establish the capability for this model; the caller may retain other catalog evidence.
+    /// Providers with documented support or an operator setting can answer without fetching `/models`.
+    fn supports_compaction(&self, _model: &str, _cx: &ProviderCx) -> Option<bool> {
+        None
+    }
+
     /// Transcribe audio (speech-to-text). Opt-in: the default declares the modality unsupported.
     async fn transcribe(
         &self,

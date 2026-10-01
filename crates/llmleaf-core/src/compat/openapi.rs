@@ -527,6 +527,7 @@ fn responses_request_schema() -> Value {
                 "description": "Whether the selected upstream should store response state.",
             },
             "previous_response_id": { "type": "string", "description": "Upstream response id to continue." },
+            "context_management": { "type": "array", "items": { "type": "object" }, "description": "Native inline compaction settings for a supporting Responses API." },
         },
         "required": ["model"],
         "additionalProperties": true,
@@ -548,7 +549,7 @@ fn response_object_schema() -> Value {
             "output": {
                 "type": "array",
                 "items": { "type": "object" },
-                "description": "Output items: `reasoning`, `message`, `function_call`.",
+                "description": "Output items: `reasoning`, `compaction`, `message`, `function_call`. Replay compaction items intact.",
             },
             "store": { "type": "boolean" },
             "previous_response_id": { "type": "string" },
@@ -620,6 +621,7 @@ fn components() -> Value {
                     "name": { "type": "string" },
                     "tool_calls": { "type": "array", "items": { "type": "object" } },
                     "tool_call_id": { "type": "string" },
+                    "compaction": { "type": "array", "items": { "type": "object" }, "description": "Native compaction blocks for replay, including signatures or encrypted content." },
                     "reasoning": {
                         "type": "string",
                         "description": "Open reasoning text (OpenRouter-style extension). Emitted on \
@@ -765,6 +767,8 @@ fn components() -> Value {
                     "tools": { "type": "array", "items": { "type": "object" } },
                     "tool_choice": { "type": "object" },
                     "thinking": { "type": "object" },
+                    "compaction": { "type": "object", "description": "Native on-demand summarization request. Cannot be combined with context_management." },
+                    "context_management": { "type": "object", "description": "Native threshold compaction settings. Returned compaction blocks must be replayed intact." },
                 },
                 "required": ["model", "max_tokens", "messages"],
                 "additionalProperties": true,
@@ -1031,6 +1035,10 @@ fn components() -> Value {
                     "created": { "type": "integer" },
                     "description": { "type": "string" },
                     "context_length": { "type": ["integer", "null"] },
+                    "supports_compaction": {
+                        "type": "boolean",
+                        "description": "True when native API compaction is confirmed for this model on the configured provider API. False when unsupported or unconfirmed.",
+                    },
                     "architecture": { "type": "object" },
                     "pricing": { "type": ["object", "null"] },
                     "top_provider": { "type": "object" },

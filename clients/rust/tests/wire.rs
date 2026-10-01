@@ -6,6 +6,22 @@ use llmleaf_client::*;
 use serde_json::json;
 
 #[test]
+fn compaction_item_and_chat_block_round_trip() {
+    let raw = json!({"type":"compaction","id":"cmp_1","encrypted_content":"opaque"});
+    let item: ResponseItem = serde_json::from_value(raw.clone()).unwrap();
+    assert!(matches!(item, ResponseItem::Compaction(_)));
+    assert_eq!(serde_json::to_value(item).unwrap(), raw);
+
+    let mut message = ChatMessage::assistant("");
+    message.compaction.push(CompactionBlock {
+        kind: "compaction".into(), id: None, content: Some("summary".into()),
+        encrypted_content: None, signature: Some("sig".into()),
+    });
+    let encoded = serde_json::to_value(&message).unwrap();
+    assert_eq!(encoded["compaction"][0]["signature"], "sig");
+}
+
+#[test]
 fn chat_request_minimal_body() {
     let req = ChatRequest::new("gpt-4o-mini", vec![ChatMessage::user("hi")]);
     let v = serde_json::to_value(&req).unwrap();

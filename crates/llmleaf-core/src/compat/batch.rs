@@ -247,8 +247,10 @@ mod tests {
                 model: "gpt-4o".into(),
                 choices: vec![Choice {
                     index: 0,
+                    output: Vec::new(),
                     text: "hello".into(),
                     thinking: vec![],
+                    compaction: vec![],
                     tool_calls: vec![],
                     finish_reason: Some(FinishReason::Stop),
                 }],
@@ -332,8 +334,10 @@ mod tests {
                 model: "gpt-4o".into(),
                 choices: vec![Choice {
                     index: 0,
+                    output: Vec::new(),
                     text: "hello".into(),
                     thinking: vec![],
+                    compaction: vec![],
                     tool_calls: vec![],
                     finish_reason: Some(FinishReason::Stop),
                 }],

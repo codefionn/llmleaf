@@ -1,7 +1,10 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package eu.codefionn.llmleaf.client.model
 
 import eu.codefionn.llmleaf.client.RawJson
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -50,6 +53,16 @@ public data class ReasoningDetail(
         get() = text ?: summary
 }
 
+/** Native compaction state. Keep the opaque fields when replaying a turn. */
+@Serializable
+public data class CompactionBlock(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) @SerialName("type") val type: String = "compaction",
+    @SerialName("id") val id: String? = null,
+    @SerialName("content") val content: String? = null,
+    @SerialName("encrypted_content") val encryptedContent: String? = null,
+    @SerialName("signature") val signature: String? = null,
+)
+
 /**
  * A chat message. `content` is the string-or-parts union; `role` serialises to its lowercase
  * wire token. A message is valid with content, tool calls (assistant), or a tool result.
@@ -71,6 +84,7 @@ public data class ChatMessage(
      * Echo these back verbatim on the next request to preserve signed reasoning across a turn.
      */
     @SerialName("reasoning_details") val reasoningDetails: List<ReasoningDetail> = emptyList(),
+    @SerialName("compaction") val compaction: List<CompactionBlock> = emptyList(),
 ) {
     public companion object {
         public fun system(text: String): ChatMessage =
@@ -234,6 +248,7 @@ public data class Delta(
     @SerialName("reasoning") val reasoning: String? = null,
     /** Incremental structured reasoning blocks (open / hidden — see [ReasoningDetail]). */
     @SerialName("reasoning_details") val reasoningDetails: List<ReasoningDetail> = emptyList(),
+    @SerialName("compaction") val compaction: List<CompactionBlock> = emptyList(),
 )
 
 @Serializable

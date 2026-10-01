@@ -144,6 +144,15 @@ export interface ReasoningDetail {
   index?: number;
 }
 
+/** Opaque native compaction state. Echo it back unchanged on the next turn. */
+export interface CompactionBlock {
+  type: "compaction";
+  id?: string;
+  content?: string;
+  encryptedContent?: string;
+  signature?: string;
+}
+
 export interface ChatMessage {
   role: Role;
   content?: MessageContent;
@@ -162,6 +171,7 @@ export interface ChatMessage {
    * signed reasoning across a turn.
    */
   reasoningDetails?: ReasoningDetail[];
+  compaction?: CompactionBlock[];
 }
 
 export interface FunctionDef {
@@ -257,6 +267,7 @@ export interface Delta {
   reasoning?: string;
   /** incremental structured reasoning blocks (open / hidden — see {@link ReasoningDetail}). */
   reasoningDetails?: ReasoningDetail[];
+  compaction?: CompactionBlock[];
 }
 
 export interface ChunkChoice {
@@ -486,6 +497,7 @@ export interface ModelEntry {
   defaultParameters?: string;
   /** admin-only */
   endpoints: ModelEndpoint[];
+  supportsCompaction?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -649,6 +661,9 @@ export interface ResponseReasoningItem {
   encryptedContent?: string;
 }
 
+/** A Responses output item carrying opaque context for the next request. */
+export interface ResponseCompactionItem extends CompactionBlock {}
+
 /**
  * One item of the request `input` array or the response `output` array. The `type`
  * field is the discriminator (a message item serialises without one — see
@@ -658,7 +673,8 @@ export type ResponseItem =
   | ResponseMessageItem
   | ResponseFunctionCallItem
   | ResponseFunctionCallOutputItem
-  | ResponseReasoningItem;
+  | ResponseReasoningItem
+  | ResponseCompactionItem;
 
 /** `input`: a bare string (one user message) or an array of items. */
 export type ResponsesInput = string | ResponseItem[];

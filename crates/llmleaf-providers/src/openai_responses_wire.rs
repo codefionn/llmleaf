@@ -28,7 +28,7 @@
 use futures::StreamExt;
 use llmleaf_model::{
     ChatRequest, ContentPart, FinishReason, Message, ModelError, ResponseStream, Role, StreamChunk,
-    ToolCallDelta, ToolChoice, Usage,
+    ToolCall, ToolCallDelta, ToolChoice, Usage,
 };
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -218,7 +218,8 @@ fn input_part(p: &ContentPart) -> Option<Value> {
         // request carrying one to Chat Completions before this mapper runs.
         ContentPart::InputAudio { .. }
         | ContentPart::Thinking { .. }
-        | ContentPart::RedactedThinking { .. } => None,
+        | ContentPart::RedactedThinking { .. }
+        | ContentPart::Compaction { .. } => None,
     }
 }
 
@@ -227,6 +228,23 @@ fn input_part(p: &ContentPart) -> Option<Value> {
 fn push_assistant_items(msg: &Message, out: &mut Vec<Value>, flavor: ResponsesFlavor) {
     for part in &msg.content {
         match part {
+            // Opaque Responses compaction state must be replayed verbatim. The id is part of the
+            // upstream item, so keep it alongside the encrypted payload when present.
+            ContentPart::Compaction {
+                id,
+                encrypted_content,
+                ..
+            } => {
+                let mut item = Map::new();
+                item.insert("type".into(), json!("compaction"));
+                if let Some(id) = id {
+                    item.insert("id".into(), json!(id));
+                }
+                if let Some(data) = encrypted_content {
+                    item.insert("encrypted_content".into(), json!(data));
+                }
+                out.push(Value::Object(item));
+            }
             // (a) Each redacted (encrypted) reasoning block replays as its own `reasoning` item — the
             // exact stateless-replay shape our own parse side reads back out (see
             // `openai_responses_to_chunks`), so a client echoing the prior turn round-trips reasoning
@@ -343,12 +361,15 @@ pub fn requires_responses(req: &ChatRequest) -> bool {
     req.extra
         .get("previous_response_id")
         .is_some_and(|value| !value.is_null())
+        || req.extra.contains_key("context_management")
         || req.extra.get("store").and_then(Value::as_bool) == Some(true)
         || req.messages.iter().any(|message| {
-            message
-                .content
-                .iter()
-                .any(|part| matches!(part, ContentPart::RedactedThinking { .. }))
+            message.content.iter().any(|part| {
+                matches!(
+                    part,
+                    ContentPart::RedactedThinking { .. } | ContentPart::Compaction { .. }
+                )
+            })
         })
 }
 
@@ -384,10 +405,29 @@ fn responses_usage(usage: &Value) -> Usage {
 /// output carried any `function_call` item (mirroring the chat wire's `tool_calls` finish), else `Stop`;
 /// `incomplete` refines by `incomplete_details.reason`; `failed` is `Error`.
 fn responses_finish_reason(response: &Value, saw_function_call: bool) -> FinishReason {
+    let saw_compaction = response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        });
     match response.get("status").and_then(Value::as_str) {
         Some("completed") => {
             if saw_function_call {
                 FinishReason::ToolCalls
+            } else if saw_compaction
+                && response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().all(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("compaction")
+                        })
+                    })
+            {
+                FinishReason::Compaction
             } else {
                 FinishReason::Stop
             }
@@ -404,6 +444,101 @@ fn responses_finish_reason(response: &Value, saw_function_call: bool) -> FinishR
         Some("failed") => FinishReason::Error,
         _ => FinishReason::Stop,
     }
+}
+
+/// Complete Responses output items as ordered canonical messages. This is used only when a
+/// compaction item occurs or was requested, so the terminal response can replay the exact item
+/// sequence even if text was emitted before and after the compaction.
+fn output_item_as_message(item: &Value) -> Option<Message> {
+    let mut message = Message {
+        role: Role::Assistant,
+        content: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        name: None,
+    };
+    match item.get("type").and_then(Value::as_str)? {
+        "compaction" => message.content.push(ContentPart::Compaction {
+            id: item.get("id").and_then(Value::as_str).map(str::to_owned),
+            content: item
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            encrypted_content: item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            signature: item
+                .get("signature")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            output_index: None,
+        }),
+        "message" => {
+            for part in item
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        message.content.push(ContentPart::Text {
+                            text: text.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        "reasoning" => {
+            for key in ["summary", "content"] {
+                for part in item
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        message.content.push(ContentPart::Thinking {
+                            thinking: text.to_owned(),
+                            signature: None,
+                        });
+                    }
+                }
+            }
+            if let Some(signature) = item.get("signature").and_then(Value::as_str) {
+                if let Some(ContentPart::Thinking { signature: sig, .. }) =
+                    message.content.last_mut()
+                {
+                    *sig = Some(signature.to_owned());
+                }
+            }
+            if let Some(data) = item.get("encrypted_content").and_then(Value::as_str) {
+                message.content.push(ContentPart::RedactedThinking {
+                    data: data.to_owned(),
+                });
+            }
+        }
+        "function_call" => message.tool_calls.push(ToolCall {
+            id: item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            name: item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            arguments: item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        }),
+        _ => return None,
+    }
+    Some(message)
 }
 
 /// The collected (non-streaming) Responses object → canonical chunks — the mirror of
@@ -429,8 +564,31 @@ pub fn openai_responses_to_chunks(value: Value, fallback_model: &str) -> Vec<Str
     let mut saw_function_call = false;
 
     if let Some(output) = value.get("output").and_then(Value::as_array) {
-        for item in output {
+        let preserve_order = output
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction"));
+        for (output_index, item) in output.iter().enumerate() {
             match item.get("type").and_then(Value::as_str) {
+                Some("compaction") => {
+                    chunks.push(StreamChunk::Compaction {
+                        index: 0,
+                        id: item.get("id").and_then(Value::as_str).map(str::to_owned),
+                        delta: item
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        encrypted_content: item
+                            .get("encrypted_content")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        signature: item
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        output_index: Some(output_index as u32),
+                    });
+                }
                 Some("reasoning") => {
                     // Reasoning leads the answer it justifies. `summary[].text` (`summary_text`) and
                     // `content[].text` (`reasoning_text`) are open reasoning; a per-item `signature`
@@ -507,6 +665,11 @@ pub fn openai_responses_to_chunks(value: Value, fallback_model: &str) -> Vec<Str
                 // Other item types (`web_search_call`, etc.) carry no canonical output — ignore them.
                 _ => {}
             }
+            if preserve_order {
+                if let Some(message) = output_item_as_message(item) {
+                    chunks.push(StreamChunk::OutputItem { index: 0, message });
+                }
+            }
         }
     }
 
@@ -541,6 +704,7 @@ pub struct ResponsesSseState {
     saw_function_call: bool,
     /// Set once the terminal event (`completed`/`incomplete`/`failed`) has emitted its [`StreamChunk::Finish`].
     finished: bool,
+    preserve_order: bool,
 }
 
 impl ResponsesSseState {
@@ -553,7 +717,13 @@ impl ResponsesSseState {
             next_call_index: 0,
             saw_function_call: false,
             finished: false,
+            preserve_order: false,
         }
+    }
+
+    pub fn preserving_order(mut self) -> Self {
+        self.preserve_order = true;
+        self
     }
 
     /// Whether the terminal event has been processed — the stream loop stops once this is set (the
@@ -681,6 +851,37 @@ pub fn openai_responses_event_to_canonical(
                         });
                     }
                 }
+            } else if item.and_then(|i| i.get("type")).and_then(Value::as_str) == Some("compaction")
+            {
+                out.push(StreamChunk::Compaction {
+                    index: 0,
+                    id: item
+                        .and_then(|i| i.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    delta: item
+                        .and_then(|i| i.get("content"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    encrypted_content: item
+                        .and_then(|i| i.get("encrypted_content"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    signature: item
+                        .and_then(|i| i.get("signature"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    output_index: value
+                        .get("output_index")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as u32),
+                });
+            }
+            if st.preserve_order {
+                if let Some(message) = item.and_then(output_item_as_message) {
+                    out.push(StreamChunk::OutputItem { index: 0, message });
+                }
             }
         }
         "response.completed" | "response.incomplete" | "response.failed" => {
@@ -714,11 +915,12 @@ pub fn openai_responses_event_to_canonical(
 pub fn openai_responses_sse_to_stream(
     body: crate::transport::BytesStream,
     model: String,
+    preserve_order: bool,
 ) -> ResponseStream {
     Box::pin(async_stream::stream! {
         let mut bytes = body;
         let mut buf: Vec<u8> = Vec::with_capacity(1024);
-        let mut st = ResponsesSseState::new(model);
+        let mut st = if preserve_order { ResponsesSseState::new(model).preserving_order() } else { ResponsesSseState::new(model) };
         while let Some(item) = bytes.next().await {
             let chunk = match item {
                 Ok(b) => b,
@@ -783,6 +985,106 @@ mod tests {
             thinking: None,
             extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn opaque_compaction_round_trips_through_responses_wire() {
+        let response = json!({
+            "id": "resp_1", "model": "gpt-5.3-codex", "status": "completed",
+            "output": [
+                { "type": "compaction", "id": "cmp_1", "encrypted_content": "opaque" },
+                { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "done" }] }
+            ]
+        });
+        let chunks = openai_responses_to_chunks(response, "fallback");
+        assert!(
+            matches!(&chunks[1], StreamChunk::Compaction { id: Some(id), encrypted_content: Some(data), .. } if id == "cmp_1" && data == "opaque")
+        );
+        assert!(matches!(
+            &chunks.last().unwrap(),
+            StreamChunk::Finish {
+                reason: FinishReason::Stop,
+                ..
+            }
+        ));
+        let collected = llmleaf_model::collect_chunks(chunks.into_iter());
+        let mut req = user_req("continue");
+        req.model = "gpt-5.3-codex".into();
+        req.extra.insert(
+            "context_management".into(),
+            json!([{"type":"compaction","compact_threshold":200000}]),
+        );
+        req.messages.insert(
+            0,
+            Message {
+                role: Role::Assistant,
+                content: collected.choices[0].compaction.clone(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                name: None,
+            },
+        );
+        assert!(requires_responses(&req));
+        let wire = request_to_openai_responses(&req, false, ResponsesFlavor::OpenAi);
+        assert_eq!(
+            wire["input"][0],
+            json!({"type":"compaction","id":"cmp_1","encrypted_content":"opaque"})
+        );
+        assert_eq!(wire["context_management"], req.extra["context_management"]);
+    }
+
+    #[test]
+    fn ordered_output_keeps_text_on_both_sides_of_compaction() {
+        let response = json!({
+            "id":"resp_1", "status":"completed", "output":[
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"before"}]},
+                {"type":"compaction","id":"cmp_1","encrypted_content":"opaque"},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"after"}]}
+            ]
+        });
+        let collected = llmleaf_model::collect_chunks(openai_responses_to_chunks(response, "m"));
+        let output = &collected.choices[0].output;
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[0].text_content(), "before");
+        assert!(
+            matches!(&output[1].content[0], ContentPart::Compaction { id: Some(id), .. } if id == "cmp_1")
+        );
+        assert_eq!(output[2].text_content(), "after");
+    }
+
+    #[test]
+    fn sse_compaction_item_survives_until_terminal_response() {
+        let mut st = ResponsesSseState::new("gpt-5.3-codex".into());
+        let created = openai_responses_event_to_canonical(
+            &json!({
+                "type": "response.created", "response": {"id":"resp_1","model":"gpt-5.3-codex"}
+            }),
+            &mut st,
+        );
+        assert!(matches!(&created[0], StreamChunk::Start { .. }));
+        let item = openai_responses_event_to_canonical(
+            &json!({
+                "type":"response.output_item.done",
+                "item":{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}
+            }),
+            &mut st,
+        );
+        assert!(
+            matches!(&item[0], StreamChunk::Compaction { id: Some(id), encrypted_content: Some(data), .. } if id == "cmp_1" && data == "opaque")
+        );
+        let terminal = openai_responses_event_to_canonical(
+            &json!({
+                "type":"response.completed", "response":{"status":"completed","output":[{"type":"compaction"}]}
+            }),
+            &mut st,
+        );
+        assert!(matches!(
+            &terminal[0],
+            StreamChunk::Finish {
+                reason: FinishReason::Compaction,
+                ..
+            }
+        ));
     }
 
     #[test]

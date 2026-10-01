@@ -58,6 +58,16 @@ impl ChatRequest {
                 .any(|part| matches!(part, ContentPart::InputAudio { .. }))
         })
     }
+
+    /// Whether this request contains a compaction block that must survive replay.
+    pub fn has_compaction(&self) -> bool {
+        self.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Compaction { .. }))
+        })
+    }
 }
 
 /// Reasoning ("thinking") effort — an optional, deliberately coarse, canonical ladder.
@@ -186,6 +196,22 @@ pub enum ContentPart {
     /// replayed verbatim.
     RedactedThinking {
         data: String,
+    },
+    /// An upstream compaction summary. Keep opaque fields intact when replaying a conversation.
+    /// Claude uses `content` and, for on-demand compaction, `signature`; OpenAI Responses uses
+    /// `id` and `encrypted_content`.
+    Compaction {
+        /// Position among output items, retained when compaction occurs partway through a turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_index: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 }
 

@@ -116,6 +116,10 @@ internal static class Mapper
         {
             wm.ReasoningDetails = m.ReasoningDetails.Select(ReasoningDetailToWire).ToList();
         }
+        if (m.Compaction is { Count: > 0 })
+        {
+            wm.Compaction = m.Compaction.Select(CompactionToWire).ToList();
+        }
 
         return wm;
     }
@@ -142,6 +146,16 @@ internal static class Mapper
         Id = d.Id,
         Format = d.Format,
         Index = d.Index,
+    };
+
+    private static WireCompactionBlock CompactionToWire(CompactionBlock c) => new()
+    {
+        Id = c.Id, Content = c.Content, EncryptedContent = c.EncryptedContent, Signature = c.Signature,
+    };
+
+    private static CompactionBlock CompactionFromWire(WireCompactionBlock c) => new()
+    {
+        Id = c.Id, Content = c.Content, EncryptedContent = c.EncryptedContent, Signature = c.Signature,
     };
 
     private static WireContentPart ContentPartToWire(ContentPart p) => p switch
@@ -212,6 +226,7 @@ internal static class Mapper
         ToolCallId = m.ToolCallId,
         Reasoning = m.Reasoning,
         ReasoningDetails = m.ReasoningDetails?.Select(ReasoningDetailFromWire).ToList(),
+        Compaction = m.Compaction?.Select(CompactionFromWire).ToList(),
     };
 
     private static MessageContent? ContentFromWire(JsonNode? content)
@@ -277,7 +292,8 @@ internal static class Mapper
                 c.Delta.Content,
                 c.Delta.ToolCalls?.Select(ToolCallDeltaFromWire).ToList(),
                 c.Delta.Reasoning,
-                c.Delta.ReasoningDetails?.Select(ReasoningDetailFromWire).ToList()),
+                c.Delta.ReasoningDetails?.Select(ReasoningDetailFromWire).ToList(),
+                c.Delta.Compaction?.Select(CompactionFromWire).ToList()),
             EnumWire.FromWireOptional<FinishReason>(c.FinishReason))).ToList(),
         UsageFromWire(w.Usage));
 
@@ -358,6 +374,13 @@ internal static class Mapper
                 Summary = r.Summary?.Select(x => x.Text).ToList(),
                 Content = r.Content?.Select(x => x.Text).ToList(),
                 EncryptedContent = r.EncryptedContent,
+            },
+        },
+        ResponseCompactionItem c => new WireResponseItem
+        {
+            Compaction = new WireResponseCompactionItem
+            {
+                Id = c.Id, Content = c.Content, EncryptedContent = c.EncryptedContent, Signature = c.Signature,
             },
         },
         _ => new WireResponseItem(),
@@ -479,6 +502,13 @@ internal static class Mapper
                 Summary = r.Summary?.Select(x => new ResponseReasoningText(x)).ToList(),
                 Content = r.Content?.Select(x => new ResponseReasoningText(x)).ToList(),
                 EncryptedContent = r.EncryptedContent,
+            };
+        }
+        if (w.Compaction is { } c)
+        {
+            return new ResponseCompactionItem
+            {
+                Id = c.Id, Content = c.Content, EncryptedContent = c.EncryptedContent, Signature = c.Signature,
             };
         }
         return null;
@@ -769,6 +799,7 @@ internal static class Mapper
         UnsupportedParameters = m.UnsupportedParameters ?? [],
         DefaultParameters = Json.RawString(m.DefaultParameters),
         Endpoints = m.Endpoints?.Select(e => new ModelEndpoint(e.Provider, e.Model, e.Down, e.Source)).ToList() ?? [],
+        SupportsCompaction = m.SupportsCompaction,
     };
 
     // ---- batches --------------------------------------------------------

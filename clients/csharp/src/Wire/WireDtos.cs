@@ -80,6 +80,15 @@ internal sealed class WireReasoningDetail
     [JsonPropertyName("index")] public uint? Index { get; set; }
 }
 
+internal sealed class WireCompactionBlock
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "compaction";
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("content")] public string? Content { get; set; }
+    [JsonPropertyName("encrypted_content")] public string? EncryptedContent { get; set; }
+    [JsonPropertyName("signature")] public string? Signature { get; set; }
+}
+
 // ---- chat message --------------------------------------------------------
 
 internal sealed class WireChatMessage
@@ -98,6 +107,7 @@ internal sealed class WireChatMessage
     [JsonPropertyName("reasoning")] public string? Reasoning { get; set; }
 
     [JsonPropertyName("reasoning_details")] public List<WireReasoningDetail>? ReasoningDetails { get; set; }
+    [JsonPropertyName("compaction")] public List<WireCompactionBlock>? Compaction { get; set; }
 }
 
 // ---- tools / tool_choice / response_format ------------------------------
@@ -196,6 +206,7 @@ internal sealed class WireDelta
     [JsonPropertyName("tool_calls")] public List<WireToolCallDelta>? ToolCalls { get; set; }
     [JsonPropertyName("reasoning")] public string? Reasoning { get; set; }
     [JsonPropertyName("reasoning_details")] public List<WireReasoningDetail>? ReasoningDetails { get; set; }
+    [JsonPropertyName("compaction")] public List<WireCompactionBlock>? Compaction { get; set; }
 }
 
 internal sealed class WireChunkChoice
@@ -284,6 +295,14 @@ internal sealed class WireResponseReasoningItem
     [JsonPropertyName("encrypted_content")] public string? EncryptedContent { get; set; }
 }
 
+internal sealed class WireResponseCompactionItem
+{
+    public string? Id { get; set; }
+    public string? Content { get; set; }
+    public string? EncryptedContent { get; set; }
+    public string? Signature { get; set; }
+}
+
 // A Responses item, discriminated by the wire "type" ("message" is also a role-keyed object with no
 // "type"). Exactly one field is non-null. Custom (de)serialisation lives in ResponseItemConverter.
 [JsonConverter(typeof(ResponseItemConverter))]
@@ -293,6 +312,7 @@ internal sealed class WireResponseItem
     public WireResponseFunctionCallItem? FunctionCall { get; set; }
     public WireResponseFunctionCallOutputItem? FunctionCallOutput { get; set; }
     public WireResponseReasoningItem? Reasoning { get; set; }
+    public WireResponseCompactionItem? Compaction { get; set; }
 }
 
 // ---- responses: tools / tool_choice / reasoning config -----------------
@@ -576,6 +596,7 @@ internal sealed class WireModelEntry
     [JsonPropertyName("unsupported_parameters")] public List<string>? UnsupportedParameters { get; set; }
     [JsonPropertyName("default_parameters")] public JsonNode? DefaultParameters { get; set; }
     [JsonPropertyName("endpoints")] public List<WireModelEndpoint>? Endpoints { get; set; }
+    [JsonPropertyName("supports_compaction")] public bool? SupportsCompaction { get; set; }
 }
 
 internal sealed class WireListModelsResponse

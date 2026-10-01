@@ -408,7 +408,9 @@ fn message_to_gemini(msg: &Message) -> Value {
             }
             // Anthropic-style signed thinking blocks have no Gemini representation; reasoning does not
             // port across providers, so drop them at this edge rather than emit an invalid part.
-            ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
+            ContentPart::Thinking { .. }
+            | ContentPart::RedactedThinking { .. }
+            | ContentPart::Compaction { .. } => None,
         })
         .collect();
 
@@ -439,6 +441,14 @@ pub(crate) fn ensure_audio_input_supported(
     req: &ChatRequest,
     provider: &str,
 ) -> Result<(), ModelError> {
+    if req.has_compaction()
+        || req.extra.contains_key("context_management")
+        || req.extra.contains_key("compaction")
+    {
+        return Err(ModelError::Unsupported(
+            "native API compaction is not supported by this endpoint".into(),
+        ));
+    }
     for part in req.messages.iter().flat_map(|message| &message.content) {
         if let ContentPart::InputAudio { format, .. } = part {
             if audio_mime_type(format).is_none() {

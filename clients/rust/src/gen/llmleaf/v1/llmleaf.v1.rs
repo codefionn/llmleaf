@@ -168,6 +168,19 @@ pub struct ReasoningDetail {
     #[prost(uint32, optional, tag="8")]
     pub index: ::core::option::Option<u32>,
 }
+/// Native provider compaction state. OpenAI replays id + encrypted_content;
+/// Claude replays content, with signature when present.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactionBlock {
+    #[prost(string, optional, tag="1")]
+    pub id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="2")]
+    pub content: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="3")]
+    pub encrypted_content: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub signature: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChatMessage {
     #[prost(enumeration="Role", tag="1")]
@@ -186,6 +199,8 @@ pub struct ChatMessage {
     pub reasoning: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="8")]
     pub reasoning_details: ::prost::alloc::vec::Vec<ReasoningDetail>,
+    #[prost(message, repeated, tag="9")]
+    pub compaction: ::prost::alloc::vec::Vec<CompactionBlock>,
     /// Wire `content` is either a plain string or an array of content parts.
     #[prost(oneof="chat_message::Content", tags="2, 3")]
     pub content: ::core::option::Option<chat_message::Content>,
@@ -347,6 +362,8 @@ pub struct Delta {
     pub reasoning: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="5")]
     pub reasoning_details: ::prost::alloc::vec::Vec<ReasoningDetail>,
+    #[prost(message, repeated, tag="6")]
+    pub compaction: ::prost::alloc::vec::Vec<CompactionBlock>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChunkChoice {
@@ -391,9 +408,10 @@ pub struct ChatCompletionChunk {
 ///    "function_call"        -> function_call
 ///    "function_call_output" -> function_call_output
 ///    "reasoning"            -> reasoning
+///    "compaction"           -> compaction
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResponseItem {
-    #[prost(oneof="response_item::Item", tags="1, 2, 3, 4")]
+    #[prost(oneof="response_item::Item", tags="1, 2, 3, 4, 5")]
     pub item: ::core::option::Option<response_item::Item>,
 }
 /// Nested message and enum types in `ResponseItem`.
@@ -408,6 +426,8 @@ pub mod response_item {
         FunctionCallOutput(super::ResponseFunctionCallOutputItem),
         #[prost(message, tag="4")]
         Reasoning(super::ResponseReasoningItem),
+        #[prost(message, tag="5")]
+        Compaction(super::ResponseCompactionItem),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -525,6 +545,17 @@ pub struct ResponseReasoningItem {
 pub struct ResponseReasoningText {
     #[prost(string, tag="1")]
     pub text: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResponseCompactionItem {
+    #[prost(string, optional, tag="1")]
+    pub id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="2")]
+    pub content: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="3")]
+    pub encrypted_content: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub signature: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// A tool the model MAY call — FLAT in this dialect (`type`/`name`/`parameters` at the
 /// top level, no nested `function` object). `parameters` is a raw JSON Schema string.
@@ -1032,6 +1063,8 @@ pub struct ModelEntry {
     /// admin-only
     #[prost(message, repeated, tag="13")]
     pub endpoints: ::prost::alloc::vec::Vec<ModelEndpoint>,
+    #[prost(bool, optional, tag="14")]
+    pub supports_compaction: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListModelsResponse {
@@ -1154,6 +1187,7 @@ pub enum FinishReason {
     Length = 2,
     ToolCalls = 3,
     ContentFilter = 4,
+    Compaction = 5,
 }
 impl FinishReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1167,6 +1201,7 @@ impl FinishReason {
             Self::Length => "LENGTH",
             Self::ToolCalls => "TOOL_CALLS",
             Self::ContentFilter => "CONTENT_FILTER",
+            Self::Compaction => "COMPACTION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1177,6 +1212,7 @@ impl FinishReason {
             "LENGTH" => Some(Self::Length),
             "TOOL_CALLS" => Some(Self::ToolCalls),
             "CONTENT_FILTER" => Some(Self::ContentFilter),
+            "COMPACTION" => Some(Self::Compaction),
             _ => None,
         }
     }

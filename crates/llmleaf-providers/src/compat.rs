@@ -803,6 +803,23 @@ impl OpenAiCompatProvider {
         api
     }
 
+    /// Annotate a live or static catalog using the same capability decision as route metadata.
+    /// A provider-wide opt-in applies only to language models (or id-only rows with no modality).
+    fn mark_compaction_support(&self, cx: &ProviderCx, models: &mut [ModelInfo]) {
+        for model in models {
+            let supported = self.supports_compaction(&model.id, cx);
+            model.supports_compaction = if supported == Some(true)
+                && model
+                    .modality
+                    .is_some_and(|modality| modality != Modality::Llm)
+            {
+                Some(false)
+            } else {
+                supported
+            };
+        }
+    }
+
     /// Whether this instance serves rerank: the brand default ([`Brand::rerank_api`], true for Together
     /// and OpenRouter), or an operator opting a self-hosted OpenAI-wire base (vLLM/Infinity/TEI) in with
     /// `settings.rerank_api = true`. A `false`/absent setting keeps the brand default; only an explicit
@@ -919,7 +936,11 @@ impl OpenAiCompatProvider {
         let body = request_to_openai_responses(req, true, flavor);
         let http_req = self.apply_auth(HttpRequest::post(&url).json(body), cx);
         let resp = send_checked(&*self.http, http_req).await?;
-        Ok(openai_responses_sse_to_stream(resp.body, req.model.clone()))
+        Ok(openai_responses_sse_to_stream(
+            resp.body,
+            req.model.clone(),
+            req.extra.contains_key("context_management"),
+        ))
     }
 
     /// Apply the brand's auth header and the brand-agnostic passthrough headers (org id, OpenRouter
@@ -1423,6 +1444,25 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.messages.iter().flat_map(|m| &m.content).any(|part| {
+            matches!(
+                part,
+                llmleaf_model::ContentPart::Compaction {
+                    content: Some(_),
+                    ..
+                } | llmleaf_model::ContentPart::Compaction {
+                    signature: Some(_),
+                    ..
+                } | llmleaf_model::ContentPart::Compaction {
+                    encrypted_content: None,
+                    ..
+                }
+            )
+        }) {
+            return Err(ModelError::Unsupported(
+                "OpenAI Responses can replay only encrypted compaction items".into(),
+            ));
+        }
         if req.has_input_audio() && !self.audio_input_enabled(cx) {
             return Err(ModelError::Unsupported(format!(
                 "provider '{}' does not support audio input in chat",
@@ -1600,9 +1640,19 @@ impl Provider for OpenAiCompatProvider {
         )))
     }
 
+    fn supports_compaction(&self, model: &str, cx: &ProviderCx) -> Option<bool> {
+        Some(
+            cx.settings
+                .get("supports_compaction")
+                .and_then(Value::as_bool)
+                .unwrap_or(self.brand.name == "openai" && model == "gpt-5.3-codex"),
+        )
+    }
+
     async fn models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
         // Prefer a provider's documented static catalog when no usable listing endpoint exists.
-        if let Some(models) = documented_models(&self.brand) {
+        if let Some(mut models) = documented_models(&self.brand) {
+            self.mark_compaction_support(cx, &mut models);
             return Ok(models);
         }
         // Only remaining brands with a confirmed `GET /models` enumerate; others stay Unsupported so
@@ -1613,7 +1663,9 @@ impl Provider for OpenAiCompatProvider {
                 self.brand.name
             )));
         }
-        self.fetch_models(cx).await
+        let mut models = self.fetch_models(cx).await?;
+        self.mark_compaction_support(cx, &mut models);
+        Ok(models)
     }
 
     async fn transcribe(
@@ -3019,6 +3071,81 @@ mod tests {
             openai.effective_chat_api(&cx_with_chat_api("nonsense"), &chat_req("gpt-5")),
             ChatApi::Responses
         );
+    }
+
+    #[test]
+    fn compaction_catalog_requires_documented_model_and_native_provider() {
+        let openai = OpenAiCompatProvider::for_kind("openai", &Transports::fake()).unwrap();
+        let mut models = vec![ModelInfo::new("gpt-5.3-codex"), ModelInfo::new("gpt-5")];
+        openai.mark_compaction_support(&ProviderCx::default(), &mut models);
+        assert_eq!(models[0].supports_compaction, Some(true));
+        assert_eq!(models[1].supports_compaction, Some(false));
+        let mut req = chat_req("gpt-5.3-codex");
+        req.extra.insert(
+            "context_management".into(),
+            json!([{"type":"compaction","compact_threshold":1000}]),
+        );
+        assert_eq!(
+            openai.effective_chat_api(&cx_with_chat_api("chat_completions"), &req),
+            ChatApi::Responses
+        );
+        assert_eq!(models[0].supports_compaction, Some(true));
+
+        let xai = OpenAiCompatProvider::for_kind("xai", &Transports::fake()).unwrap();
+        xai.mark_compaction_support(&ProviderCx::default(), &mut models);
+        assert_eq!(models[0].supports_compaction, Some(false));
+    }
+
+    #[test]
+    fn compaction_setting_overrides_documented_support_only_when_boolean() {
+        let transports = Transports::fake();
+        let openai = OpenAiCompatProvider::for_kind("openai", &transports).unwrap();
+        let compatible = OpenAiCompatProvider::for_kind("openrouter", &transports).unwrap();
+        let mut cx = ProviderCx::default();
+        assert_eq!(openai.supports_compaction("gpt-5.3-codex", &cx), Some(true));
+        assert_eq!(compatible.supports_compaction("other", &cx), Some(false));
+
+        cx.settings
+            .insert("supports_compaction".into(), json!(true));
+        assert_eq!(compatible.supports_compaction("other", &cx), Some(true));
+        cx.settings
+            .insert("supports_compaction".into(), json!(false));
+        assert_eq!(
+            openai.supports_compaction("gpt-5.3-codex", &cx),
+            Some(false)
+        );
+        cx.settings
+            .insert("supports_compaction".into(), json!("true"));
+        assert_eq!(openai.supports_compaction("gpt-5.3-codex", &cx), Some(true));
+        assert_eq!(compatible.supports_compaction("other", &cx), Some(false));
+    }
+
+    #[tokio::test]
+    async fn compaction_setting_reaches_live_compatible_model_catalog() {
+        let http = crate::fake::FakeHttpTransport::new(|req| {
+            assert!(req.url.starts_with("https://custom.example/v1/models"));
+            Ok(crate::fake::FakeResponse::ok_json(&json!({"data": [
+                {"id":"custom/chat","type":"chat"},
+                {"id":"custom/embed","type":"embedding"},
+                {"id":"custom/id-only"}
+            ]})))
+        });
+        let transports = Transports {
+            http: Arc::new(http),
+            realtime: Arc::new(crate::fake::FakeRealtimeTransport::scripted(Vec::new())),
+        };
+        let provider = OpenAiCompatProvider::for_kind("openrouter", &transports).unwrap();
+        let mut cx = ProviderCx {
+            endpoint: Some("https://custom.example/v1".into()),
+            ..ProviderCx::default()
+        };
+        cx.settings
+            .insert("supports_compaction".into(), json!(true));
+        let models = provider.models(&cx).await.unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].supports_compaction, Some(true));
+        assert_eq!(models[1].supports_compaction, Some(false));
+        assert_eq!(models[2].supports_compaction, Some(true));
     }
 
     #[test]

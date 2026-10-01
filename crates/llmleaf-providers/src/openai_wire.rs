@@ -170,6 +170,7 @@ fn content_parts(msg: &Message) -> Value {
             // OpenAI chat completions has no field for replayed reasoning (it is server-side on o-series
             // models); reasoning does not port across providers, so drop these blocks at this edge.
             ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => None,
+            ContentPart::Compaction { .. } => None,
         })
         .collect();
     Value::Array(parts)

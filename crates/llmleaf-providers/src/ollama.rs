@@ -89,6 +89,14 @@ impl Provider for OllamaProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.extra.contains_key("context_management")
+            || req.extra.contains_key("compaction")
+            || req.has_compaction()
+        {
+            return Err(ModelError::Unsupported(
+                "native API compaction is not supported by this endpoint".into(),
+            ));
+        }
         if req.has_input_audio() {
             return Err(ModelError::Unsupported(
                 "provider 'ollama' does not support audio input in chat".into(),
@@ -305,7 +313,9 @@ fn message_to_ollama(msg: &Message) -> Value {
                 // `Provider::chat` rejects this request before mapping.
             }
             // Reasoning blocks do not port across providers and Ollama has no slot for them; skip.
-            ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {}
+            ContentPart::Thinking { .. }
+            | ContentPart::RedactedThinking { .. }
+            | ContentPart::Compaction { .. } => {}
         }
     }
     obj.insert("content".into(), json!(text));

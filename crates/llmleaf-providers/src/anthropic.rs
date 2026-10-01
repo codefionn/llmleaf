@@ -42,6 +42,68 @@ const DEFAULT_ENDPOINT: &str = "https://api.anthropic.com";
 const DEFAULT_VERSION: &str = "2023-06-01";
 /// Anthropic requires `max_tokens`; used when the canonical request leaves it unset.
 const DEFAULT_MAX_TOKENS: u32 = 4096;
+const THRESHOLD_COMPACTION_BETA: &str = "compact-2026-01-12";
+const ON_DEMAND_COMPACTION_BETA: &str = "compact-2026-09-04";
+
+fn compaction_beta(req: &ChatRequest) -> Option<&'static str> {
+    let on_demand = req.extra.contains_key("compaction")
+        || req.messages.iter().flat_map(|m| &m.content).any(|part| {
+            matches!(
+                part,
+                ContentPart::Compaction {
+                    signature: Some(_),
+                    ..
+                }
+            )
+        });
+    let threshold = req
+        .extra
+        .get("context_management")
+        .and_then(|v| v.get("edits"))
+        .and_then(Value::as_array)
+        .is_some_and(|edits| {
+            edits
+                .iter()
+                .any(|e| e.get("type").and_then(Value::as_str) == Some("compact_20260112"))
+        })
+        || req.messages.iter().flat_map(|m| &m.content).any(|part| {
+            matches!(
+                part,
+                ContentPart::Compaction {
+                    signature: None,
+                    ..
+                }
+            )
+        });
+    match (on_demand, threshold) {
+        (true, true) => Some("compact-2026-09-04,compact-2026-01-12"),
+        (true, false) => Some(ON_DEMAND_COMPACTION_BETA),
+        (false, true) => Some(THRESHOLD_COMPACTION_BETA),
+        (false, false) => None,
+    }
+}
+
+fn validate_compaction(req: &ChatRequest) -> Result<(), ModelError> {
+    if req.messages.iter().flat_map(|m| &m.content).any(|part| {
+        matches!(
+            part,
+            ContentPart::Compaction {
+                encrypted_content: Some(_),
+                ..
+            }
+        )
+    }) {
+        return Err(ModelError::Unsupported(
+            "Anthropic cannot replay an encrypted compaction block from another provider".into(),
+        ));
+    }
+    if req.extra.contains_key("compaction") && req.extra.contains_key("context_management") {
+        return Err(ModelError::Mapping(
+            "Anthropic compaction and context_management cannot be combined".into(),
+        ));
+    }
+    Ok(())
+}
 
 pub struct AnthropicProvider {
     http: Arc<dyn HttpTransport>,
@@ -90,7 +152,9 @@ impl Provider for AnthropicProvider {
     async fn models(&self, cx: &ProviderCx) -> Result<Vec<ModelInfo>, ModelError> {
         // `?limit=1000` returns the whole catalog in one shot (well under the cursor-paginated cap).
         let url = format!("{}/v1/models?limit=1000", self.endpoint(cx));
-        let req = self.auth(HttpRequest::get(&url), cx);
+        let req = self
+            .auth(HttpRequest::get(&url), cx)
+            .header("anthropic-beta", ON_DEMAND_COMPACTION_BETA);
         let value = post_json(&*self.http, req).await?;
         let models = value
             .get("data")
@@ -101,6 +165,7 @@ impl Provider for AnthropicProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        validate_compaction(&req)?;
         if req.has_input_audio() {
             return Err(ModelError::Unsupported(
                 "provider 'anthropic' does not support audio input in chat".into(),
@@ -122,6 +187,9 @@ impl Provider for AnthropicProvider {
         let mut http_req = HttpRequest::post(&url)
             .header("anthropic-version", version)
             .json(body);
+        if let Some(beta) = compaction_beta(&req) {
+            http_req = http_req.header("anthropic-beta", beta);
+        }
         if let Some(cred) = &cx.credential {
             http_req = http_req.header("x-api-key", cred);
         }
@@ -145,6 +213,9 @@ impl Provider for AnthropicProvider {
         req: BatchSpec,
         cx: &ProviderCx,
     ) -> Result<BatchHandle, ModelError> {
+        for item in &req.items {
+            validate_compaction(&item.request)?;
+        }
         if req.items.iter().any(|item| item.request.has_input_audio()) {
             return Err(ModelError::Unsupported(
                 "provider 'anthropic' does not support audio input in chat batches".into(),
@@ -152,6 +223,14 @@ impl Provider for AnthropicProvider {
         }
         let url = format!("{}/v1/messages/batches", self.endpoint(cx));
         let cache = prompt_cache(cx);
+        let mut betas: Vec<&str> = req
+            .items
+            .iter()
+            .filter_map(|item| compaction_beta(&item.request))
+            .flat_map(|beta| beta.split(','))
+            .collect();
+        betas.sort_unstable();
+        betas.dedup();
         let requests: Vec<Value> = req
             .items
             .iter()
@@ -162,10 +241,13 @@ impl Provider for AnthropicProvider {
                 })
             })
             .collect();
-        let req = self.auth(
+        let mut req = self.auth(
             HttpRequest::post(&url).json(json!({ "requests": requests })),
             cx,
         );
+        if !betas.is_empty() {
+            req = req.header("anthropic-beta", betas.join(","));
+        }
         let value = post_json(&*self.http, req).await?;
         Ok(anthropic_batch_to_handle(&value))
     }
@@ -369,6 +451,15 @@ fn message_to_anthropic(msg: &Message) -> Value {
             ContentPart::RedactedThinking { data } => {
                 json!({ "type": "redacted_thinking", "data": data })
             }
+            ContentPart::Compaction {
+                content, signature, ..
+            } => {
+                let mut block = json!({ "type": "compaction", "content": content });
+                if let Some(signature) = signature {
+                    block["signature"] = json!(signature);
+                }
+                block
+            }
         })
         .collect();
 
@@ -501,6 +592,23 @@ fn anthropic_to_chunks(value: Value, fallback_model: &str) -> Vec<StreamChunk> {
                         });
                     }
                 }
+                Some("compaction") => {
+                    chunks.push(StreamChunk::Compaction {
+                        output_index: None,
+                        index: 0,
+                        delta: block
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        id: None,
+                        encrypted_content: None,
+                        signature: block
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    });
+                }
                 Some("tool_use") => {
                     let arguments = block.get("input").map(|v| v.to_string());
                     chunks.push(StreamChunk::ToolCall {
@@ -566,6 +674,7 @@ struct AnthropicStreamState {
     next_tool_index: u32,
     /// Anthropic indexes all content blocks together; canonical tool indexes count tool calls only.
     tool_indexes: std::collections::BTreeMap<u32, u32>,
+    compactions: std::collections::BTreeMap<u32, (String, Option<String>)>,
 }
 
 /// Convert Anthropic Messages SSE events to canonical chunks, including raw `input_json_delta`
@@ -632,6 +741,22 @@ fn anthropic_event_to_chunks(
                         });
                     }
                 }
+                Some("compaction") => {
+                    state.compactions.insert(
+                        block_index,
+                        (
+                            block
+                                .get("content")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            block
+                                .get("signature")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        ),
+                    );
+                }
                 _ => {}
             }
         }
@@ -665,6 +790,13 @@ fn anthropic_event_to_chunks(
                         });
                     }
                 }
+                Some("compaction_delta") => {
+                    if let Some((content, _)) = state.compactions.get_mut(&block_index) {
+                        if let Some(fragment) = delta.get("content").and_then(Value::as_str) {
+                            content.push_str(fragment);
+                        }
+                    }
+                }
                 Some("input_json_delta") => {
                     if let Some(&tool_index) = state.tool_indexes.get(&block_index) {
                         if let Some(fragment) = delta.get("partial_json").and_then(Value::as_str) {
@@ -681,6 +813,19 @@ fn anthropic_event_to_chunks(
                     }
                 }
                 _ => {}
+            }
+        }
+        Some("content_block_stop") => {
+            let block_index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if let Some((content, signature)) = state.compactions.remove(&block_index) {
+                chunks.push(StreamChunk::Compaction {
+                    output_index: None,
+                    index: 0,
+                    delta: content,
+                    id: None,
+                    encrypted_content: None,
+                    signature,
+                });
             }
         }
         Some("message_delta") => {
@@ -776,6 +921,16 @@ fn anthropic_model_to_info(value: &Value) -> Option<ModelInfo> {
     };
     info.max_context = positive("max_input_tokens");
     info.max_output = positive("max_tokens");
+    let on_demand = value
+        .pointer("/capabilities/compaction/supported")
+        .and_then(Value::as_bool);
+    let threshold = value
+        .pointer("/capabilities/context_management/compact_20260112/supported")
+        .and_then(Value::as_bool);
+    info.supports_compaction = match (on_demand, threshold) {
+        (None, None) => None,
+        _ => Some(on_demand == Some(true) || threshold == Some(true)),
+    };
     // max_thinking / pricing have no field in this API — left None, enhanced from the bundled dataset.
     for key in ["created_at", "capabilities", "type"] {
         if let Some(v) = value.get(key) {
@@ -871,6 +1026,7 @@ fn anthropic_result_line(value: Value) -> Option<BatchResult> {
 
 fn map_stop_reason(reason: &str) -> FinishReason {
     match reason {
+        "compaction" => FinishReason::Compaction,
         "max_tokens" => FinishReason::Length,
         "tool_use" => FinishReason::ToolCalls,
         "refusal" => FinishReason::ContentFilter,
@@ -1009,6 +1165,168 @@ mod tests {
                 reason: FinishReason::ToolCalls,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn compaction_request_and_signed_replay_keep_native_fields() {
+        let mut req = chat_req(vec![Message::text(Role::User, "summarize")], vec![]);
+        req.extra
+            .insert("compaction".into(), json!({"type":"summarize"}));
+        assert_eq!(compaction_beta(&req), Some(ON_DEMAND_COMPACTION_BETA));
+        assert_eq!(
+            request_to_anthropic(&req, None)["compaction"],
+            json!({"type":"summarize"})
+        );
+
+        let replay = Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::Compaction {
+                output_index: None,
+                id: None,
+                content: Some("summary".into()),
+                encrypted_content: None,
+                signature: Some("signed".into()),
+            }],
+            tool_calls: vec![],
+            tool_call_id: None,
+            name: None,
+        };
+        let req = chat_req(vec![replay, Message::text(Role::User, "continue")], vec![]);
+        assert_eq!(compaction_beta(&req), Some(ON_DEMAND_COMPACTION_BETA));
+        assert_eq!(
+            request_to_anthropic(&req, None)["messages"][0]["content"][0],
+            json!({"type":"compaction","content":"summary","signature":"signed"})
+        );
+
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.extra.insert("context_management".into(), json!({
+            "edits":[{"type":"compact_20260112","trigger":{"type":"input_tokens","value":150000}}]
+        }));
+        assert_eq!(compaction_beta(&req), Some(THRESHOLD_COMPACTION_BETA));
+        assert_eq!(
+            request_to_anthropic(&req, None)["context_management"],
+            req.extra["context_management"]
+        );
+        req.messages.insert(
+            0,
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentPart::Compaction {
+                    output_index: None,
+                    id: None,
+                    content: Some("summary".into()),
+                    encrypted_content: None,
+                    signature: Some("signed".into()),
+                }],
+                tool_calls: vec![],
+                tool_call_id: None,
+                name: None,
+            },
+        );
+        assert_eq!(
+            compaction_beta(&req),
+            Some("compact-2026-09-04,compact-2026-01-12")
+        );
+    }
+
+    #[test]
+    fn collected_compaction_preserves_signature_and_stop_reason() {
+        let response = collect_chunks(anthropic_to_chunks(
+            json!({
+                "id":"msg_1", "model":"claude-opus-5-5",
+                "content":[{"type":"compaction","content":"short history","signature":"sig"}],
+                "stop_reason":"compaction"
+            }),
+            "fallback",
+        ));
+        assert_eq!(
+            response.choices[0].finish_reason,
+            Some(FinishReason::Compaction)
+        );
+        assert_eq!(
+            response.choices[0].compaction,
+            vec![ContentPart::Compaction {
+                output_index: None,
+                id: None,
+                content: Some("short history".into()),
+                encrypted_content: None,
+                signature: Some("sig".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn streaming_compaction_deltas_form_one_replayable_block() {
+        let mut state = AnthropicStreamState::default();
+        let events = [
+            json!({"type":"message_start","message":{"id":"msg","model":"claude-opus-5-5"}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"short "}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"history"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"compaction"}}),
+        ];
+        let chunks: Vec<_> = events
+            .iter()
+            .flat_map(|event| anthropic_event_to_chunks(event, &mut state).unwrap())
+            .collect();
+        assert_eq!(
+            collect_chunks(chunks).choices[0].compaction,
+            vec![ContentPart::Compaction {
+                output_index: None,
+                id: None,
+                content: Some("short history".into()),
+                encrypted_content: None,
+                signature: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn catalog_compaction_capability_is_reported_when_present() {
+        let yes = anthropic_model_to_info(&json!({"id":"claude-opus-5-5","capabilities":{
+            "compaction":{"supported":true,"summarize":{"supported":true}}
+        }}))
+        .unwrap();
+        assert_eq!(yes.supports_compaction, Some(true));
+        let no = anthropic_model_to_info(&json!({"id":"claude-old","capabilities":{
+            "compaction":{"supported":false}
+        }}))
+        .unwrap();
+        assert_eq!(no.supports_compaction, Some(false));
+        let threshold_only =
+            anthropic_model_to_info(&json!({"id":"threshold-only", "capabilities":{
+                "compaction":{"supported":false},
+                "context_management":{"compact_20260112":{"supported":true}}
+            }}))
+            .unwrap();
+        assert_eq!(threshold_only.supports_compaction, Some(true));
+    }
+
+    #[test]
+    fn rejects_incompatible_compaction_before_transport() {
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.extra
+            .insert("compaction".into(), json!({"type":"summarize"}));
+        req.extra
+            .insert("context_management".into(), json!({"edits":[]}));
+        assert!(matches!(
+            validate_compaction(&req),
+            Err(ModelError::Mapping(_))
+        ));
+
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.messages[0].content.push(ContentPart::Compaction {
+            output_index: None,
+            id: Some("opaque".into()),
+            content: None,
+            encrypted_content: Some("ciphertext".into()),
+            signature: None,
+        });
+        assert!(matches!(
+            validate_compaction(&req),
+            Err(ModelError::Unsupported(_))
         ));
     }
 

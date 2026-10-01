@@ -45,6 +45,7 @@ public enum FinishReason
     [WireName("LENGTH")] Length = 2,
     [WireName("TOOL_CALLS")] ToolCalls = 3,
     [WireName("CONTENT_FILTER")] ContentFilter = 4,
+    [WireName("COMPACTION")] Compaction = 5,
 }
 
 /// <summary>Lifecycle state of a batch. Maps to the OpenAI <c>status</c> token.</summary>

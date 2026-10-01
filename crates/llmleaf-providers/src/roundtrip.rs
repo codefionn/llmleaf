@@ -75,6 +75,92 @@ fn user_chat(model: &str, text: &str) -> ChatRequest {
 // ---------------------------------------------------------------------------------------------
 
 #[tokio::test]
+async fn anthropic_compaction_beta_and_signed_replay_reach_transport() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let transports = http_transports(FakeHttpTransport::new(move |request| {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "anthropic-beta" && value == "compact-2026-09-04"));
+        let HttpBody::Json(body) = &request.body else {
+            panic!("expected JSON")
+        };
+        let count = observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if count == 0 {
+            assert_eq!(body["compaction"], json!({"type":"summarize"}));
+            Ok(FakeResponse::ok_json(&json!({
+                "id":"summary", "model":"claude-opus-5-5", "content":[{"type":"compaction","content":"history","signature":"signed"}],
+                "stop_reason":"compaction", "usage":{"input_tokens":100,"output_tokens":10}
+            })))
+        } else {
+            assert!(body.get("compaction").is_none());
+            assert_eq!(
+                body["messages"][0]["content"][0],
+                json!({"type":"compaction","content":"history","signature":"signed"})
+            );
+            Ok(FakeResponse::ok_json(
+                &json!({"id":"next", "content":[{"type":"text","text":"continued"}],"stop_reason":"end_turn"}),
+            ))
+        }
+    }));
+    let provider = AnthropicProvider::new(&transports);
+    let mut context = cx();
+    context
+        .settings
+        .insert("upstream_streaming".into(), json!("when_requested"));
+    let mut request = user_chat("claude-opus-5-5", "summarize");
+    request
+        .extra
+        .insert("compaction".into(), json!({"type":"summarize"}));
+    let response = collect(provider.chat(request, &context).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.choices[0].finish_reason,
+        Some(FinishReason::Compaction)
+    );
+    assert_eq!(response.usage.prompt_tokens, 100);
+    let mut next = user_chat("claude-opus-5-5", "continue");
+    next.messages.insert(
+        0,
+        Message {
+            role: Role::Assistant,
+            content: response.choices[0].compaction.clone(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            name: None,
+        },
+    );
+    let response = collect(provider.chat(next, &context).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.choices[0].text, "continued");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn anthropic_compaction_catalog_queries_beta_capabilities() {
+    let transports = http_transports(FakeHttpTransport::new(|request| {
+        assert!(request.url.ends_with("/v1/models?limit=1000"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "anthropic-beta" && value == "compact-2026-09-04"));
+        Ok(FakeResponse::ok_json(&json!({"data":[
+            {"id":"new", "capabilities":{"compaction":{"supported":true}}},
+            {"id":"old", "capabilities":{"compaction":{"supported":false}}}
+        ]})))
+    }));
+    let models = AnthropicProvider::new(&transports)
+        .models(&cx())
+        .await
+        .unwrap();
+    assert_eq!(models[0].supports_compaction, Some(true));
+    assert_eq!(models[1].supports_compaction, Some(false));
+}
+
+#[tokio::test]
 async fn openai_chat_sse_roundtrips_to_canonical_stream() {
     // Two `chat.completion.chunk` frames (content split across them) plus the terminal include_usage
     // frame and the `[DONE]` sentinel — the exact shape OpenAI streams when `stream_options.include_usage`

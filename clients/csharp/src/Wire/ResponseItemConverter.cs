@@ -66,6 +66,15 @@ internal sealed class ResponseItemConverter : JsonConverter<WireResponseItem>
                     EncryptedContent = Str(root, "encrypted_content"),
                 };
                 break;
+            case "compaction":
+                item.Compaction = new WireResponseCompactionItem
+                {
+                    Id = Str(root, "id"),
+                    Content = Str(root, "content"),
+                    EncryptedContent = Str(root, "encrypted_content"),
+                    Signature = Str(root, "signature"),
+                };
+                break;
             default:
                 // Unknown item type: treat as a message when a role is present, else leave empty.
                 if (root.TryGetProperty("role", out _))
@@ -145,6 +154,16 @@ internal sealed class ResponseItemConverter : JsonConverter<WireResponseItem>
             WriteReasoningTexts(writer, "summary", "summary_text", r.Summary);
             WriteReasoningTexts(writer, "content", "reasoning_text", r.Content);
             WriteOptString(writer, "encrypted_content", r.EncryptedContent);
+            writer.WriteEndObject();
+        }
+        else if (value.Compaction is { } c)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "compaction");
+            WriteOptString(writer, "id", c.Id);
+            WriteOptString(writer, "content", c.Content);
+            WriteOptString(writer, "encrypted_content", c.EncryptedContent);
+            WriteOptString(writer, "signature", c.Signature);
             writer.WriteEndObject();
         }
         else

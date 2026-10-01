@@ -1299,8 +1299,10 @@ fn sample_response() -> ChatResponse {
         model: "gpt-4o".into(),
         choices: vec![Choice {
             index: 0,
+            output: Vec::new(),
             text: "Hello, world! This is a representative assistant reply.".into(),
             thinking: vec![],
+            compaction: vec![],
             tool_calls: vec![ToolCall {
                 id: "call_1".into(),
                 name: "get_weather".into(),

@@ -95,6 +95,19 @@ test("request encodes an item array with flat tools + reasoning replay", () => {
   });
 });
 
+test("compaction output replays with its opaque id and payload", () => {
+  const response = decodeResponsesResponse({
+    id: "resp_1", object: "response", model: "gpt-5.3-codex", status: "completed",
+    output: [{ type: "compaction", id: "cmp_1", encrypted_content: "opaque" }],
+  });
+  const item = response.output[0];
+  assert.equal(item?.type, "compaction");
+  const request = encodeResponsesRequest({ model: "gpt-5.3-codex", input: response.output });
+  assert.deepEqual((request["input"] as unknown[])[0], {
+    type: "compaction", id: "cmp_1", encrypted_content: "opaque",
+  });
+});
+
 test("request encodes a bare-string input + an input_image part", () => {
   const bare = encodeResponsesRequest({ model: "m", input: "hi" }, false);
   assert.equal(bare["input"], "hi");

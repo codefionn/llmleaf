@@ -87,6 +87,7 @@ enum FinishReason {
   LENGTH = 2;
   TOOL_CALLS = 3;
   CONTENT_FILTER = 4;
+  COMPACTION = 5;
 }
 
 // A single content part for multimodal messages:
@@ -167,6 +168,15 @@ message ReasoningDetail {
   optional uint32 index = 8;
 }
 
+// Native provider compaction state. OpenAI replays id + encrypted_content;
+// Claude replays content, with signature when present.
+message CompactionBlock {
+  optional string id = 1;
+  optional string content = 2;
+  optional string encrypted_content = 3;
+  optional string signature = 4;
+}
+
 message ChatMessage {
   Role role = 1;
   // Wire `content` is either a plain string or an array of content parts.
@@ -182,6 +192,7 @@ message ChatMessage {
   // `reasoning_details` back verbatim on the next turn to preserve signed reasoning (see ReasoningDetail).
   optional string reasoning = 7;
   repeated ReasoningDetail reasoning_details = 8;
+  repeated CompactionBlock compaction = 9;
 }
 
 // A function the model MAY call.  `parameters` is a raw JSON Schema string.
@@ -266,6 +277,7 @@ message Delta {
   // carries structured open/hidden blocks (and their signatures) as they arrive (see ReasoningDetail).
   optional string reasoning = 4;
   repeated ReasoningDetail reasoning_details = 5;
+  repeated CompactionBlock compaction = 6;
 }
 
 message ChunkChoice {
@@ -300,12 +312,14 @@ message ChatCompletionChunk {
 //   "function_call"        -> function_call
 //   "function_call_output" -> function_call_output
 //   "reasoning"            -> reasoning
+//   "compaction"           -> compaction
 message ResponseItem {
   oneof item {
     ResponseMessageItem message = 1;
     ResponseFunctionCallItem function_call = 2;
     ResponseFunctionCallOutputItem function_call_output = 3;
     ResponseReasoningItem reasoning = 4;
+    ResponseCompactionItem compaction = 5;
   }
 }
 
@@ -382,6 +396,13 @@ message ResponseReasoningItem {
 
 message ResponseReasoningText {
   string text = 1;
+}
+
+message ResponseCompactionItem {
+  optional string id = 1;
+  optional string content = 2;
+  optional string encrypted_content = 3;
+  optional string signature = 4;
 }
 
 // A tool the model MAY call — FLAT in this dialect (`type`/`name`/`parameters` at the
@@ -685,6 +706,7 @@ message ModelEntry {
   repeated string unsupported_parameters = 11;
   optional string default_parameters = 12; // raw JSON object
   repeated ModelEndpoint endpoints = 13;    // admin-only
+  optional bool supports_compaction = 14;
 }
 
 message ListModelsResponse {

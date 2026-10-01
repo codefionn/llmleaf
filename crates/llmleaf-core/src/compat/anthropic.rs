@@ -177,6 +177,7 @@ fn parse_user_content(content: Option<Value>, out: &mut Vec<Message>) -> Result<
                             .to_string(),
                     }),
                     Some("image") => parts.push(image_part(obj)?),
+                    Some("compaction") => parts.push(parse_compaction(obj)?),
                     Some("tool_result") => {
                         let id = obj
                             .get("tool_use_id")
@@ -279,6 +280,7 @@ fn parse_assistant_message(content: Option<Value>) -> Result<Message, ModelError
                             .unwrap_or_default()
                             .to_string(),
                     }),
+                    Some("compaction") => parts.push(parse_compaction(obj)?),
                     other => {
                         return Err(mapping(format!(
                             "unsupported assistant content block {other:?}"
@@ -299,6 +301,23 @@ fn parse_assistant_message(content: Option<Value>) -> Result<Message, ModelError
         tool_calls,
         tool_call_id: None,
         name: None,
+    })
+}
+
+fn parse_compaction(obj: &Map<String, Value>) -> Result<ContentPart, ModelError> {
+    let content = obj
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| mapping("compaction block requires string `content`"))?;
+    Ok(ContentPart::Compaction {
+        output_index: None,
+        id: None,
+        content: Some(content.to_string()),
+        encrypted_content: None,
+        signature: obj
+            .get("signature")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -429,6 +448,7 @@ fn finish_to_anthropic(reason: FinishReason) -> &'static str {
         FinishReason::ToolCalls => "tool_use",
         FinishReason::ContentFilter => "refusal",
         FinishReason::Error => "end_turn",
+        FinishReason::Compaction => "compaction",
     }
 }
 
@@ -467,6 +487,11 @@ enum ContentBlockOut<'a> {
     },
     RedactedThinking {
         data: &'a str,
+    },
+    Compaction {
+        content: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<&'a str>,
     },
     ToolUse {
         id: &'a str,
@@ -513,6 +538,19 @@ pub fn response_to_anthropic<'a>(resp: &'a ChatResponse, id: &'a str) -> Message
                 }
                 // `thinking` only ever holds reasoning parts; ignore anything else defensively.
                 _ => {}
+            }
+        }
+        for part in &c.compaction {
+            if let ContentPart::Compaction {
+                content: Some(summary),
+                signature,
+                ..
+            } = part
+            {
+                content.push(ContentBlockOut::Compaction {
+                    content: summary,
+                    signature: signature.as_deref(),
+                });
             }
         }
         if !c.text.is_empty() {
@@ -680,6 +718,7 @@ impl EventEncoder {
     /// `message_delta` produced by [`finish`](Self::finish).
     pub fn encode(&mut self, chunk: &StreamChunk, out: &mut Vec<Frame>) {
         match chunk {
+            StreamChunk::OutputItem { .. } => {}
             StreamChunk::Start { .. } => self.ensure_started(out),
             StreamChunk::Content { delta, .. } => {
                 self.ensure_started(out);
@@ -775,6 +814,52 @@ impl EventEncoder {
                         },
                     },
                 );
+                push(
+                    out,
+                    "content_block_stop",
+                    &BlockStop {
+                        kind: "content_block_stop",
+                        index,
+                    },
+                );
+            }
+            StreamChunk::Compaction {
+                delta, signature, ..
+            } => {
+                self.ensure_started(out);
+                self.close_open(out);
+                let index = self.next_index;
+                self.next_index += 1;
+                if let Some(signature) = signature {
+                    // On-demand compaction arrives whole in the block-start event.
+                    push(
+                        out,
+                        "content_block_start",
+                        &json!({
+                            "type": "content_block_start", "index": index,
+                            "content_block": { "type": "compaction", "content": delta, "signature": signature }
+                        }),
+                    );
+                } else {
+                    push(
+                        out,
+                        "content_block_start",
+                        &json!({
+                            "type": "content_block_start", "index": index,
+                            "content_block": { "type": "compaction", "content": "" }
+                        }),
+                    );
+                    if !delta.is_empty() {
+                        push(
+                            out,
+                            "content_block_delta",
+                            &json!({
+                                "type": "content_block_delta", "index": index,
+                                "delta": { "type": "compaction_delta", "content": delta }
+                            }),
+                        );
+                    }
+                }
                 push(
                     out,
                     "content_block_stop",
@@ -1264,9 +1349,11 @@ mod tests {
             id: "ignored".into(),
             model: "claude-opus-4-8".into(),
             choices: vec![Choice {
+                output: Vec::new(),
                 index: 0,
                 text: "hi there".into(),
                 thinking: vec![],
+                compaction: vec![],
                 tool_calls: vec![ToolCall {
                     id: "tu_1".into(),
                     name: "get_weather".into(),
@@ -1299,6 +1386,87 @@ mod tests {
         assert_eq!(v["usage"]["input_tokens"], 4);
         assert_eq!(v["usage"]["output_tokens"], 3);
         assert_eq!(v["usage"]["cost_usd"], 0.01);
+    }
+
+    #[test]
+    fn signed_compaction_round_trips_through_anthropic_dialect() {
+        let req = parse_messages_request(json!({
+            "model":"claude-opus-5-5", "max_tokens":4096,
+            "messages":[{"role":"assistant","content":[{
+                "type":"compaction","content":"short history","signature":"sig"
+            }]},{"role":"user","content":"continue"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            req.messages[0].content[0],
+            ContentPart::Compaction {
+                output_index: None,
+                id: None,
+                content: Some("short history".into()),
+                encrypted_content: None,
+                signature: Some("sig".into()),
+            }
+        );
+        let resp = ChatResponse {
+            id: "msg".into(),
+            model: "claude-opus-5-5".into(),
+            choices: vec![Choice {
+                output: Vec::new(),
+                index: 0,
+                text: String::new(),
+                thinking: vec![],
+                compaction: vec![req.messages[0].content[0].clone()],
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Compaction),
+            }],
+            usage: Usage::default(),
+        };
+        let wire = serde_json::to_value(response_to_anthropic(&resp, "msg")).unwrap();
+        assert_eq!(
+            wire["content"][0],
+            json!({
+                "type":"compaction","content":"short history","signature":"sig"
+            })
+        );
+        assert_eq!(wire["stop_reason"], "compaction");
+    }
+
+    #[test]
+    fn signed_compaction_streams_as_one_whole_block() {
+        let frames = run_encoder(vec![
+            StreamChunk::Start {
+                id: "msg".into(),
+                model: "claude-opus-5-5".into(),
+            },
+            StreamChunk::Compaction {
+                output_index: None,
+                index: 0,
+                delta: "short history".into(),
+                id: None,
+                encrypted_content: None,
+                signature: Some("sig".into()),
+            },
+            StreamChunk::Finish {
+                index: 0,
+                reason: FinishReason::Compaction,
+            },
+        ]);
+        let starts: Vec<_> = frames
+            .iter()
+            .filter(|(event, _)| *event == "content_block_start")
+            .collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(
+            starts[0].1["content_block"],
+            json!({
+                "type":"compaction","content":"short history","signature":"sig"
+            })
+        );
+        assert!(frames
+            .iter()
+            .all(|(event, _)| *event != "content_block_delta"));
+        assert!(frames.iter().any(|(event, data)| *event == "message_delta"
+            && data["delta"]["stop_reason"] == "compaction"));
     }
 
     /// Run a sequence of canonical chunks through the encoder (plus `finish`) and return the ordered

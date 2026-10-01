@@ -124,7 +124,12 @@ fn parse_message(value: Value) -> Result<Message, ModelError> {
         Some(Value::String(r)) => parse_role(&r)?,
         _ => return Err(mapping("message is missing `role`")),
     };
-    let content = parse_content(obj.remove("content"))?;
+    let mut content = parse_content(obj.remove("content"))?;
+    if let Some(Value::Array(parts)) = obj.remove("compaction") {
+        for part in parts {
+            content.push(parse_content_part(part)?);
+        }
+    }
     let tool_calls = parse_tool_calls(obj.remove("tool_calls"))?;
     let tool_call_id = obj
         .remove("tool_call_id")
@@ -204,6 +209,31 @@ fn parse_content_part(value: Value) -> Result<ContentPart, ModelError> {
                 .ok_or_else(|| mapping("input_audio part missing non-empty `input_audio.format`"))?
                 .to_string();
             Ok(ContentPart::InputAudio { data, format })
+        }
+        Some("compaction") => {
+            let content = obj
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let encrypted_content = obj
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if content.is_some() == encrypted_content.is_some() {
+                return Err(mapping(
+                    "compaction requires exactly one of `content` or `encrypted_content`",
+                ));
+            }
+            Ok(ContentPart::Compaction {
+                output_index: None,
+                id: obj.get("id").and_then(Value::as_str).map(str::to_owned),
+                signature: obj
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                content,
+                encrypted_content,
+            })
         }
         other => Err(mapping(format!("unsupported content part type {other:?}"))),
     }
@@ -301,6 +331,7 @@ fn finish_str(reason: FinishReason) -> &'static str {
         FinishReason::Length => "length",
         FinishReason::ToolCalls => "tool_calls",
         FinishReason::ContentFilter => "content_filter",
+        FinishReason::Compaction => "compaction",
         FinishReason::Error => "stop",
     }
 }
@@ -334,6 +365,9 @@ struct ChoiceFrame<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Delta<'a> {
+    Compaction {
+        compaction: [CompactionFrame<'a>; 1],
+    },
     Role {
         role: &'static str,
     },
@@ -366,6 +400,20 @@ struct ReasoningDetailFrame<'a> {
     signature: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Serialize)]
+struct CompactionFrame<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encrypted_content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<&'a str>,
     #[serde(rename = "type")]
     kind: &'static str,
 }
@@ -457,6 +505,8 @@ struct ChoiceView<'a> {
 
 #[derive(Serialize)]
 struct MessageView<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    compaction: Vec<CompactionFrame<'a>>,
     content: &'a str,
     // Open reasoning text and structured blocks — the OpenRouter `message.reasoning` /
     // `message.reasoning_details` extensions, mirroring the streaming deltas above. Both are
@@ -543,6 +593,26 @@ pub(crate) fn completion_view(resp: &ChatResponse, created: u64) -> CompletionVi
             finish_reason: c.finish_reason.map(finish_str),
             index: c.index,
             message: MessageView {
+                compaction: c
+                    .compaction
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Compaction {
+                            id,
+                            content,
+                            encrypted_content,
+                            signature,
+                            ..
+                        } => Some(CompactionFrame {
+                            content: content.as_deref(),
+                            encrypted_content: encrypted_content.as_deref(),
+                            id: id.as_deref(),
+                            signature: signature.as_deref(),
+                            kind: "compaction",
+                        }),
+                        _ => None,
+                    })
+                    .collect(),
                 content: &c.text,
                 reasoning: choice_reasoning(&c.thinking),
                 reasoning_details: choice_reasoning_details(&c.thinking),
@@ -596,6 +666,7 @@ impl ChunkEncoder {
     pub fn encode_into(&self, chunk: &StreamChunk, buf: &mut Vec<u8>) -> bool {
         buf.clear();
         match chunk {
+            StreamChunk::OutputItem { .. } => return false,
             // The resolved id/model are already captured at construction; surface the opening role.
             StreamChunk::Start { .. } => self.write_frame(
                 buf,
@@ -680,6 +751,30 @@ impl ChunkEncoder {
                 None,
             ),
             StreamChunk::Usage(u) => self.write_frame(buf, &[], Some(UsageFrame::from(u))),
+            StreamChunk::Compaction {
+                index,
+                id,
+                delta,
+                encrypted_content,
+                signature,
+                ..
+            } => self.write_frame(
+                buf,
+                &[ChoiceFrame {
+                    delta: Delta::Compaction {
+                        compaction: [CompactionFrame {
+                            content: encrypted_content.is_none().then_some(delta.as_str()),
+                            encrypted_content: encrypted_content.as_deref(),
+                            id: id.as_deref(),
+                            signature: signature.as_deref(),
+                            kind: "compaction",
+                        }],
+                    },
+                    finish_reason: None,
+                    index: *index,
+                }],
+                None,
+            ),
             StreamChunk::Finish { index, reason } => self.write_frame(
                 buf,
                 &[ChoiceFrame {
@@ -724,6 +819,48 @@ pub fn response_to_openai(resp: &ChatResponse, created: u64) -> CompletionView<'
 mod tests {
     use super::*;
     use serde_json::{json, Map};
+
+    #[test]
+    fn compaction_round_trips_through_chat_extension() {
+        for block in [
+            json!({"type":"compaction", "content":"summary", "signature":"signed"}),
+            json!({"type":"compaction", "id":"cmp_1", "encrypted_content":"opaque"}),
+        ] {
+            let req = parse_chat_request(json!({
+                "model":"m", "messages":[{"role":"assistant", "content":"", "compaction":[block.clone()]}]
+            })).unwrap();
+            let part = req.messages[0]
+                .content
+                .iter()
+                .find(|p| matches!(p, ContentPart::Compaction { .. }))
+                .unwrap();
+            let ContentPart::Compaction {
+                id,
+                content,
+                encrypted_content,
+                signature,
+                ..
+            } = part
+            else {
+                unreachable!()
+            };
+            let chunk = StreamChunk::Compaction {
+                index: 0,
+                id: id.clone(),
+                delta: content.clone().unwrap_or_default(),
+                encrypted_content: encrypted_content.clone(),
+                signature: signature.clone(),
+                output_index: None,
+            };
+            let resp = llmleaf_model::collect_chunks([chunk.clone()]);
+            let value = serde_json::to_value(response_to_openai(&resp, 0)).unwrap();
+            assert_eq!(value["choices"][0]["message"]["compaction"][0], block);
+            let mut buf = Vec::new();
+            ChunkEncoder::new("r", "m", 0).encode_into(&chunk, &mut buf);
+            let value: Value = serde_json::from_slice(&buf).unwrap();
+            assert_eq!(value["choices"][0]["delta"]["compaction"][0], block);
+        }
+    }
 
     #[test]
     fn parse_minimal_request() {
@@ -832,6 +969,8 @@ mod tests {
             model: "m".into(),
             choices: vec![llmleaf_model::Choice {
                 index: 0,
+                output: Vec::new(),
+                compaction: Vec::new(),
                 text: "answer".into(),
                 thinking: vec![
                     ContentPart::Thinking {
@@ -862,6 +1001,8 @@ mod tests {
             model: "m".into(),
             choices: vec![llmleaf_model::Choice {
                 index: 0,
+                output: Vec::new(),
+                compaction: Vec::new(),
                 text: "plain".into(),
                 thinking: Vec::new(),
                 tool_calls: Vec::new(),
@@ -1012,6 +1153,8 @@ mod tests {
             model: "gpt-4o".into(),
             choices: vec![Choice {
                 index: 0,
+                output: Vec::new(),
+                compaction: Vec::new(),
                 text: "hi there".into(),
                 thinking: vec![],
                 tool_calls: vec![],
@@ -1051,6 +1194,8 @@ mod tests {
             choices: vec![
                 Choice {
                     index: 0,
+                    output: Vec::new(),
+                    compaction: Vec::new(),
                     text: "answer".into(),
                     thinking: vec![],
                     tool_calls: vec![
@@ -1069,6 +1214,8 @@ mod tests {
                 },
                 Choice {
                     index: 1,
+                    output: Vec::new(),
+                    compaction: Vec::new(),
                     text: "more".into(),
                     thinking: vec![],
                     tool_calls: vec![],

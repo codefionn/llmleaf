@@ -73,6 +73,14 @@ impl Provider for CohereProvider {
     }
 
     async fn chat(&self, req: ChatRequest, cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
+        if req.extra.contains_key("context_management")
+            || req.extra.contains_key("compaction")
+            || req.has_compaction()
+        {
+            return Err(ModelError::Unsupported(
+                "native API compaction is not supported by this endpoint".into(),
+            ));
+        }
         if req.has_input_audio() {
             return Err(ModelError::Unsupported(
                 "provider 'cohere' does not support audio input in chat".into(),

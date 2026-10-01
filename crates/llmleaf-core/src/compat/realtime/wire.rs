@@ -296,6 +296,7 @@ pub struct ResponseScaffold {
     thinking_signature: Option<String>,
     /// Redacted (encrypted) thinking blocks, in arrival order, replayed verbatim.
     redacted: Vec<String>,
+    compaction: Vec<StreamChunk>,
     tools: std::collections::BTreeMap<u32, ToolAcc>,
 }
 
@@ -322,6 +323,7 @@ impl ResponseScaffold {
             thinking: String::new(),
             thinking_signature: None,
             redacted: Vec::new(),
+            compaction: Vec::new(),
             tools: std::collections::BTreeMap::new(),
         }
     }
@@ -330,6 +332,11 @@ impl ResponseScaffold {
     /// next turn replays it (Realtime is stateful; chat completions is not). Call after the stream ends.
     pub fn assistant_message(&self) -> Message {
         let mut content = Vec::new();
+        if !self.compaction.is_empty() {
+            for choice in llmleaf_model::collect_chunks(self.compaction.clone()).choices {
+                content.extend(choice.compaction);
+            }
+        }
         // Reasoning leads the turn: thinking block (with its signature) first, then any redacted
         // blocks, then the visible text — the order Anthropic emits and requires on replay, and the
         // order that keeps a thinking block ahead of the tool_use it justifies.
@@ -376,6 +383,7 @@ impl ResponseScaffold {
     /// Expand one canonical chunk into zero or more server frames, appended to `out`.
     pub fn on_chunk(&mut self, chunk: &StreamChunk, out: &mut Vec<Value>) {
         match chunk {
+            StreamChunk::OutputItem { .. } => {}
             // The opening id/model is already captured; the message item is opened lazily on content.
             StreamChunk::Start { .. } => {}
             StreamChunk::Content { delta, .. } => self.on_content(delta, out),
@@ -388,6 +396,7 @@ impl ResponseScaffold {
                 self.thinking_signature = Some(signature.clone());
             }
             StreamChunk::RedactedThinking { data, .. } => self.redacted.push(data.clone()),
+            StreamChunk::Compaction { .. } => self.compaction.push(chunk.clone()),
             // Usage/Finish are folded into the terminal frame by `finish`.
             StreamChunk::Usage(_) | StreamChunk::Finish { .. } => {}
         }
@@ -536,7 +545,7 @@ impl ResponseScaffold {
 
 fn status_for(reason: FinishReason) -> &'static str {
     match reason {
-        FinishReason::Stop | FinishReason::ToolCalls => "completed",
+        FinishReason::Stop | FinishReason::ToolCalls | FinishReason::Compaction => "completed",
         FinishReason::Length | FinishReason::ContentFilter => "incomplete",
         FinishReason::Error => "failed",
     }

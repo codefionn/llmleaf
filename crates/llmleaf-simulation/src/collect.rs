@@ -211,11 +211,13 @@ fn reference_fold(chunks: &[StreamChunk]) -> ChatResponse {
             }
 
             Choice {
+                output: Vec::new(),
                 index,
                 text,
                 // The simulation collector exercises transport/usage accounting, not reasoning
                 // fidelity; thinking blocks are not reconstructed here.
                 thinking: Vec::new(),
+                compaction: Vec::new(),
                 tool_calls,
                 finish_reason,
             }

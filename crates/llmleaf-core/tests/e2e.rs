@@ -205,6 +205,7 @@ impl Provider for MockProvider {
         alpha.max_output = Some(8000);
         // Explicit reasoning support without a published numeric thinking budget (Moonshot shape).
         alpha.supports_reasoning = Some(true);
+        alpha.supports_compaction = Some(true);
         alpha.input_per_mtok = Some(1.0);
         alpha.output_per_mtok = Some(2.0);
         let mut beta = ModelInfo::new("beta-embed");
@@ -258,6 +259,11 @@ struct ChatOnlyProvider;
 impl Provider for ChatOnlyProvider {
     fn name(&self) -> &str {
         "chatonly"
+    }
+    fn supports_compaction(&self, _model: &str, cx: &ProviderCx) -> Option<bool> {
+        cx.settings
+            .get("supports_compaction")
+            .and_then(Value::as_bool)
     }
     async fn chat(&self, req: ChatRequest, _cx: &ProviderCx) -> Result<ResponseStream, ModelError> {
         let chunks: Vec<Result<StreamChunk, ModelError>> = vec![
@@ -1353,6 +1359,48 @@ async fn models_lists_served_not_bundled_catalog() {
 }
 
 #[tokio::test]
+async fn models_compaction_override_survives_unavailable_catalog() {
+    for (setting, upstream, expected) in [
+        (Some(json!(true)), "gpt-4o", true),
+        (Some(json!(false)), "gpt-4o", false),
+        (None, "gpt-4o", false),
+        (Some(json!("true")), "gpt-4o", false),
+        (Some(json!(true)), "text-embedding-3-small", false),
+    ] {
+        let mut config = Config::from_toml_str(CONFIG).unwrap();
+        if let Some(setting) = setting {
+            config
+                .providers
+                .iter_mut()
+                .find(|p| p.name == "chatonly")
+                .unwrap()
+                .settings
+                .insert("supports_compaction".into(), setting);
+        }
+        config
+            .routes
+            .iter_mut()
+            .find(|r| r.model == "fallback")
+            .unwrap()
+            .targets[0]
+            .model = Some(upstream.into());
+        let mut registry = ProviderRegistry::new();
+        registry.register("mock", Arc::new(MockProvider));
+        registry.register("chatonly", Arc::new(ChatOnlyProvider));
+        registry.register("typeless", Arc::new(TypelessProvider));
+        let app = build_router(build_state(&config, Arc::new(registry)).unwrap());
+        let catalog = body_json(app.oneshot(models_request("", None)).await.unwrap()).await;
+        let model = find_model(&catalog, "fallback").unwrap();
+        assert_eq!(model["supports_compaction"], expected);
+        // The declaration belongs to the primary provider. Other routes keep their capabilities.
+        assert_eq!(
+            find_model(&catalog, "demo").unwrap()["supports_compaction"],
+            false
+        );
+    }
+}
+
+#[tokio::test]
 async fn models_passthrough_openrouter_shape() {
     let (app, _bus) = app_and_bus();
     let v = body_json(app.oneshot(models_request("", None)).await.unwrap()).await;
@@ -1364,6 +1412,7 @@ async fn models_passthrough_openrouter_shape() {
     assert_eq!(m["context_length"], 64000);
     assert_eq!(m["architecture"]["modality"], "text->text");
     assert_eq!(m["top_provider"]["max_completion_tokens"], 8000);
+    assert_eq!(m["supports_compaction"], true);
     // per-Mtok 1.0/2.0 → per-token decimal strings.
     assert_eq!(m["pricing"]["prompt"], "0.000001");
     assert_eq!(m["pricing"]["completion"], "0.000002");
@@ -1377,6 +1426,10 @@ async fn models_enriches_sparse_passthrough_from_bundled() {
     let v = body_json(app.oneshot(models_request("", None)).await.unwrap()).await;
     let m = find_model(&v, "m/gpt-4o").expect("m/gpt-4o");
     assert_eq!(m["context_length"], 128000, "filled from bundled dataset");
+    assert_eq!(
+        m["supports_compaction"], false,
+        "pricing enrichment must not invent API capabilities"
+    );
     assert_eq!(m["architecture"]["modality"], "text->text");
     assert_eq!(m["pricing"]["prompt"], "0.0000025");
 }

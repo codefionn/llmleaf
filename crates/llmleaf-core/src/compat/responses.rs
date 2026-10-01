@@ -240,6 +240,47 @@ fn parse_input_array(items: Vec<Value>, out: &mut Vec<Message>) -> Result<(), Mo
             }
             // Reasoning: held pending, attached to the next assistant-side message (below/above).
             Some("reasoning") => collect_reasoning(&obj, &mut pending),
+            Some("compaction") => {
+                if !pending.is_empty() {
+                    out.push(Message {
+                        role: Role::Assistant,
+                        content: std::mem::take(&mut pending),
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                        name: None,
+                    });
+                }
+                let id = obj.get("id").and_then(Value::as_str).map(str::to_owned);
+                let encrypted_content = obj
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let content = obj
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                if encrypted_content.is_none() && content.is_none() {
+                    return Err(mapping(
+                        "`compaction` input item requires `encrypted_content` or `content`",
+                    ));
+                }
+                out.push(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::Compaction {
+                        id,
+                        content,
+                        encrypted_content,
+                        signature: obj
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        output_index: None,
+                    }],
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    name: None,
+                });
+            }
             // A reference to a previously-stored item — unresolvable on a stateless gateway.
             Some("item_reference") => return Err(mapping(
                 "`item_reference` input items cannot be resolved: llmleaf is stateless and stores \
@@ -497,6 +538,7 @@ pub struct RequestEcho {
     parallel_tool_calls: Option<Value>,
     text: Option<Value>,
     truncation: Option<Value>,
+    context_management: Option<Value>,
     previous_response_id: Option<String>,
     store: bool,
 }
@@ -525,6 +567,7 @@ impl RequestEcho {
             parallel_tool_calls: req.extra.get("parallel_tool_calls").cloned(),
             text: req.extra.get("text").cloned(),
             truncation: req.extra.get("truncation").cloned(),
+            context_management: req.extra.get("context_management").cloned(),
             previous_response_id: req
                 .extra
                 .get("previous_response_id")
@@ -669,6 +712,90 @@ fn output_items(request_id: &str, choice: &Choice) -> Vec<Value> {
         }));
     }
 
+    // The canonical collector keeps compaction separately from text/reasoning. Its output index
+    // restores the original item position when a provider compacted partway through a response.
+    for part in &choice.compaction {
+        if let ContentPart::Compaction {
+            id,
+            content,
+            encrypted_content,
+            signature,
+            output_index,
+        } = part
+        {
+            let idx = output_index
+                .map(|i| i as usize)
+                .unwrap_or_else(|| {
+                    items
+                        .iter()
+                        .take_while(|item| item["type"] == "reasoning")
+                        .count()
+                })
+                .min(items.len());
+            let mut item = json!({
+                "type": "compaction",
+                "id": id.clone().unwrap_or_else(|| format!("cmp_{request_id}_{idx}")),
+            });
+            if let Some(data) = encrypted_content {
+                item["encrypted_content"] = json!(data);
+            }
+            if let Some(content) = content {
+                item["content"] = json!(content);
+            }
+            if let Some(signature) = signature {
+                item["signature"] = json!(signature);
+            }
+            items.insert(idx, item);
+        }
+    }
+    // Synthetic ids reflect the final output position, including inserted compaction items.
+    for (idx, item) in items.iter_mut().enumerate() {
+        let prefix = match item["type"].as_str() {
+            Some("reasoning") => "rs",
+            Some("message") => "msg",
+            Some("function_call") => "fc",
+            _ => continue,
+        };
+        item["id"] = json!(format!("{prefix}_{request_id}_{idx}"));
+    }
+
+    items
+}
+
+fn ordered_output_items(request_id: &str, output: &[Message]) -> Vec<Value> {
+    let mut items = Vec::with_capacity(output.len());
+    for message in output {
+        let mut thinking = Vec::new();
+        let mut compaction = Vec::new();
+        for part in &message.content {
+            match part {
+                ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {
+                    thinking.push(part.clone())
+                }
+                ContentPart::Compaction { .. } => compaction.push(part.clone()),
+                _ => {}
+            }
+        }
+        let choice = Choice {
+            index: 0,
+            text: message.text_content(),
+            thinking,
+            compaction,
+            output: Vec::new(),
+            tool_calls: message.tool_calls.clone(),
+            finish_reason: None,
+        };
+        items.extend(output_items(request_id, &choice));
+    }
+    for (idx, item) in items.iter_mut().enumerate() {
+        let prefix = match item["type"].as_str() {
+            Some("reasoning") => "rs",
+            Some("message") => "msg",
+            Some("function_call") => "fc",
+            _ => continue,
+        };
+        item["id"] = json!(format!("{prefix}_{request_id}_{idx}"));
+    }
     items
 }
 
@@ -739,6 +866,7 @@ fn build_response(
         "tools": echo.tools,
         "top_p": echo.top_p,
         "truncation": echo.truncation.clone().unwrap_or(json!("disabled")),
+        "context_management": echo.context_management.clone(),
         "usage": usage.map(usage_json),
         "metadata": echo.metadata.clone().unwrap_or(json!({})),
     })
@@ -758,7 +886,13 @@ fn response_id(id: &str) -> String {
 pub fn response_to_responses(resp: &ChatResponse, echo: &RequestEcho, created: u64) -> Value {
     let choice = resp.choices.first();
     let output = choice
-        .map(|c| output_items(&resp.id, c))
+        .map(|c| {
+            if c.output.is_empty() {
+                output_items(&resp.id, c)
+            } else {
+                ordered_output_items(&resp.id, &c.output)
+            }
+        })
         .unwrap_or_default();
     let (status, reason) = status_for(choice.and_then(|c| c.finish_reason));
     build_response(
@@ -849,6 +983,8 @@ pub struct EventEncoder {
     think_text: String,
     think_sig: Option<String>,
     redacted: Vec<String>,
+    compaction: Vec<ContentPart>,
+    ordered_output: Vec<Message>,
     tools: BTreeMap<u32, AccTool>,
     usage: Usage,
     finish: Option<FinishReason>,
@@ -876,6 +1012,8 @@ impl EventEncoder {
             think_text: String::new(),
             think_sig: None,
             redacted: Vec::new(),
+            compaction: Vec::new(),
+            ordered_output: Vec::new(),
             tools: BTreeMap::new(),
             usage: Usage::default(),
             finish: None,
@@ -1229,6 +1367,69 @@ impl EventEncoder {
                     }),
                 );
             }
+            StreamChunk::Compaction {
+                index,
+                id,
+                delta,
+                encrypted_content,
+                signature,
+                output_index,
+            } => {
+                if *index != 0 {
+                    return;
+                }
+                self.ensure_started(out);
+                self.close_open(out);
+                let index = self.output_index;
+                self.output_index += 1;
+                let item_id = id
+                    .clone()
+                    .unwrap_or_else(|| format!("cmp_{}_{}", self.request_id, index));
+                let mut item = json!({ "type": "compaction", "id": item_id });
+                if let Some(data) = encrypted_content {
+                    item["encrypted_content"] = json!(data);
+                }
+                if !delta.is_empty() {
+                    item["content"] = json!(delta);
+                }
+                if let Some(signature) = signature {
+                    item["signature"] = json!(signature);
+                }
+                self.compaction.push(ContentPart::Compaction {
+                    id: id.clone(),
+                    content: if delta.is_empty() {
+                        None
+                    } else {
+                        Some(delta.clone())
+                    },
+                    encrypted_content: encrypted_content.clone(),
+                    signature: signature.clone(),
+                    output_index: output_index.or(Some(index)),
+                });
+                let seq = self.next_seq();
+                push(
+                    out,
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added", "output_index": index,
+                        "item": item, "sequence_number": seq,
+                    }),
+                );
+                let seq = self.next_seq();
+                push(
+                    out,
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done", "output_index": index,
+                        "item": item, "sequence_number": seq,
+                    }),
+                );
+            }
+            StreamChunk::OutputItem { index, message } => {
+                if *index == 0 {
+                    self.ordered_output.push(message.clone());
+                }
+            }
             StreamChunk::Content { index, delta } => {
                 if *index != 0 {
                     return;
@@ -1310,6 +1511,8 @@ impl EventEncoder {
             index: 0,
             text: self.text.clone(),
             thinking,
+            compaction: self.compaction.clone(),
+            output: self.ordered_output.clone(),
             tool_calls: self
                 .tools
                 .values()
@@ -1662,6 +1865,8 @@ mod tests {
                     },
                     ContentPart::RedactedThinking { data: "ENC".into() },
                 ],
+                compaction: vec![],
+                output: vec![],
                 tool_calls: vec![ToolCall {
                     id: "call_1".into(),
                     name: "get_weather".into(),
@@ -1678,6 +1883,106 @@ mod tests {
                 cache_creation_tokens: 0,
             },
         }
+    }
+
+    #[test]
+    fn compaction_input_preserves_native_and_signed_forms() {
+        let req = parse_responses_request(json!({
+            "model": "m", "input": [
+                {"type":"compaction", "id":"cmp_1", "encrypted_content":"opaque"},
+                {"type":"compaction", "content":"summary", "signature":"sig"},
+                {"role":"user", "content":"next"}
+            ],
+            "context_management":[{"type":"compaction","compact_threshold":1000}]
+        }))
+        .unwrap();
+        assert!(
+            matches!(&req.messages[0].content[0], ContentPart::Compaction { id: Some(id), encrypted_content: Some(data), .. } if id == "cmp_1" && data == "opaque")
+        );
+        assert!(
+            matches!(&req.messages[1].content[0], ContentPart::Compaction { content: Some(content), signature: Some(sig), .. } if content == "summary" && sig == "sig")
+        );
+        assert_eq!(
+            req.extra["context_management"][0]["compact_threshold"],
+            1000
+        );
+        assert!(
+            parse_responses_request(json!({"model":"m","input":[{"type":"compaction"}]})).is_err()
+        );
+    }
+
+    #[test]
+    fn compaction_output_survives_collected_and_streamed_responses() {
+        let req = parse_responses_request(json!({"model":"m","input":"hi"})).unwrap();
+        let echo = RequestEcho::from_request(&req);
+        let mut resp = sample_response();
+        resp.choices[0].compaction.push(ContentPart::Compaction {
+            id: Some("cmp_1".into()),
+            content: None,
+            encrypted_content: Some("opaque".into()),
+            signature: None,
+            output_index: Some(2),
+        });
+        let collected = response_to_responses(&resp, &echo, 1);
+        assert_eq!(
+            collected["output"][2],
+            json!({"type":"compaction","id":"cmp_1","encrypted_content":"opaque"})
+        );
+
+        let mut encoder = EventEncoder::new("req-1", "m", 1, echo);
+        let mut frames = Vec::new();
+        encoder.encode(
+            &StreamChunk::Compaction {
+                index: 0,
+                id: Some("cmp_1".into()),
+                delta: String::new(),
+                encrypted_content: Some("opaque".into()),
+                signature: None,
+                output_index: Some(0),
+            },
+            &mut frames,
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|f| f.event == "response.output_item.done")
+                .count(),
+            1
+        );
+        frames.clear();
+        encoder.finish(&mut frames);
+        let terminal: Value = serde_json::from_str(&frames.last().unwrap().data).unwrap();
+        assert_eq!(
+            terminal["response"]["output"][0],
+            json!({"type":"compaction","id":"cmp_1","encrypted_content":"opaque"})
+        );
+    }
+
+    #[test]
+    fn ordered_output_preserves_text_around_compaction() {
+        let req = parse_responses_request(json!({"model":"m","input":"hi"})).unwrap();
+        let mut resp = sample_response();
+        resp.choices[0].output = vec![
+            Message::text(Role::Assistant, "before"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentPart::Compaction {
+                    id: Some("cmp_1".into()),
+                    content: None,
+                    encrypted_content: Some("opaque".into()),
+                    signature: None,
+                    output_index: Some(1),
+                }],
+                tool_calls: vec![],
+                tool_call_id: None,
+                name: None,
+            },
+            Message::text(Role::Assistant, "after"),
+        ];
+        let wire = response_to_responses(&resp, &RequestEcho::from_request(&req), 1);
+        assert_eq!(wire["output"][0]["content"][0]["text"], "before");
+        assert_eq!(wire["output"][1]["id"], "cmp_1");
+        assert_eq!(wire["output"][2]["content"][0]["text"], "after");
     }
 
     fn empty_echo() -> RequestEcho {

@@ -17,6 +17,7 @@ import type {
   ContentPart,
   MessageContent,
   ReasoningDetail,
+  CompactionBlock,
   ToolCall,
   ToolDef,
   ToolChoice,
@@ -64,6 +65,7 @@ import type {
   ResponseFunctionCallItem,
   ResponseFunctionCallOutputItem,
   ResponseReasoningItem,
+  ResponseCompactionItem,
   ResponseReasoningText,
   ResponsesToolDef,
   ResponsesToolChoice,
@@ -174,6 +176,34 @@ function encodeReasoningDetail(d: ReasoningDetail): Json {
   return out;
 }
 
+function encodeCompactionBlock(block: CompactionBlock): Json {
+  const out: Json = { type: "compaction" };
+  put(out, "id", block.id);
+  put(out, "content", block.content);
+  put(out, "encrypted_content", block.encryptedContent);
+  put(out, "signature", block.signature);
+  return out;
+}
+
+function decodeCompactionBlock(value: unknown): CompactionBlock | undefined {
+  const o = obj(value);
+  if (!o || o["type"] !== "compaction") return undefined;
+  const block: CompactionBlock = { type: "compaction" };
+  const id = optStr(o["id"]);
+  if (id !== undefined) block.id = id;
+  const content = optStr(o["content"]);
+  if (content !== undefined) block.content = content;
+  const encrypted = optStr(o["encrypted_content"]);
+  if (encrypted !== undefined) block.encryptedContent = encrypted;
+  const signature = optStr(o["signature"]);
+  if (signature !== undefined) block.signature = signature;
+  return block;
+}
+
+function decodeCompactionBlocks(value: unknown): CompactionBlock[] {
+  return arr(value).map(decodeCompactionBlock).filter((x): x is CompactionBlock => x !== undefined);
+}
+
 function encodeMessage(m: ChatMessage): Json {
   const out: Json = { role: roleToWire(m.role) ?? "user" };
   const content = encodeContent(m.content);
@@ -190,6 +220,9 @@ function encodeMessage(m: ChatMessage): Json {
   put(out, "reasoning", m.reasoning);
   if (m.reasoningDetails && m.reasoningDetails.length > 0) {
     out["reasoning_details"] = m.reasoningDetails.map(encodeReasoningDetail);
+  }
+  if (m.compaction && m.compaction.length > 0) {
+    out["compaction"] = m.compaction.map(encodeCompactionBlock);
   }
   return out;
 }
@@ -372,6 +405,8 @@ export function decodeMessage(v: unknown): ChatMessage {
   if (reasoning !== undefined) msg.reasoning = reasoning;
   const rds = decodeReasoningDetails(o["reasoning_details"]);
   if (rds.length > 0) msg.reasoningDetails = rds;
+  const compaction = decodeCompactionBlocks(o["compaction"]);
+  if (compaction.length > 0) msg.compaction = compaction;
   return msg;
 }
 
@@ -434,6 +469,8 @@ function decodeDelta(v: unknown): Delta {
   if (reasoning !== undefined) delta.reasoning = reasoning;
   const rds = decodeReasoningDetails(o["reasoning_details"]);
   if (rds.length > 0) delta.reasoningDetails = rds;
+  const compaction = decodeCompactionBlocks(o["compaction"]);
+  if (compaction.length > 0) delta.compaction = compaction;
   return delta;
 }
 
@@ -736,6 +773,9 @@ function decodeModelEntry(v: unknown): ModelEntry {
   };
   const cl = optNum(o["context_length"]);
   if (cl !== undefined) entry.contextLength = cl;
+  if (typeof o["supports_compaction"] === "boolean") {
+    entry.supportsCompaction = o["supports_compaction"];
+  }
   const arch = decodeArchitecture(o["architecture"]);
   if (arch !== undefined) entry.architecture = arch;
   const pricing = decodePricing(o["pricing"]);
@@ -895,6 +935,10 @@ function encodeResponseReasoningItem(r: ResponseReasoningItem): Json {
   return out;
 }
 
+function encodeResponseCompactionItem(item: ResponseCompactionItem): Json {
+  return encodeCompactionBlock(item);
+}
+
 function encodeResponseItem(item: ResponseItem): Json {
   switch (item.type) {
     case "function_call":
@@ -903,6 +947,8 @@ function encodeResponseItem(item: ResponseItem): Json {
       return encodeResponseFunctionCallOutputItem(item);
     case "reasoning":
       return encodeResponseReasoningItem(item);
+    case "compaction":
+      return encodeResponseCompactionItem(item);
     case "message":
       return encodeResponseMessageItem(item);
   }
@@ -1079,6 +1125,8 @@ function decodeResponseItem(v: unknown): ResponseItem | undefined {
       return decodeResponseFunctionCallOutputItem(o);
     case "reasoning":
       return decodeResponseReasoningItem(o);
+    case "compaction":
+      return decodeCompactionBlock(o);
     default:
       return undefined; // unknown item type — skip
   }

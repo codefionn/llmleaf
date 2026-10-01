@@ -35,6 +35,11 @@ pub struct ModelInfo {
     /// `max_thinking` because some catalogs publish a capability flag but no numeric budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning: Option<bool>,
+    /// Whether this model can use native API context compaction on this provider's configured
+    /// endpoint. Unknown catalogs leave this unset; the public catalog reports false unless support
+    /// is confirmed. This capability is never inferred from context size or pricing data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_compaction: Option<bool>,
     /// USD per 1,000,000 input tokens, when the catalog prices the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_mtok: Option<f64>,
@@ -85,6 +90,7 @@ impl ModelInfo {
             max_output: None,
             max_thinking: None,
             supports_reasoning: None,
+            supports_compaction: None,
             input_per_mtok: None,
             cached_input_per_mtok: None,
             output_per_mtok: None,

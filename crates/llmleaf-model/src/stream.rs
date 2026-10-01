@@ -43,9 +43,14 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
     let mut thinkings: BTreeMap<u32, (String, Option<String>)> = BTreeMap::new();
     // index -> redacted thinking blocks, in arrival order.
     let mut redacteds: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    let mut outputs: BTreeMap<u32, Vec<crate::Message>> = BTreeMap::new();
+    let mut compactions: BTreeMap<u32, Vec<ContentPart>> = BTreeMap::new();
 
     for item in chunks {
         match item {
+            StreamChunk::OutputItem { index, message } => {
+                outputs.entry(index).or_default().push(message);
+            }
             StreamChunk::Start { id: i, model: m } => {
                 id = i;
                 model = m;
@@ -61,6 +66,27 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
             }
             StreamChunk::RedactedThinking { index, data } => {
                 redacteds.entry(index).or_default().push(data);
+            }
+            StreamChunk::Compaction {
+                index,
+                delta,
+                id,
+                encrypted_content,
+                signature,
+                output_index,
+            } => {
+                let content = (encrypted_content.is_none() && (id.is_none() || !delta.is_empty()))
+                    .then_some(delta);
+                compactions
+                    .entry(index)
+                    .or_default()
+                    .push(ContentPart::Compaction {
+                        id,
+                        content,
+                        encrypted_content,
+                        signature,
+                        output_index,
+                    });
             }
             StreamChunk::ToolCall { index, call } => {
                 let entry = tools
@@ -92,6 +118,8 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
         .chain(tools.keys())
         .chain(thinkings.keys())
         .chain(redacteds.keys())
+        .chain(outputs.keys())
+        .chain(compactions.keys())
         .copied()
         .collect();
     indices.sort_unstable();
@@ -100,11 +128,13 @@ pub fn collect_chunks<I: IntoIterator<Item = StreamChunk>>(chunks: I) -> ChatRes
     let choices = indices
         .into_iter()
         .map(|index| Choice {
+            output: outputs.remove(&index).unwrap_or_default(),
             index,
             text: texts.remove(&index).unwrap_or_default(),
             // Reasoning leads the turn: the thinking block (if any) first, then redacted blocks,
             // mirroring the order the upstream emits and the order replay must restore.
             thinking: thinking_parts(thinkings.remove(&index), redacteds.remove(&index)),
+            compaction: compactions.remove(&index).unwrap_or_default(),
             tool_calls: tools
                 .remove(&index)
                 .map(|m| m.into_values().map(PartialToolCall::into_call).collect())

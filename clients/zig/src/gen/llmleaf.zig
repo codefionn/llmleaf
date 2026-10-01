@@ -93,6 +93,7 @@ pub const FinishReason = enum {
     length,
     tool_calls,
     content_filter,
+    compaction,
 };
 
 pub const BatchStatus = enum {
@@ -193,6 +194,13 @@ pub const ReasoningDetail = struct {
     }
 };
 
+pub const CompactionBlock = struct {
+    id: ?[]const u8 = null,
+    content: ?[]const u8 = null,
+    encrypted_content: ?[]const u8 = null,
+    signature: ?[]const u8 = null,
+};
+
 pub const ChatMessage = struct {
     role: Role,
     content: ?Content = null,
@@ -205,6 +213,7 @@ pub const ChatMessage = struct {
     /// Structured reasoning blocks (open and hidden, with signatures — see `ReasoningDetail`).
     /// Echo these back verbatim on the next request to preserve signed reasoning across a turn.
     reasoning_details: []const ReasoningDetail = &.{},
+    compaction: []const CompactionBlock = &.{},
 
     /// Convenience constructor for the common plain-text message.
     pub fn textMsg(role: Role, text: []const u8) ChatMessage {
@@ -290,6 +299,7 @@ pub const Delta = struct {
     reasoning: ?[]const u8 = null,
     /// Incremental structured reasoning blocks (open / hidden — see `ReasoningDetail`).
     reasoning_details: []const ReasoningDetail = &.{},
+    compaction: []const CompactionBlock = &.{},
 };
 
 pub const ChunkChoice = struct {
@@ -396,6 +406,8 @@ pub const ResponseReasoningItem = struct {
     encrypted_content: ?[]const u8 = null,
 };
 
+pub const ResponseCompactionItem = CompactionBlock;
+
 /// One item of the request `input` array or the response `output` array. The
 /// wire discriminator is `"type"`; a message with no `"type"` is implied by a
 /// bare role-keyed object (and is emitted that way).
@@ -404,6 +416,7 @@ pub const ResponseItem = union(enum) {
     function_call: ResponseFunctionCallItem,
     function_call_output: ResponseFunctionCallOutputItem,
     reasoning: ResponseReasoningItem,
+    compaction: ResponseCompactionItem,
 };
 
 /// Wire `input`: a bare string (one user message) or an array of items.
@@ -742,6 +755,7 @@ pub const ModelEntry = struct {
     unsupported_parameters: []const []const u8 = &.{},
     default_parameters: ?[]const u8 = null, // raw JSON object
     endpoints: []const ModelEndpoint = &.{}, // admin-only
+    supports_compaction: ?bool = null,
 };
 
 pub const ListModelsResponse = struct {

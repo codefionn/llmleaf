@@ -101,6 +101,33 @@ Consumer endpoints (OpenAI-compatible unless noted):
 Read-only admin (optional token): `GET /admin/routes`, `/admin/health`, `/admin/keys`.
 Official client SDKs for 6 languages live in [`clients/`](clients/).
 
+Native API compaction is opt-in. `GET /v1/models` includes `supports_compaction` for every entry.
+The flag uses the primary provider's model capabilities and configured API. Without an override,
+it is `false` when support is unconfirmed, including when the provider catalog cannot be fetched.
+
+For an OpenAI-compatible provider whose API supports native Responses compaction, declare it with
+`settings = { chat_api = "responses", supports_compaction = true }`. This overrides the catalog flag
+for that provider's language models, including configured routes whose upstream catalog is unavailable.
+Set `supports_compaction = false` to report no support. Omit the setting to use detected support.
+Compaction still requires an explicit request setting and an upstream that implements it.
+
+For Claude, send `compaction: {"type":"summarize"}` to `/v1/messages` for on-demand compaction,
+or `context_management: {"edits":[{"type":"compact_20260112"}]}` for threshold compaction.
+llmleaf sends the required beta header and preserves returned compaction blocks and signatures.
+For on-demand compaction, replace the summarized transcript with the returned block, keep the
+same system prompt and tools, then append the next turn. See the
+[Claude compaction docs](https://platform.claude.com/docs/en/build-with-claude/compaction).
+
+For OpenAI Responses, send `context_management: [{"type":"compaction","compact_threshold":200000}]`
+to `/v1/responses`. Replay the returned encrypted compaction items with their IDs, or continue
+with `previous_response_id`. llmleaf preserves those items in collected and streaming responses.
+This supports inline compaction. The standalone `/v1/responses/compact` endpoint is not exposed.
+See the [OpenAI compaction docs](https://developers.openai.com/api/docs/guides/compaction).
+
+The chat-completions surface accepts these native request fields for routes that support them.
+It returns compaction blocks in the `message.compaction` array or streamed `delta.compaction`
+array. Replay those blocks as `message.compaction` on the next request.
+
 ### Decisions
 
 Send `model`, `state`, and named `questions` to `/v1/decisions`. The OpenRouter path

@@ -226,6 +226,22 @@ type wireReasoningDetail struct {
 	Index     *uint32 `json:"index,omitempty"`
 }
 
+type wireCompactionBlock struct {
+	Type             string  `json:"type"`
+	ID               *string `json:"id,omitempty"`
+	Content          *string `json:"content,omitempty"`
+	EncryptedContent *string `json:"encrypted_content,omitempty"`
+	Signature        *string `json:"signature,omitempty"`
+}
+
+func compactionToWire(c *pb.CompactionBlock) wireCompactionBlock {
+	return wireCompactionBlock{Type: "compaction", ID: c.Id, Content: c.Content, EncryptedContent: c.EncryptedContent, Signature: c.Signature}
+}
+
+func compactionFromWire(c wireCompactionBlock) *pb.CompactionBlock {
+	return &pb.CompactionBlock{Id: c.ID, Content: c.Content, EncryptedContent: c.EncryptedContent, Signature: c.Signature}
+}
+
 func reasoningDetailToWire(d *pb.ReasoningDetail) wireReasoningDetail {
 	return wireReasoningDetail{
 		Type:      d.GetType(),
@@ -264,6 +280,7 @@ type wireChatMessage struct {
 	ToolCallID       *string               `json:"tool_call_id,omitempty"`
 	Reasoning        *string               `json:"reasoning,omitempty"`
 	ReasoningDetails []wireReasoningDetail `json:"reasoning_details,omitempty"`
+	Compaction       []wireCompactionBlock `json:"compaction,omitempty"`
 }
 
 func chatMessageToWire(m *pb.ChatMessage) (wireChatMessage, error) {
@@ -296,6 +313,9 @@ func chatMessageToWire(m *pb.ChatMessage) (wireChatMessage, error) {
 	out.Reasoning = m.Reasoning
 	for _, rd := range m.GetReasoningDetails() {
 		out.ReasoningDetails = append(out.ReasoningDetails, reasoningDetailToWire(rd))
+	}
+	for _, c := range m.GetCompaction() {
+		out.Compaction = append(out.Compaction, compactionToWire(c))
 	}
 	return out, nil
 }
@@ -330,6 +350,9 @@ func chatMessageFromWire(m wireChatMessage) (*pb.ChatMessage, error) {
 	}
 	for _, rd := range m.ReasoningDetails {
 		out.ReasoningDetails = append(out.ReasoningDetails, reasoningDetailFromWire(rd))
+	}
+	for _, c := range m.Compaction {
+		out.Compaction = append(out.Compaction, compactionFromWire(c))
 	}
 	return out, nil
 }
@@ -641,6 +664,7 @@ type wireDelta struct {
 	ToolCalls        []wireToolCallDelta   `json:"tool_calls"`
 	Reasoning        *string               `json:"reasoning,omitempty"`
 	ReasoningDetails []wireReasoningDetail `json:"reasoning_details,omitempty"`
+	Compaction       []wireCompactionBlock `json:"compaction,omitempty"`
 }
 
 type wireChunkChoice struct {
@@ -678,6 +702,9 @@ func (w *wireChunk) toPB() *pb.ChatCompletionChunk {
 		}
 		for _, rd := range c.Delta.ReasoningDetails {
 			delta.ReasoningDetails = append(delta.ReasoningDetails, reasoningDetailFromWire(rd))
+		}
+		for _, block := range c.Delta.Compaction {
+			delta.Compaction = append(delta.Compaction, compactionFromWire(block))
 		}
 		out.Choices = append(out.Choices, &pb.ChunkChoice{
 			Index:        c.Index,
@@ -879,6 +906,7 @@ type wireModelEntry struct {
 	UnsupportedParameters []string            `json:"unsupported_parameters"`
 	DefaultParameters     json.RawMessage     `json:"default_parameters"`
 	Endpoints             []wireModelEndpoint `json:"endpoints"`
+	SupportsCompaction    *bool               `json:"supports_compaction"`
 }
 
 type wireListModelsResponse struct {
@@ -896,6 +924,7 @@ func (w *wireModelEntry) toPB() *pb.ModelEntry {
 		SupportedParameters:   w.SupportedParameters,
 		UnsupportedParameters: w.UnsupportedParameters,
 		DefaultParameters:     rawString(w.DefaultParameters),
+		SupportsCompaction:    w.SupportsCompaction,
 	}
 	if a := w.Architecture; a != nil {
 		out.Architecture = &pb.Architecture{
@@ -1201,6 +1230,14 @@ type wireResponseReasoningItem struct {
 	EncryptedContent *string                      `json:"encrypted_content,omitempty"`
 }
 
+type wireResponseCompactionItem struct {
+	Type             string  `json:"type"`
+	ID               *string `json:"id,omitempty"`
+	Content          *string `json:"content,omitempty"`
+	EncryptedContent *string `json:"encrypted_content,omitempty"`
+	Signature        *string `json:"signature,omitempty"`
+}
+
 func reasoningItemToWire(r *pb.ResponseReasoningItem) wireResponseReasoningItem {
 	out := wireResponseReasoningItem{Type: "reasoning", ID: r.Id, EncryptedContent: r.EncryptedContent}
 	out.Summary = make([]wireResponseReasoningEntry, 0, len(r.GetSummary()))
@@ -1232,6 +1269,7 @@ type wireResponseItem struct {
 	functionCall       *pb.ResponseFunctionCallItem
 	functionCallOutput *pb.ResponseFunctionCallOutputItem
 	reasoning          *pb.ResponseReasoningItem
+	compaction         *pb.ResponseCompactionItem
 }
 
 func (i wireResponseItem) MarshalJSON() ([]byte, error) {
@@ -1256,6 +1294,8 @@ func (i wireResponseItem) MarshalJSON() ([]byte, error) {
 		})
 	case i.reasoning != nil:
 		return json.Marshal(reasoningItemToWire(i.reasoning))
+	case i.compaction != nil:
+		return json.Marshal(wireResponseCompactionItem{Type: "compaction", ID: i.compaction.Id, Content: i.compaction.Content, EncryptedContent: i.compaction.EncryptedContent, Signature: i.compaction.Signature})
 	case i.message != nil:
 		return marshalResponseMessageItem(i.message)
 	default:
@@ -1291,6 +1331,12 @@ func (i *wireResponseItem) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		i.reasoning = reasoningItemFromWire(&r)
+	case "compaction":
+		var c wireResponseCompactionItem
+		if err := json.Unmarshal(data, &c); err != nil {
+			return err
+		}
+		i.compaction = &pb.ResponseCompactionItem{Id: c.ID, Content: c.Content, EncryptedContent: c.EncryptedContent, Signature: c.Signature}
 	default: // "message" or absent -> role-keyed message
 		m, err := unmarshalResponseMessageItem(data)
 		if err != nil {
@@ -1309,6 +1355,8 @@ func (i *wireResponseItem) toPB() *pb.ResponseItem {
 		return &pb.ResponseItem{Item: &pb.ResponseItem_FunctionCallOutput{FunctionCallOutput: i.functionCallOutput}}
 	case i.reasoning != nil:
 		return &pb.ResponseItem{Item: &pb.ResponseItem_Reasoning{Reasoning: i.reasoning}}
+	case i.compaction != nil:
+		return &pb.ResponseItem{Item: &pb.ResponseItem_Compaction{Compaction: i.compaction}}
 	default:
 		msg := i.message
 		if msg == nil {
@@ -1324,6 +1372,7 @@ func responseItemFromPB(it *pb.ResponseItem) wireResponseItem {
 		functionCall:       it.GetFunctionCall(),
 		functionCallOutput: it.GetFunctionCallOutput(),
 		reasoning:          it.GetReasoning(),
+		compaction:         it.GetCompaction(),
 	}
 }
 

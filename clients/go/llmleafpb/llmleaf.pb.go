@@ -109,6 +109,7 @@ const (
 	FinishReason_LENGTH                    FinishReason = 2
 	FinishReason_TOOL_CALLS                FinishReason = 3
 	FinishReason_CONTENT_FILTER            FinishReason = 4
+	FinishReason_COMPACTION                FinishReason = 5
 )
 
 // Enum value maps for FinishReason.
@@ -119,6 +120,7 @@ var (
 		2: "LENGTH",
 		3: "TOOL_CALLS",
 		4: "CONTENT_FILTER",
+		5: "COMPACTION",
 	}
 	FinishReason_value = map[string]int32{
 		"FINISH_REASON_UNSPECIFIED": 0,
@@ -126,6 +128,7 @@ var (
 		"LENGTH":                    2,
 		"TOOL_CALLS":                3,
 		"CONTENT_FILTER":            4,
+		"COMPACTION":                5,
 	}
 )
 
@@ -1109,6 +1112,76 @@ func (x *ReasoningDetail) GetIndex() uint32 {
 	return 0
 }
 
+// Native provider compaction state. OpenAI replays id + encrypted_content;
+// Claude replays content, with signature when present.
+type CompactionBlock struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Id               *string                `protobuf:"bytes,1,opt,name=id,proto3,oneof" json:"id,omitempty"`
+	Content          *string                `protobuf:"bytes,2,opt,name=content,proto3,oneof" json:"content,omitempty"`
+	EncryptedContent *string                `protobuf:"bytes,3,opt,name=encrypted_content,json=encryptedContent,proto3,oneof" json:"encrypted_content,omitempty"`
+	Signature        *string                `protobuf:"bytes,4,opt,name=signature,proto3,oneof" json:"signature,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *CompactionBlock) Reset() {
+	*x = CompactionBlock{}
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactionBlock) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactionBlock) ProtoMessage() {}
+
+func (x *CompactionBlock) ProtoReflect() protoreflect.Message {
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompactionBlock.ProtoReflect.Descriptor instead.
+func (*CompactionBlock) Descriptor() ([]byte, []int) {
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CompactionBlock) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *CompactionBlock) GetContent() string {
+	if x != nil && x.Content != nil {
+		return *x.Content
+	}
+	return ""
+}
+
+func (x *CompactionBlock) GetEncryptedContent() string {
+	if x != nil && x.EncryptedContent != nil {
+		return *x.EncryptedContent
+	}
+	return ""
+}
+
+func (x *CompactionBlock) GetSignature() string {
+	if x != nil && x.Signature != nil {
+		return *x.Signature
+	}
+	return ""
+}
+
 type ChatMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Role  Role                   `protobuf:"varint,1,opt,name=role,proto3,enum=llmleaf.v1.Role" json:"role,omitempty"`
@@ -1127,13 +1200,14 @@ type ChatMessage struct {
 	// `reasoning_details` back verbatim on the next turn to preserve signed reasoning (see ReasoningDetail).
 	Reasoning        *string            `protobuf:"bytes,7,opt,name=reasoning,proto3,oneof" json:"reasoning,omitempty"`
 	ReasoningDetails []*ReasoningDetail `protobuf:"bytes,8,rep,name=reasoning_details,json=reasoningDetails,proto3" json:"reasoning_details,omitempty"`
+	Compaction       []*CompactionBlock `protobuf:"bytes,9,rep,name=compaction,proto3" json:"compaction,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ChatMessage) Reset() {
 	*x = ChatMessage{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[14]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1145,7 +1219,7 @@ func (x *ChatMessage) String() string {
 func (*ChatMessage) ProtoMessage() {}
 
 func (x *ChatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[14]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1158,7 +1232,7 @@ func (x *ChatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
 func (*ChatMessage) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{14}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ChatMessage) GetRole() Role {
@@ -1228,6 +1302,13 @@ func (x *ChatMessage) GetReasoningDetails() []*ReasoningDetail {
 	return nil
 }
 
+func (x *ChatMessage) GetCompaction() []*CompactionBlock {
+	if x != nil {
+		return x.Compaction
+	}
+	return nil
+}
+
 type isChatMessage_Content interface {
 	isChatMessage_Content()
 }
@@ -1256,7 +1337,7 @@ type FunctionDef struct {
 
 func (x *FunctionDef) Reset() {
 	*x = FunctionDef{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[15]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1268,7 +1349,7 @@ func (x *FunctionDef) String() string {
 func (*FunctionDef) ProtoMessage() {}
 
 func (x *FunctionDef) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[15]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1281,7 +1362,7 @@ func (x *FunctionDef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionDef.ProtoReflect.Descriptor instead.
 func (*FunctionDef) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{15}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *FunctionDef) GetName() string {
@@ -1315,7 +1396,7 @@ type ToolDef struct {
 
 func (x *ToolDef) Reset() {
 	*x = ToolDef{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[16]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1408,7 @@ func (x *ToolDef) String() string {
 func (*ToolDef) ProtoMessage() {}
 
 func (x *ToolDef) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[16]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1421,7 @@ func (x *ToolDef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolDef.ProtoReflect.Descriptor instead.
 func (*ToolDef) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{16}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ToolDef) GetType() string {
@@ -1372,7 +1453,7 @@ type ToolChoice struct {
 
 func (x *ToolChoice) Reset() {
 	*x = ToolChoice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[17]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1384,7 +1465,7 @@ func (x *ToolChoice) String() string {
 func (*ToolChoice) ProtoMessage() {}
 
 func (x *ToolChoice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[17]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1397,7 +1478,7 @@ func (x *ToolChoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolChoice.ProtoReflect.Descriptor instead.
 func (*ToolChoice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{17}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ToolChoice) GetChoice() isToolChoice_Choice {
@@ -1451,7 +1532,7 @@ type NamedToolChoice struct {
 
 func (x *NamedToolChoice) Reset() {
 	*x = NamedToolChoice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[18]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1463,7 +1544,7 @@ func (x *NamedToolChoice) String() string {
 func (*NamedToolChoice) ProtoMessage() {}
 
 func (x *NamedToolChoice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[18]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1476,7 +1557,7 @@ func (x *NamedToolChoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NamedToolChoice.ProtoReflect.Descriptor instead.
 func (*NamedToolChoice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{18}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *NamedToolChoice) GetType() string {
@@ -1502,7 +1583,7 @@ type FunctionName struct {
 
 func (x *FunctionName) Reset() {
 	*x = FunctionName{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[19]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1514,7 +1595,7 @@ func (x *FunctionName) String() string {
 func (*FunctionName) ProtoMessage() {}
 
 func (x *FunctionName) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[19]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1527,7 +1608,7 @@ func (x *FunctionName) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionName.ProtoReflect.Descriptor instead.
 func (*FunctionName) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{19}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *FunctionName) GetName() string {
@@ -1548,7 +1629,7 @@ type ResponseFormat struct {
 
 func (x *ResponseFormat) Reset() {
 	*x = ResponseFormat{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[20]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1560,7 +1641,7 @@ func (x *ResponseFormat) String() string {
 func (*ResponseFormat) ProtoMessage() {}
 
 func (x *ResponseFormat) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[20]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1573,7 +1654,7 @@ func (x *ResponseFormat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseFormat.ProtoReflect.Descriptor instead.
 func (*ResponseFormat) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{20}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ResponseFormat) GetType() string {
@@ -1616,7 +1697,7 @@ type ChatRequest struct {
 
 func (x *ChatRequest) Reset() {
 	*x = ChatRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[21]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1628,7 +1709,7 @@ func (x *ChatRequest) String() string {
 func (*ChatRequest) ProtoMessage() {}
 
 func (x *ChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[21]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1641,7 +1722,7 @@ func (x *ChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatRequest.ProtoReflect.Descriptor instead.
 func (*ChatRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{21}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ChatRequest) GetModel() string {
@@ -1774,7 +1855,7 @@ type Choice struct {
 
 func (x *Choice) Reset() {
 	*x = Choice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[22]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1786,7 +1867,7 @@ func (x *Choice) String() string {
 func (*Choice) ProtoMessage() {}
 
 func (x *Choice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[22]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1799,7 +1880,7 @@ func (x *Choice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Choice.ProtoReflect.Descriptor instead.
 func (*Choice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{22}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Choice) GetIndex() uint32 {
@@ -1837,7 +1918,7 @@ type ChatResponse struct {
 
 func (x *ChatResponse) Reset() {
 	*x = ChatResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[23]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1849,7 +1930,7 @@ func (x *ChatResponse) String() string {
 func (*ChatResponse) ProtoMessage() {}
 
 func (x *ChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[23]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1862,7 +1943,7 @@ func (x *ChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatResponse.ProtoReflect.Descriptor instead.
 func (*ChatResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{23}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ChatResponse) GetId() string {
@@ -1918,13 +1999,14 @@ type Delta struct {
 	// carries structured open/hidden blocks (and their signatures) as they arrive (see ReasoningDetail).
 	Reasoning        *string            `protobuf:"bytes,4,opt,name=reasoning,proto3,oneof" json:"reasoning,omitempty"`
 	ReasoningDetails []*ReasoningDetail `protobuf:"bytes,5,rep,name=reasoning_details,json=reasoningDetails,proto3" json:"reasoning_details,omitempty"`
+	Compaction       []*CompactionBlock `protobuf:"bytes,6,rep,name=compaction,proto3" json:"compaction,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Delta) Reset() {
 	*x = Delta{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[24]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1936,7 +2018,7 @@ func (x *Delta) String() string {
 func (*Delta) ProtoMessage() {}
 
 func (x *Delta) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[24]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1949,7 +2031,7 @@ func (x *Delta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Delta.ProtoReflect.Descriptor instead.
 func (*Delta) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{24}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *Delta) GetRole() Role {
@@ -1987,6 +2069,13 @@ func (x *Delta) GetReasoningDetails() []*ReasoningDetail {
 	return nil
 }
 
+func (x *Delta) GetCompaction() []*CompactionBlock {
+	if x != nil {
+		return x.Compaction
+	}
+	return nil
+}
+
 type ChunkChoice struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Index         uint32                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
@@ -1998,7 +2087,7 @@ type ChunkChoice struct {
 
 func (x *ChunkChoice) Reset() {
 	*x = ChunkChoice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[25]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2010,7 +2099,7 @@ func (x *ChunkChoice) String() string {
 func (*ChunkChoice) ProtoMessage() {}
 
 func (x *ChunkChoice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[25]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2023,7 +2112,7 @@ func (x *ChunkChoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChunkChoice.ProtoReflect.Descriptor instead.
 func (*ChunkChoice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{25}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ChunkChoice) GetIndex() uint32 {
@@ -2061,7 +2150,7 @@ type ChatCompletionChunk struct {
 
 func (x *ChatCompletionChunk) Reset() {
 	*x = ChatCompletionChunk{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[26]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2073,7 +2162,7 @@ func (x *ChatCompletionChunk) String() string {
 func (*ChatCompletionChunk) ProtoMessage() {}
 
 func (x *ChatCompletionChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[26]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2086,7 +2175,7 @@ func (x *ChatCompletionChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompletionChunk.ProtoReflect.Descriptor instead.
 func (*ChatCompletionChunk) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{26}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ChatCompletionChunk) GetId() string {
@@ -2138,6 +2227,7 @@ func (x *ChatCompletionChunk) GetUsage() *Usage {
 //	"function_call"        -> function_call
 //	"function_call_output" -> function_call_output
 //	"reasoning"            -> reasoning
+//	"compaction"           -> compaction
 type ResponseItem struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Item:
@@ -2146,6 +2236,7 @@ type ResponseItem struct {
 	//	*ResponseItem_FunctionCall
 	//	*ResponseItem_FunctionCallOutput
 	//	*ResponseItem_Reasoning
+	//	*ResponseItem_Compaction
 	Item          isResponseItem_Item `protobuf_oneof:"item"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2153,7 +2244,7 @@ type ResponseItem struct {
 
 func (x *ResponseItem) Reset() {
 	*x = ResponseItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[27]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2165,7 +2256,7 @@ func (x *ResponseItem) String() string {
 func (*ResponseItem) ProtoMessage() {}
 
 func (x *ResponseItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[27]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2178,7 +2269,7 @@ func (x *ResponseItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseItem.ProtoReflect.Descriptor instead.
 func (*ResponseItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{27}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ResponseItem) GetItem() isResponseItem_Item {
@@ -2224,6 +2315,15 @@ func (x *ResponseItem) GetReasoning() *ResponseReasoningItem {
 	return nil
 }
 
+func (x *ResponseItem) GetCompaction() *ResponseCompactionItem {
+	if x != nil {
+		if x, ok := x.Item.(*ResponseItem_Compaction); ok {
+			return x.Compaction
+		}
+	}
+	return nil
+}
+
 type isResponseItem_Item interface {
 	isResponseItem_Item()
 }
@@ -2244,6 +2344,10 @@ type ResponseItem_Reasoning struct {
 	Reasoning *ResponseReasoningItem `protobuf:"bytes,4,opt,name=reasoning,proto3,oneof"`
 }
 
+type ResponseItem_Compaction struct {
+	Compaction *ResponseCompactionItem `protobuf:"bytes,5,opt,name=compaction,proto3,oneof"`
+}
+
 func (*ResponseItem_Message) isResponseItem_Item() {}
 
 func (*ResponseItem_FunctionCall) isResponseItem_Item() {}
@@ -2251,6 +2355,8 @@ func (*ResponseItem_FunctionCall) isResponseItem_Item() {}
 func (*ResponseItem_FunctionCallOutput) isResponseItem_Item() {}
 
 func (*ResponseItem_Reasoning) isResponseItem_Item() {}
+
+func (*ResponseItem_Compaction) isResponseItem_Item() {}
 
 type ResponseItemList struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2261,7 +2367,7 @@ type ResponseItemList struct {
 
 func (x *ResponseItemList) Reset() {
 	*x = ResponseItemList{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[28]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2273,7 +2379,7 @@ func (x *ResponseItemList) String() string {
 func (*ResponseItemList) ProtoMessage() {}
 
 func (x *ResponseItemList) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[28]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2286,7 +2392,7 @@ func (x *ResponseItemList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseItemList.ProtoReflect.Descriptor instead.
 func (*ResponseItemList) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{28}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ResponseItemList) GetItems() []*ResponseItem {
@@ -2315,7 +2421,7 @@ type ResponseMessageItem struct {
 
 func (x *ResponseMessageItem) Reset() {
 	*x = ResponseMessageItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[29]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2327,7 +2433,7 @@ func (x *ResponseMessageItem) String() string {
 func (*ResponseMessageItem) ProtoMessage() {}
 
 func (x *ResponseMessageItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[29]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2340,7 +2446,7 @@ func (x *ResponseMessageItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseMessageItem.ProtoReflect.Descriptor instead.
 func (*ResponseMessageItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{29}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ResponseMessageItem) GetId() string {
@@ -2424,7 +2530,7 @@ type ResponseContentPart struct {
 
 func (x *ResponseContentPart) Reset() {
 	*x = ResponseContentPart{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[30]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2436,7 +2542,7 @@ func (x *ResponseContentPart) String() string {
 func (*ResponseContentPart) ProtoMessage() {}
 
 func (x *ResponseContentPart) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[30]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2449,7 +2555,7 @@ func (x *ResponseContentPart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseContentPart.ProtoReflect.Descriptor instead.
 func (*ResponseContentPart) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{30}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ResponseContentPart) GetPart() isResponseContentPart_Part {
@@ -2517,7 +2623,7 @@ type ResponseContentParts struct {
 
 func (x *ResponseContentParts) Reset() {
 	*x = ResponseContentParts{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[31]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2529,7 +2635,7 @@ func (x *ResponseContentParts) String() string {
 func (*ResponseContentParts) ProtoMessage() {}
 
 func (x *ResponseContentParts) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[31]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2542,7 +2648,7 @@ func (x *ResponseContentParts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseContentParts.ProtoReflect.Descriptor instead.
 func (*ResponseContentParts) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{31}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ResponseContentParts) GetItems() []*ResponseContentPart {
@@ -2561,7 +2667,7 @@ type ResponseTextPart struct {
 
 func (x *ResponseTextPart) Reset() {
 	*x = ResponseTextPart{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[32]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2573,7 +2679,7 @@ func (x *ResponseTextPart) String() string {
 func (*ResponseTextPart) ProtoMessage() {}
 
 func (x *ResponseTextPart) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[32]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2586,7 +2692,7 @@ func (x *ResponseTextPart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseTextPart.ProtoReflect.Descriptor instead.
 func (*ResponseTextPart) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{32}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ResponseTextPart) GetText() string {
@@ -2606,7 +2712,7 @@ type ResponseInputImagePart struct {
 
 func (x *ResponseInputImagePart) Reset() {
 	*x = ResponseInputImagePart{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[33]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2618,7 +2724,7 @@ func (x *ResponseInputImagePart) String() string {
 func (*ResponseInputImagePart) ProtoMessage() {}
 
 func (x *ResponseInputImagePart) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[33]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2631,7 +2737,7 @@ func (x *ResponseInputImagePart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseInputImagePart.ProtoReflect.Descriptor instead.
 func (*ResponseInputImagePart) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{33}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ResponseInputImagePart) GetImageUrl() string {
@@ -2663,7 +2769,7 @@ type ResponseFunctionCallItem struct {
 
 func (x *ResponseFunctionCallItem) Reset() {
 	*x = ResponseFunctionCallItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[34]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2675,7 +2781,7 @@ func (x *ResponseFunctionCallItem) String() string {
 func (*ResponseFunctionCallItem) ProtoMessage() {}
 
 func (x *ResponseFunctionCallItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[34]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2688,7 +2794,7 @@ func (x *ResponseFunctionCallItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseFunctionCallItem.ProtoReflect.Descriptor instead.
 func (*ResponseFunctionCallItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{34}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ResponseFunctionCallItem) GetId() string {
@@ -2738,7 +2844,7 @@ type ResponseFunctionCallOutputItem struct {
 
 func (x *ResponseFunctionCallOutputItem) Reset() {
 	*x = ResponseFunctionCallOutputItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[35]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2750,7 +2856,7 @@ func (x *ResponseFunctionCallOutputItem) String() string {
 func (*ResponseFunctionCallOutputItem) ProtoMessage() {}
 
 func (x *ResponseFunctionCallOutputItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[35]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2763,7 +2869,7 @@ func (x *ResponseFunctionCallOutputItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseFunctionCallOutputItem.ProtoReflect.Descriptor instead.
 func (*ResponseFunctionCallOutputItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{35}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ResponseFunctionCallOutputItem) GetId() string {
@@ -2804,7 +2910,7 @@ type ResponseReasoningItem struct {
 
 func (x *ResponseReasoningItem) Reset() {
 	*x = ResponseReasoningItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[36]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2816,7 +2922,7 @@ func (x *ResponseReasoningItem) String() string {
 func (*ResponseReasoningItem) ProtoMessage() {}
 
 func (x *ResponseReasoningItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[36]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2829,7 +2935,7 @@ func (x *ResponseReasoningItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseReasoningItem.ProtoReflect.Descriptor instead.
 func (*ResponseReasoningItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{36}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ResponseReasoningItem) GetId() string {
@@ -2869,7 +2975,7 @@ type ResponseReasoningText struct {
 
 func (x *ResponseReasoningText) Reset() {
 	*x = ResponseReasoningText{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[37]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2881,7 +2987,7 @@ func (x *ResponseReasoningText) String() string {
 func (*ResponseReasoningText) ProtoMessage() {}
 
 func (x *ResponseReasoningText) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[37]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2894,12 +3000,80 @@ func (x *ResponseReasoningText) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseReasoningText.ProtoReflect.Descriptor instead.
 func (*ResponseReasoningText) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{37}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ResponseReasoningText) GetText() string {
 	if x != nil {
 		return x.Text
+	}
+	return ""
+}
+
+type ResponseCompactionItem struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Id               *string                `protobuf:"bytes,1,opt,name=id,proto3,oneof" json:"id,omitempty"`
+	Content          *string                `protobuf:"bytes,2,opt,name=content,proto3,oneof" json:"content,omitempty"`
+	EncryptedContent *string                `protobuf:"bytes,3,opt,name=encrypted_content,json=encryptedContent,proto3,oneof" json:"encrypted_content,omitempty"`
+	Signature        *string                `protobuf:"bytes,4,opt,name=signature,proto3,oneof" json:"signature,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ResponseCompactionItem) Reset() {
+	*x = ResponseCompactionItem{}
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResponseCompactionItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResponseCompactionItem) ProtoMessage() {}
+
+func (x *ResponseCompactionItem) ProtoReflect() protoreflect.Message {
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResponseCompactionItem.ProtoReflect.Descriptor instead.
+func (*ResponseCompactionItem) Descriptor() ([]byte, []int) {
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ResponseCompactionItem) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *ResponseCompactionItem) GetContent() string {
+	if x != nil && x.Content != nil {
+		return *x.Content
+	}
+	return ""
+}
+
+func (x *ResponseCompactionItem) GetEncryptedContent() string {
+	if x != nil && x.EncryptedContent != nil {
+		return *x.EncryptedContent
+	}
+	return ""
+}
+
+func (x *ResponseCompactionItem) GetSignature() string {
+	if x != nil && x.Signature != nil {
+		return *x.Signature
 	}
 	return ""
 }
@@ -2919,7 +3093,7 @@ type ResponsesToolDef struct {
 
 func (x *ResponsesToolDef) Reset() {
 	*x = ResponsesToolDef{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[38]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2931,7 +3105,7 @@ func (x *ResponsesToolDef) String() string {
 func (*ResponsesToolDef) ProtoMessage() {}
 
 func (x *ResponsesToolDef) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[38]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2944,7 +3118,7 @@ func (x *ResponsesToolDef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesToolDef.ProtoReflect.Descriptor instead.
 func (*ResponsesToolDef) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{38}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ResponsesToolDef) GetType() string {
@@ -2997,7 +3171,7 @@ type ResponsesToolChoice struct {
 
 func (x *ResponsesToolChoice) Reset() {
 	*x = ResponsesToolChoice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[39]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3009,7 +3183,7 @@ func (x *ResponsesToolChoice) String() string {
 func (*ResponsesToolChoice) ProtoMessage() {}
 
 func (x *ResponsesToolChoice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[39]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3022,7 +3196,7 @@ func (x *ResponsesToolChoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesToolChoice.ProtoReflect.Descriptor instead.
 func (*ResponsesToolChoice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{39}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ResponsesToolChoice) GetChoice() isResponsesToolChoice_Choice {
@@ -3076,7 +3250,7 @@ type ResponsesNamedToolChoice struct {
 
 func (x *ResponsesNamedToolChoice) Reset() {
 	*x = ResponsesNamedToolChoice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[40]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3088,7 +3262,7 @@ func (x *ResponsesNamedToolChoice) String() string {
 func (*ResponsesNamedToolChoice) ProtoMessage() {}
 
 func (x *ResponsesNamedToolChoice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[40]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3101,7 +3275,7 @@ func (x *ResponsesNamedToolChoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesNamedToolChoice.ProtoReflect.Descriptor instead.
 func (*ResponsesNamedToolChoice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{40}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ResponsesNamedToolChoice) GetType() string {
@@ -3129,7 +3303,7 @@ type ResponsesReasoning struct {
 
 func (x *ResponsesReasoning) Reset() {
 	*x = ResponsesReasoning{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[41]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3141,7 +3315,7 @@ func (x *ResponsesReasoning) String() string {
 func (*ResponsesReasoning) ProtoMessage() {}
 
 func (x *ResponsesReasoning) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[41]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3154,7 +3328,7 @@ func (x *ResponsesReasoning) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesReasoning.ProtoReflect.Descriptor instead.
 func (*ResponsesReasoning) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{41}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ResponsesReasoning) GetEffort() string {
@@ -3200,7 +3374,7 @@ type ResponsesRequest struct {
 
 func (x *ResponsesRequest) Reset() {
 	*x = ResponsesRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[42]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3212,7 +3386,7 @@ func (x *ResponsesRequest) String() string {
 func (*ResponsesRequest) ProtoMessage() {}
 
 func (x *ResponsesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[42]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3225,7 +3399,7 @@ func (x *ResponsesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesRequest.ProtoReflect.Descriptor instead.
 func (*ResponsesRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{42}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ResponsesRequest) GetModel() string {
@@ -3368,7 +3542,7 @@ type ResponsesUsage struct {
 
 func (x *ResponsesUsage) Reset() {
 	*x = ResponsesUsage{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[43]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3380,7 +3554,7 @@ func (x *ResponsesUsage) String() string {
 func (*ResponsesUsage) ProtoMessage() {}
 
 func (x *ResponsesUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[43]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3393,7 +3567,7 @@ func (x *ResponsesUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesUsage.ProtoReflect.Descriptor instead.
 func (*ResponsesUsage) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{43}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ResponsesUsage) GetInputTokens() uint32 {
@@ -3440,7 +3614,7 @@ type ResponsesInputTokensDetails struct {
 
 func (x *ResponsesInputTokensDetails) Reset() {
 	*x = ResponsesInputTokensDetails{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[44]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3452,7 +3626,7 @@ func (x *ResponsesInputTokensDetails) String() string {
 func (*ResponsesInputTokensDetails) ProtoMessage() {}
 
 func (x *ResponsesInputTokensDetails) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[44]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3465,7 +3639,7 @@ func (x *ResponsesInputTokensDetails) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesInputTokensDetails.ProtoReflect.Descriptor instead.
 func (*ResponsesInputTokensDetails) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{44}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ResponsesInputTokensDetails) GetCachedTokens() uint32 {
@@ -3484,7 +3658,7 @@ type ResponsesOutputTokensDetails struct {
 
 func (x *ResponsesOutputTokensDetails) Reset() {
 	*x = ResponsesOutputTokensDetails{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[45]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3496,7 +3670,7 @@ func (x *ResponsesOutputTokensDetails) String() string {
 func (*ResponsesOutputTokensDetails) ProtoMessage() {}
 
 func (x *ResponsesOutputTokensDetails) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[45]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3509,7 +3683,7 @@ func (x *ResponsesOutputTokensDetails) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesOutputTokensDetails.ProtoReflect.Descriptor instead.
 func (*ResponsesOutputTokensDetails) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{45}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ResponsesOutputTokensDetails) GetReasoningTokens() uint32 {
@@ -3529,7 +3703,7 @@ type ResponsesIncompleteDetails struct {
 
 func (x *ResponsesIncompleteDetails) Reset() {
 	*x = ResponsesIncompleteDetails{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[46]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3541,7 +3715,7 @@ func (x *ResponsesIncompleteDetails) String() string {
 func (*ResponsesIncompleteDetails) ProtoMessage() {}
 
 func (x *ResponsesIncompleteDetails) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[46]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3554,7 +3728,7 @@ func (x *ResponsesIncompleteDetails) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesIncompleteDetails.ProtoReflect.Descriptor instead.
 func (*ResponsesIncompleteDetails) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{46}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ResponsesIncompleteDetails) GetReason() string {
@@ -3592,7 +3766,7 @@ type ResponsesResponse struct {
 
 func (x *ResponsesResponse) Reset() {
 	*x = ResponsesResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[47]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3604,7 +3778,7 @@ func (x *ResponsesResponse) String() string {
 func (*ResponsesResponse) ProtoMessage() {}
 
 func (x *ResponsesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[47]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3617,7 +3791,7 @@ func (x *ResponsesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesResponse.ProtoReflect.Descriptor instead.
 func (*ResponsesResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{47}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ResponsesResponse) GetId() string {
@@ -3758,7 +3932,7 @@ type ResponsesStreamEvent struct {
 
 func (x *ResponsesStreamEvent) Reset() {
 	*x = ResponsesStreamEvent{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[48]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3770,7 +3944,7 @@ func (x *ResponsesStreamEvent) String() string {
 func (*ResponsesStreamEvent) ProtoMessage() {}
 
 func (x *ResponsesStreamEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[48]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3783,7 +3957,7 @@ func (x *ResponsesStreamEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponsesStreamEvent.ProtoReflect.Descriptor instead.
 func (*ResponsesStreamEvent) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{48}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ResponsesStreamEvent) GetType() string {
@@ -3883,7 +4057,7 @@ type EmbeddingRequest struct {
 
 func (x *EmbeddingRequest) Reset() {
 	*x = EmbeddingRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[49]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3895,7 +4069,7 @@ func (x *EmbeddingRequest) String() string {
 func (*EmbeddingRequest) ProtoMessage() {}
 
 func (x *EmbeddingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[49]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3908,7 +4082,7 @@ func (x *EmbeddingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingRequest.ProtoReflect.Descriptor instead.
 func (*EmbeddingRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{49}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *EmbeddingRequest) GetModel() string {
@@ -3957,7 +4131,7 @@ type Embedding struct {
 
 func (x *Embedding) Reset() {
 	*x = Embedding{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[50]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3969,7 +4143,7 @@ func (x *Embedding) String() string {
 func (*Embedding) ProtoMessage() {}
 
 func (x *Embedding) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[50]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3982,7 +4156,7 @@ func (x *Embedding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Embedding.ProtoReflect.Descriptor instead.
 func (*Embedding) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{50}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *Embedding) GetObject() string {
@@ -4018,7 +4192,7 @@ type EmbeddingResponse struct {
 
 func (x *EmbeddingResponse) Reset() {
 	*x = EmbeddingResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[51]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4030,7 +4204,7 @@ func (x *EmbeddingResponse) String() string {
 func (*EmbeddingResponse) ProtoMessage() {}
 
 func (x *EmbeddingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[51]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4043,7 +4217,7 @@ func (x *EmbeddingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingResponse.ProtoReflect.Descriptor instead.
 func (*EmbeddingResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{51}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *EmbeddingResponse) GetObject() string {
@@ -4092,7 +4266,7 @@ type RerankRequest struct {
 
 func (x *RerankRequest) Reset() {
 	*x = RerankRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[52]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4104,7 +4278,7 @@ func (x *RerankRequest) String() string {
 func (*RerankRequest) ProtoMessage() {}
 
 func (x *RerankRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[52]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4117,7 +4291,7 @@ func (x *RerankRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RerankRequest.ProtoReflect.Descriptor instead.
 func (*RerankRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{52}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *RerankRequest) GetModel() string {
@@ -4166,7 +4340,7 @@ type RerankResult struct {
 
 func (x *RerankResult) Reset() {
 	*x = RerankResult{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[53]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4178,7 +4352,7 @@ func (x *RerankResult) String() string {
 func (*RerankResult) ProtoMessage() {}
 
 func (x *RerankResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[53]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4191,7 +4365,7 @@ func (x *RerankResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RerankResult.ProtoReflect.Descriptor instead.
 func (*RerankResult) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{53}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *RerankResult) GetIndex() uint32 {
@@ -4226,7 +4400,7 @@ type RerankResponse struct {
 
 func (x *RerankResponse) Reset() {
 	*x = RerankResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[54]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4238,7 +4412,7 @@ func (x *RerankResponse) String() string {
 func (*RerankResponse) ProtoMessage() {}
 
 func (x *RerankResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[54]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4251,7 +4425,7 @@ func (x *RerankResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RerankResponse.ProtoReflect.Descriptor instead.
 func (*RerankResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{54}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RerankResponse) GetModel() string {
@@ -4287,7 +4461,7 @@ type DecisionsRequest struct {
 
 func (x *DecisionsRequest) Reset() {
 	*x = DecisionsRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[55]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4299,7 +4473,7 @@ func (x *DecisionsRequest) String() string {
 func (*DecisionsRequest) ProtoMessage() {}
 
 func (x *DecisionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[55]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4312,7 +4486,7 @@ func (x *DecisionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionsRequest.ProtoReflect.Descriptor instead.
 func (*DecisionsRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{55}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *DecisionsRequest) GetModel() string {
@@ -4355,7 +4529,7 @@ type DecisionsUsage struct {
 
 func (x *DecisionsUsage) Reset() {
 	*x = DecisionsUsage{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[56]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4367,7 +4541,7 @@ func (x *DecisionsUsage) String() string {
 func (*DecisionsUsage) ProtoMessage() {}
 
 func (x *DecisionsUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[56]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4380,7 +4554,7 @@ func (x *DecisionsUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionsUsage.ProtoReflect.Descriptor instead.
 func (*DecisionsUsage) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{56}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *DecisionsUsage) GetInputTokens() uint64 {
@@ -4425,7 +4599,7 @@ type DecisionsResponse struct {
 
 func (x *DecisionsResponse) Reset() {
 	*x = DecisionsResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[57]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4437,7 +4611,7 @@ func (x *DecisionsResponse) String() string {
 func (*DecisionsResponse) ProtoMessage() {}
 
 func (x *DecisionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[57]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4450,7 +4624,7 @@ func (x *DecisionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionsResponse.ProtoReflect.Descriptor instead.
 func (*DecisionsResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{57}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *DecisionsResponse) GetModel() string {
@@ -4509,7 +4683,7 @@ type SpeechRequest struct {
 
 func (x *SpeechRequest) Reset() {
 	*x = SpeechRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[58]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4521,7 +4695,7 @@ func (x *SpeechRequest) String() string {
 func (*SpeechRequest) ProtoMessage() {}
 
 func (x *SpeechRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[58]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4534,7 +4708,7 @@ func (x *SpeechRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpeechRequest.ProtoReflect.Descriptor instead.
 func (*SpeechRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{58}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *SpeechRequest) GetModel() string {
@@ -4590,7 +4764,7 @@ type Voice struct {
 
 func (x *Voice) Reset() {
 	*x = Voice{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[59]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4602,7 +4776,7 @@ func (x *Voice) String() string {
 func (*Voice) ProtoMessage() {}
 
 func (x *Voice) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[59]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4615,7 +4789,7 @@ func (x *Voice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Voice.ProtoReflect.Descriptor instead.
 func (*Voice) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{59}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *Voice) GetId() string {
@@ -4649,7 +4823,7 @@ type VoicesResponse struct {
 
 func (x *VoicesResponse) Reset() {
 	*x = VoicesResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[60]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4661,7 +4835,7 @@ func (x *VoicesResponse) String() string {
 func (*VoicesResponse) ProtoMessage() {}
 
 func (x *VoicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[60]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4674,7 +4848,7 @@ func (x *VoicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VoicesResponse.ProtoReflect.Descriptor instead.
 func (*VoicesResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{60}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *VoicesResponse) GetModel() string {
@@ -4706,7 +4880,7 @@ type TranscriptionRequest struct {
 
 func (x *TranscriptionRequest) Reset() {
 	*x = TranscriptionRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[61]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4718,7 +4892,7 @@ func (x *TranscriptionRequest) String() string {
 func (*TranscriptionRequest) ProtoMessage() {}
 
 func (x *TranscriptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[61]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4731,7 +4905,7 @@ func (x *TranscriptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptionRequest.ProtoReflect.Descriptor instead.
 func (*TranscriptionRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{61}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *TranscriptionRequest) GetModel() string {
@@ -4783,7 +4957,7 @@ type TranscriptionResponse struct {
 
 func (x *TranscriptionResponse) Reset() {
 	*x = TranscriptionResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[62]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4795,7 +4969,7 @@ func (x *TranscriptionResponse) String() string {
 func (*TranscriptionResponse) ProtoMessage() {}
 
 func (x *TranscriptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[62]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4808,7 +4982,7 @@ func (x *TranscriptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptionResponse.ProtoReflect.Descriptor instead.
 func (*TranscriptionResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{62}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *TranscriptionResponse) GetText() string {
@@ -4859,7 +5033,7 @@ type Architecture struct {
 
 func (x *Architecture) Reset() {
 	*x = Architecture{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[63]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4871,7 +5045,7 @@ func (x *Architecture) String() string {
 func (*Architecture) ProtoMessage() {}
 
 func (x *Architecture) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[63]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4884,7 +5058,7 @@ func (x *Architecture) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Architecture.ProtoReflect.Descriptor instead.
 func (*Architecture) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{63}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *Architecture) GetInputModalities() []string {
@@ -4932,7 +5106,7 @@ type Pricing struct {
 
 func (x *Pricing) Reset() {
 	*x = Pricing{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[64]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4944,7 +5118,7 @@ func (x *Pricing) String() string {
 func (*Pricing) ProtoMessage() {}
 
 func (x *Pricing) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[64]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4957,7 +5131,7 @@ func (x *Pricing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pricing.ProtoReflect.Descriptor instead.
 func (*Pricing) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{64}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *Pricing) GetPrompt() string {
@@ -4986,7 +5160,7 @@ type TopProvider struct {
 
 func (x *TopProvider) Reset() {
 	*x = TopProvider{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[65]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4998,7 +5172,7 @@ func (x *TopProvider) String() string {
 func (*TopProvider) ProtoMessage() {}
 
 func (x *TopProvider) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[65]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5011,7 +5185,7 @@ func (x *TopProvider) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopProvider.ProtoReflect.Descriptor instead.
 func (*TopProvider) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{65}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *TopProvider) GetContextLength() uint32 {
@@ -5055,7 +5229,7 @@ type ModelEndpoint struct {
 
 func (x *ModelEndpoint) Reset() {
 	*x = ModelEndpoint{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[66]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5067,7 +5241,7 @@ func (x *ModelEndpoint) String() string {
 func (*ModelEndpoint) ProtoMessage() {}
 
 func (x *ModelEndpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[66]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5080,7 +5254,7 @@ func (x *ModelEndpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelEndpoint.ProtoReflect.Descriptor instead.
 func (*ModelEndpoint) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{66}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ModelEndpoint) GetProvider() string {
@@ -5126,13 +5300,14 @@ type ModelEntry struct {
 	UnsupportedParameters []string               `protobuf:"bytes,11,rep,name=unsupported_parameters,json=unsupportedParameters,proto3" json:"unsupported_parameters,omitempty"`
 	DefaultParameters     *string                `protobuf:"bytes,12,opt,name=default_parameters,json=defaultParameters,proto3,oneof" json:"default_parameters,omitempty"` // raw JSON object
 	Endpoints             []*ModelEndpoint       `protobuf:"bytes,13,rep,name=endpoints,proto3" json:"endpoints,omitempty"`                                                // admin-only
+	SupportsCompaction    *bool                  `protobuf:"varint,14,opt,name=supports_compaction,json=supportsCompaction,proto3,oneof" json:"supports_compaction,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
 
 func (x *ModelEntry) Reset() {
 	*x = ModelEntry{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[67]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5144,7 +5319,7 @@ func (x *ModelEntry) String() string {
 func (*ModelEntry) ProtoMessage() {}
 
 func (x *ModelEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[67]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5157,7 +5332,7 @@ func (x *ModelEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelEntry.ProtoReflect.Descriptor instead.
 func (*ModelEntry) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{67}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *ModelEntry) GetId() string {
@@ -5251,6 +5426,13 @@ func (x *ModelEntry) GetEndpoints() []*ModelEndpoint {
 	return nil
 }
 
+func (x *ModelEntry) GetSupportsCompaction() bool {
+	if x != nil && x.SupportsCompaction != nil {
+		return *x.SupportsCompaction
+	}
+	return false
+}
+
 type ListModelsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Data          []*ModelEntry          `protobuf:"bytes,1,rep,name=data,proto3" json:"data,omitempty"`
@@ -5260,7 +5442,7 @@ type ListModelsResponse struct {
 
 func (x *ListModelsResponse) Reset() {
 	*x = ListModelsResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[68]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5272,7 +5454,7 @@ func (x *ListModelsResponse) String() string {
 func (*ListModelsResponse) ProtoMessage() {}
 
 func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[68]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5285,7 +5467,7 @@ func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListModelsResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{68}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *ListModelsResponse) GetData() []*ModelEntry {
@@ -5305,7 +5487,7 @@ type BatchRequestItem struct {
 
 func (x *BatchRequestItem) Reset() {
 	*x = BatchRequestItem{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[69]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5317,7 +5499,7 @@ func (x *BatchRequestItem) String() string {
 func (*BatchRequestItem) ProtoMessage() {}
 
 func (x *BatchRequestItem) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[69]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5330,7 +5512,7 @@ func (x *BatchRequestItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchRequestItem.ProtoReflect.Descriptor instead.
 func (*BatchRequestItem) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{69}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *BatchRequestItem) GetCustomId() string {
@@ -5356,7 +5538,7 @@ type BatchCreateRequest struct {
 
 func (x *BatchCreateRequest) Reset() {
 	*x = BatchCreateRequest{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[70]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5368,7 +5550,7 @@ func (x *BatchCreateRequest) String() string {
 func (*BatchCreateRequest) ProtoMessage() {}
 
 func (x *BatchCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[70]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5381,7 +5563,7 @@ func (x *BatchCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchCreateRequest.ProtoReflect.Descriptor instead.
 func (*BatchCreateRequest) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{70}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *BatchCreateRequest) GetRequests() []*BatchRequestItem {
@@ -5405,7 +5587,7 @@ type BatchCounts struct {
 
 func (x *BatchCounts) Reset() {
 	*x = BatchCounts{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[71]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5417,7 +5599,7 @@ func (x *BatchCounts) String() string {
 func (*BatchCounts) ProtoMessage() {}
 
 func (x *BatchCounts) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[71]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5430,7 +5612,7 @@ func (x *BatchCounts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchCounts.ProtoReflect.Descriptor instead.
 func (*BatchCounts) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{71}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *BatchCounts) GetTotal() uint64 {
@@ -5490,7 +5672,7 @@ type BatchHandle struct {
 
 func (x *BatchHandle) Reset() {
 	*x = BatchHandle{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[72]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5502,7 +5684,7 @@ func (x *BatchHandle) String() string {
 func (*BatchHandle) ProtoMessage() {}
 
 func (x *BatchHandle) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[72]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5515,7 +5697,7 @@ func (x *BatchHandle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchHandle.ProtoReflect.Descriptor instead.
 func (*BatchHandle) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{72}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *BatchHandle) GetId() string {
@@ -5579,7 +5761,7 @@ type BatchResultLine struct {
 
 func (x *BatchResultLine) Reset() {
 	*x = BatchResultLine{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[73]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5591,7 +5773,7 @@ func (x *BatchResultLine) String() string {
 func (*BatchResultLine) ProtoMessage() {}
 
 func (x *BatchResultLine) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[73]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5604,7 +5786,7 @@ func (x *BatchResultLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchResultLine.ProtoReflect.Descriptor instead.
 func (*BatchResultLine) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{73}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *BatchResultLine) GetCustomId() string {
@@ -5638,7 +5820,7 @@ type BatchResponse struct {
 
 func (x *BatchResponse) Reset() {
 	*x = BatchResponse{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[74]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5650,7 +5832,7 @@ func (x *BatchResponse) String() string {
 func (*BatchResponse) ProtoMessage() {}
 
 func (x *BatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[74]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5663,7 +5845,7 @@ func (x *BatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchResponse.ProtoReflect.Descriptor instead.
 func (*BatchResponse) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{74}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *BatchResponse) GetStatusCode() uint32 {
@@ -5690,7 +5872,7 @@ type BatchError struct {
 
 func (x *BatchError) Reset() {
 	*x = BatchError{}
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[75]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5702,7 +5884,7 @@ func (x *BatchError) String() string {
 func (*BatchError) ProtoMessage() {}
 
 func (x *BatchError) ProtoReflect() protoreflect.Message {
-	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[75]
+	mi := &file_llmleaf_v1_llmleaf_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5715,7 +5897,7 @@ func (x *BatchError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchError.ProtoReflect.Descriptor instead.
 func (*BatchError) Descriptor() ([]byte, []int) {
-	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{75}
+	return file_llmleaf_v1_llmleaf_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *BatchError) GetCode() string {
@@ -5814,7 +5996,18 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"_signatureB\x05\n" +
 	"\x03_idB\t\n" +
 	"\a_formatB\b\n" +
-	"\x06_index\"\x90\x03\n" +
+	"\x06_index\"\xd1\x01\n" +
+	"\x0fCompactionBlock\x12\x13\n" +
+	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x1d\n" +
+	"\acontent\x18\x02 \x01(\tH\x01R\acontent\x88\x01\x01\x120\n" +
+	"\x11encrypted_content\x18\x03 \x01(\tH\x02R\x10encryptedContent\x88\x01\x01\x12!\n" +
+	"\tsignature\x18\x04 \x01(\tH\x03R\tsignature\x88\x01\x01B\x05\n" +
+	"\x03_idB\n" +
+	"\n" +
+	"\b_contentB\x14\n" +
+	"\x12_encrypted_contentB\f\n" +
+	"\n" +
+	"_signature\"\xcd\x03\n" +
 	"\vChatMessage\x12$\n" +
 	"\x04role\x18\x01 \x01(\x0e2\x10.llmleaf.v1.RoleR\x04role\x12\x14\n" +
 	"\x04text\x18\x02 \x01(\tH\x00R\x04text\x120\n" +
@@ -5825,7 +6018,10 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\ftool_call_id\x18\x06 \x01(\tH\x02R\n" +
 	"toolCallId\x88\x01\x01\x12!\n" +
 	"\treasoning\x18\a \x01(\tH\x03R\treasoning\x88\x01\x01\x12H\n" +
-	"\x11reasoning_details\x18\b \x03(\v2\x1b.llmleaf.v1.ReasoningDetailR\x10reasoningDetailsB\t\n" +
+	"\x11reasoning_details\x18\b \x03(\v2\x1b.llmleaf.v1.ReasoningDetailR\x10reasoningDetails\x12;\n" +
+	"\n" +
+	"compaction\x18\t \x03(\v2\x1b.llmleaf.v1.CompactionBlockR\n" +
+	"compactionB\t\n" +
 	"\acontentB\a\n" +
 	"\x05_nameB\x0f\n" +
 	"\r_tool_call_idB\f\n" +
@@ -5903,14 +6099,17 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\acreated\x18\x03 \x01(\x03R\acreated\x12\x14\n" +
 	"\x05model\x18\x04 \x01(\tR\x05model\x12,\n" +
 	"\achoices\x18\x05 \x03(\v2\x12.llmleaf.v1.ChoiceR\achoices\x12'\n" +
-	"\x05usage\x18\x06 \x01(\v2\x11.llmleaf.v1.UsageR\x05usage\"\x9b\x02\n" +
+	"\x05usage\x18\x06 \x01(\v2\x11.llmleaf.v1.UsageR\x05usage\"\xd8\x02\n" +
 	"\x05Delta\x12)\n" +
 	"\x04role\x18\x01 \x01(\x0e2\x10.llmleaf.v1.RoleH\x00R\x04role\x88\x01\x01\x12\x1d\n" +
 	"\acontent\x18\x02 \x01(\tH\x01R\acontent\x88\x01\x01\x128\n" +
 	"\n" +
 	"tool_calls\x18\x03 \x03(\v2\x19.llmleaf.v1.ToolCallDeltaR\ttoolCalls\x12!\n" +
 	"\treasoning\x18\x04 \x01(\tH\x02R\treasoning\x88\x01\x01\x12H\n" +
-	"\x11reasoning_details\x18\x05 \x03(\v2\x1b.llmleaf.v1.ReasoningDetailR\x10reasoningDetailsB\a\n" +
+	"\x11reasoning_details\x18\x05 \x03(\v2\x1b.llmleaf.v1.ReasoningDetailR\x10reasoningDetails\x12;\n" +
+	"\n" +
+	"compaction\x18\x06 \x03(\v2\x1b.llmleaf.v1.CompactionBlockR\n" +
+	"compactionB\a\n" +
 	"\x05_roleB\n" +
 	"\n" +
 	"\b_contentB\f\n" +
@@ -5928,12 +6127,15 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x05model\x18\x04 \x01(\tR\x05model\x121\n" +
 	"\achoices\x18\x05 \x03(\v2\x17.llmleaf.v1.ChunkChoiceR\achoices\x12,\n" +
 	"\x05usage\x18\x06 \x01(\v2\x11.llmleaf.v1.UsageH\x00R\x05usage\x88\x01\x01B\b\n" +
-	"\x06_usage\"\xc3\x02\n" +
+	"\x06_usage\"\x89\x03\n" +
 	"\fResponseItem\x12;\n" +
 	"\amessage\x18\x01 \x01(\v2\x1f.llmleaf.v1.ResponseMessageItemH\x00R\amessage\x12K\n" +
 	"\rfunction_call\x18\x02 \x01(\v2$.llmleaf.v1.ResponseFunctionCallItemH\x00R\ffunctionCall\x12^\n" +
 	"\x14function_call_output\x18\x03 \x01(\v2*.llmleaf.v1.ResponseFunctionCallOutputItemH\x00R\x12functionCallOutput\x12A\n" +
-	"\treasoning\x18\x04 \x01(\v2!.llmleaf.v1.ResponseReasoningItemH\x00R\treasoningB\x06\n" +
+	"\treasoning\x18\x04 \x01(\v2!.llmleaf.v1.ResponseReasoningItemH\x00R\treasoning\x12D\n" +
+	"\n" +
+	"compaction\x18\x05 \x01(\v2\".llmleaf.v1.ResponseCompactionItemH\x00R\n" +
+	"compactionB\x06\n" +
 	"\x04item\"B\n" +
 	"\x10ResponseItemList\x12.\n" +
 	"\x05items\x18\x01 \x03(\v2\x18.llmleaf.v1.ResponseItemR\x05items\"\xc8\x01\n" +
@@ -5983,7 +6185,18 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x03_idB\x14\n" +
 	"\x12_encrypted_content\"+\n" +
 	"\x15ResponseReasoningText\x12\x12\n" +
-	"\x04text\x18\x01 \x01(\tR\x04text\"\xcd\x01\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\"\xd8\x01\n" +
+	"\x16ResponseCompactionItem\x12\x13\n" +
+	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x1d\n" +
+	"\acontent\x18\x02 \x01(\tH\x01R\acontent\x88\x01\x01\x120\n" +
+	"\x11encrypted_content\x18\x03 \x01(\tH\x02R\x10encryptedContent\x88\x01\x01\x12!\n" +
+	"\tsignature\x18\x04 \x01(\tH\x03R\tsignature\x88\x01\x01B\x05\n" +
+	"\x03_idB\n" +
+	"\n" +
+	"\b_contentB\x14\n" +
+	"\x12_encrypted_contentB\f\n" +
+	"\n" +
+	"_signature\"\xcd\x01\n" +
 	"\x10ResponsesToolDef\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +
@@ -6249,7 +6462,7 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x12\n" +
 	"\x04down\x18\x03 \x01(\bR\x04down\x12\x16\n" +
-	"\x06source\x18\x04 \x01(\tR\x06source\"\xfa\x04\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\"\xc8\x05\n" +
 	"\n" +
 	"ModelEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12%\n" +
@@ -6265,11 +6478,13 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	" \x03(\tR\x13supportedParameters\x125\n" +
 	"\x16unsupported_parameters\x18\v \x03(\tR\x15unsupportedParameters\x122\n" +
 	"\x12default_parameters\x18\f \x01(\tH\x02R\x11defaultParameters\x88\x01\x01\x127\n" +
-	"\tendpoints\x18\r \x03(\v2\x19.llmleaf.v1.ModelEndpointR\tendpointsB\x11\n" +
+	"\tendpoints\x18\r \x03(\v2\x19.llmleaf.v1.ModelEndpointR\tendpoints\x124\n" +
+	"\x13supports_compaction\x18\x0e \x01(\bH\x03R\x12supportsCompaction\x88\x01\x01B\x11\n" +
 	"\x0f_context_lengthB\n" +
 	"\n" +
 	"\b_pricingB\x15\n" +
-	"\x13_default_parameters\"@\n" +
+	"\x13_default_parametersB\x16\n" +
+	"\x14_supports_compaction\"@\n" +
 	"\x12ListModelsResponse\x12*\n" +
 	"\x04data\x18\x01 \x03(\v2\x16.llmleaf.v1.ModelEntryR\x04data\"\\\n" +
 	"\x10BatchRequestItem\x12\x1b\n" +
@@ -6320,7 +6535,7 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x06SYSTEM\x10\x01\x12\b\n" +
 	"\x04USER\x10\x02\x12\r\n" +
 	"\tASSISTANT\x10\x03\x12\b\n" +
-	"\x04TOOL\x10\x04*g\n" +
+	"\x04TOOL\x10\x04*w\n" +
 	"\fFinishReason\x12\x1d\n" +
 	"\x19FINISH_REASON_UNSPECIFIED\x10\x00\x12\b\n" +
 	"\x04STOP\x10\x01\x12\n" +
@@ -6328,7 +6543,9 @@ const file_llmleaf_v1_llmleaf_proto_rawDesc = "" +
 	"\x06LENGTH\x10\x02\x12\x0e\n" +
 	"\n" +
 	"TOOL_CALLS\x10\x03\x12\x12\n" +
-	"\x0eCONTENT_FILTER\x10\x04*\xa1\x01\n" +
+	"\x0eCONTENT_FILTER\x10\x04\x12\x0e\n" +
+	"\n" +
+	"COMPACTION\x10\x05*\xa1\x01\n" +
 	"\vBatchStatus\x12\x1c\n" +
 	"\x18BATCH_STATUS_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -6357,7 +6574,7 @@ func file_llmleaf_v1_llmleaf_proto_rawDescGZIP() []byte {
 }
 
 var file_llmleaf_v1_llmleaf_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_llmleaf_v1_llmleaf_proto_msgTypes = make([]protoimpl.MessageInfo, 81)
+var file_llmleaf_v1_llmleaf_proto_msgTypes = make([]protoimpl.MessageInfo, 83)
 var file_llmleaf_v1_llmleaf_proto_goTypes = []any{
 	(Role)(0),                              // 0: llmleaf.v1.Role
 	(FinishReason)(0),                      // 1: llmleaf.v1.FinishReason
@@ -6376,73 +6593,75 @@ var file_llmleaf_v1_llmleaf_proto_goTypes = []any{
 	(*FunctionCallDelta)(nil),              // 14: llmleaf.v1.FunctionCallDelta
 	(*ToolCallDelta)(nil),                  // 15: llmleaf.v1.ToolCallDelta
 	(*ReasoningDetail)(nil),                // 16: llmleaf.v1.ReasoningDetail
-	(*ChatMessage)(nil),                    // 17: llmleaf.v1.ChatMessage
-	(*FunctionDef)(nil),                    // 18: llmleaf.v1.FunctionDef
-	(*ToolDef)(nil),                        // 19: llmleaf.v1.ToolDef
-	(*ToolChoice)(nil),                     // 20: llmleaf.v1.ToolChoice
-	(*NamedToolChoice)(nil),                // 21: llmleaf.v1.NamedToolChoice
-	(*FunctionName)(nil),                   // 22: llmleaf.v1.FunctionName
-	(*ResponseFormat)(nil),                 // 23: llmleaf.v1.ResponseFormat
-	(*ChatRequest)(nil),                    // 24: llmleaf.v1.ChatRequest
-	(*Choice)(nil),                         // 25: llmleaf.v1.Choice
-	(*ChatResponse)(nil),                   // 26: llmleaf.v1.ChatResponse
-	(*Delta)(nil),                          // 27: llmleaf.v1.Delta
-	(*ChunkChoice)(nil),                    // 28: llmleaf.v1.ChunkChoice
-	(*ChatCompletionChunk)(nil),            // 29: llmleaf.v1.ChatCompletionChunk
-	(*ResponseItem)(nil),                   // 30: llmleaf.v1.ResponseItem
-	(*ResponseItemList)(nil),               // 31: llmleaf.v1.ResponseItemList
-	(*ResponseMessageItem)(nil),            // 32: llmleaf.v1.ResponseMessageItem
-	(*ResponseContentPart)(nil),            // 33: llmleaf.v1.ResponseContentPart
-	(*ResponseContentParts)(nil),           // 34: llmleaf.v1.ResponseContentParts
-	(*ResponseTextPart)(nil),               // 35: llmleaf.v1.ResponseTextPart
-	(*ResponseInputImagePart)(nil),         // 36: llmleaf.v1.ResponseInputImagePart
-	(*ResponseFunctionCallItem)(nil),       // 37: llmleaf.v1.ResponseFunctionCallItem
-	(*ResponseFunctionCallOutputItem)(nil), // 38: llmleaf.v1.ResponseFunctionCallOutputItem
-	(*ResponseReasoningItem)(nil),          // 39: llmleaf.v1.ResponseReasoningItem
-	(*ResponseReasoningText)(nil),          // 40: llmleaf.v1.ResponseReasoningText
-	(*ResponsesToolDef)(nil),               // 41: llmleaf.v1.ResponsesToolDef
-	(*ResponsesToolChoice)(nil),            // 42: llmleaf.v1.ResponsesToolChoice
-	(*ResponsesNamedToolChoice)(nil),       // 43: llmleaf.v1.ResponsesNamedToolChoice
-	(*ResponsesReasoning)(nil),             // 44: llmleaf.v1.ResponsesReasoning
-	(*ResponsesRequest)(nil),               // 45: llmleaf.v1.ResponsesRequest
-	(*ResponsesUsage)(nil),                 // 46: llmleaf.v1.ResponsesUsage
-	(*ResponsesInputTokensDetails)(nil),    // 47: llmleaf.v1.ResponsesInputTokensDetails
-	(*ResponsesOutputTokensDetails)(nil),   // 48: llmleaf.v1.ResponsesOutputTokensDetails
-	(*ResponsesIncompleteDetails)(nil),     // 49: llmleaf.v1.ResponsesIncompleteDetails
-	(*ResponsesResponse)(nil),              // 50: llmleaf.v1.ResponsesResponse
-	(*ResponsesStreamEvent)(nil),           // 51: llmleaf.v1.ResponsesStreamEvent
-	(*EmbeddingRequest)(nil),               // 52: llmleaf.v1.EmbeddingRequest
-	(*Embedding)(nil),                      // 53: llmleaf.v1.Embedding
-	(*EmbeddingResponse)(nil),              // 54: llmleaf.v1.EmbeddingResponse
-	(*RerankRequest)(nil),                  // 55: llmleaf.v1.RerankRequest
-	(*RerankResult)(nil),                   // 56: llmleaf.v1.RerankResult
-	(*RerankResponse)(nil),                 // 57: llmleaf.v1.RerankResponse
-	(*DecisionsRequest)(nil),               // 58: llmleaf.v1.DecisionsRequest
-	(*DecisionsUsage)(nil),                 // 59: llmleaf.v1.DecisionsUsage
-	(*DecisionsResponse)(nil),              // 60: llmleaf.v1.DecisionsResponse
-	(*SpeechRequest)(nil),                  // 61: llmleaf.v1.SpeechRequest
-	(*Voice)(nil),                          // 62: llmleaf.v1.Voice
-	(*VoicesResponse)(nil),                 // 63: llmleaf.v1.VoicesResponse
-	(*TranscriptionRequest)(nil),           // 64: llmleaf.v1.TranscriptionRequest
-	(*TranscriptionResponse)(nil),          // 65: llmleaf.v1.TranscriptionResponse
-	(*Architecture)(nil),                   // 66: llmleaf.v1.Architecture
-	(*Pricing)(nil),                        // 67: llmleaf.v1.Pricing
-	(*TopProvider)(nil),                    // 68: llmleaf.v1.TopProvider
-	(*ModelEndpoint)(nil),                  // 69: llmleaf.v1.ModelEndpoint
-	(*ModelEntry)(nil),                     // 70: llmleaf.v1.ModelEntry
-	(*ListModelsResponse)(nil),             // 71: llmleaf.v1.ListModelsResponse
-	(*BatchRequestItem)(nil),               // 72: llmleaf.v1.BatchRequestItem
-	(*BatchCreateRequest)(nil),             // 73: llmleaf.v1.BatchCreateRequest
-	(*BatchCounts)(nil),                    // 74: llmleaf.v1.BatchCounts
-	(*BatchHandle)(nil),                    // 75: llmleaf.v1.BatchHandle
-	(*BatchResultLine)(nil),                // 76: llmleaf.v1.BatchResultLine
-	(*BatchResponse)(nil),                  // 77: llmleaf.v1.BatchResponse
-	(*BatchError)(nil),                     // 78: llmleaf.v1.BatchError
-	nil,                                    // 79: llmleaf.v1.DecisionsRequest.QuestionsEntry
-	nil,                                    // 80: llmleaf.v1.DecisionsRequest.ExtraEntry
-	nil,                                    // 81: llmleaf.v1.DecisionsUsage.ExtraEntry
-	nil,                                    // 82: llmleaf.v1.DecisionsResponse.AnswersEntry
-	nil,                                    // 83: llmleaf.v1.DecisionsResponse.ExtraEntry
+	(*CompactionBlock)(nil),                // 17: llmleaf.v1.CompactionBlock
+	(*ChatMessage)(nil),                    // 18: llmleaf.v1.ChatMessage
+	(*FunctionDef)(nil),                    // 19: llmleaf.v1.FunctionDef
+	(*ToolDef)(nil),                        // 20: llmleaf.v1.ToolDef
+	(*ToolChoice)(nil),                     // 21: llmleaf.v1.ToolChoice
+	(*NamedToolChoice)(nil),                // 22: llmleaf.v1.NamedToolChoice
+	(*FunctionName)(nil),                   // 23: llmleaf.v1.FunctionName
+	(*ResponseFormat)(nil),                 // 24: llmleaf.v1.ResponseFormat
+	(*ChatRequest)(nil),                    // 25: llmleaf.v1.ChatRequest
+	(*Choice)(nil),                         // 26: llmleaf.v1.Choice
+	(*ChatResponse)(nil),                   // 27: llmleaf.v1.ChatResponse
+	(*Delta)(nil),                          // 28: llmleaf.v1.Delta
+	(*ChunkChoice)(nil),                    // 29: llmleaf.v1.ChunkChoice
+	(*ChatCompletionChunk)(nil),            // 30: llmleaf.v1.ChatCompletionChunk
+	(*ResponseItem)(nil),                   // 31: llmleaf.v1.ResponseItem
+	(*ResponseItemList)(nil),               // 32: llmleaf.v1.ResponseItemList
+	(*ResponseMessageItem)(nil),            // 33: llmleaf.v1.ResponseMessageItem
+	(*ResponseContentPart)(nil),            // 34: llmleaf.v1.ResponseContentPart
+	(*ResponseContentParts)(nil),           // 35: llmleaf.v1.ResponseContentParts
+	(*ResponseTextPart)(nil),               // 36: llmleaf.v1.ResponseTextPart
+	(*ResponseInputImagePart)(nil),         // 37: llmleaf.v1.ResponseInputImagePart
+	(*ResponseFunctionCallItem)(nil),       // 38: llmleaf.v1.ResponseFunctionCallItem
+	(*ResponseFunctionCallOutputItem)(nil), // 39: llmleaf.v1.ResponseFunctionCallOutputItem
+	(*ResponseReasoningItem)(nil),          // 40: llmleaf.v1.ResponseReasoningItem
+	(*ResponseReasoningText)(nil),          // 41: llmleaf.v1.ResponseReasoningText
+	(*ResponseCompactionItem)(nil),         // 42: llmleaf.v1.ResponseCompactionItem
+	(*ResponsesToolDef)(nil),               // 43: llmleaf.v1.ResponsesToolDef
+	(*ResponsesToolChoice)(nil),            // 44: llmleaf.v1.ResponsesToolChoice
+	(*ResponsesNamedToolChoice)(nil),       // 45: llmleaf.v1.ResponsesNamedToolChoice
+	(*ResponsesReasoning)(nil),             // 46: llmleaf.v1.ResponsesReasoning
+	(*ResponsesRequest)(nil),               // 47: llmleaf.v1.ResponsesRequest
+	(*ResponsesUsage)(nil),                 // 48: llmleaf.v1.ResponsesUsage
+	(*ResponsesInputTokensDetails)(nil),    // 49: llmleaf.v1.ResponsesInputTokensDetails
+	(*ResponsesOutputTokensDetails)(nil),   // 50: llmleaf.v1.ResponsesOutputTokensDetails
+	(*ResponsesIncompleteDetails)(nil),     // 51: llmleaf.v1.ResponsesIncompleteDetails
+	(*ResponsesResponse)(nil),              // 52: llmleaf.v1.ResponsesResponse
+	(*ResponsesStreamEvent)(nil),           // 53: llmleaf.v1.ResponsesStreamEvent
+	(*EmbeddingRequest)(nil),               // 54: llmleaf.v1.EmbeddingRequest
+	(*Embedding)(nil),                      // 55: llmleaf.v1.Embedding
+	(*EmbeddingResponse)(nil),              // 56: llmleaf.v1.EmbeddingResponse
+	(*RerankRequest)(nil),                  // 57: llmleaf.v1.RerankRequest
+	(*RerankResult)(nil),                   // 58: llmleaf.v1.RerankResult
+	(*RerankResponse)(nil),                 // 59: llmleaf.v1.RerankResponse
+	(*DecisionsRequest)(nil),               // 60: llmleaf.v1.DecisionsRequest
+	(*DecisionsUsage)(nil),                 // 61: llmleaf.v1.DecisionsUsage
+	(*DecisionsResponse)(nil),              // 62: llmleaf.v1.DecisionsResponse
+	(*SpeechRequest)(nil),                  // 63: llmleaf.v1.SpeechRequest
+	(*Voice)(nil),                          // 64: llmleaf.v1.Voice
+	(*VoicesResponse)(nil),                 // 65: llmleaf.v1.VoicesResponse
+	(*TranscriptionRequest)(nil),           // 66: llmleaf.v1.TranscriptionRequest
+	(*TranscriptionResponse)(nil),          // 67: llmleaf.v1.TranscriptionResponse
+	(*Architecture)(nil),                   // 68: llmleaf.v1.Architecture
+	(*Pricing)(nil),                        // 69: llmleaf.v1.Pricing
+	(*TopProvider)(nil),                    // 70: llmleaf.v1.TopProvider
+	(*ModelEndpoint)(nil),                  // 71: llmleaf.v1.ModelEndpoint
+	(*ModelEntry)(nil),                     // 72: llmleaf.v1.ModelEntry
+	(*ListModelsResponse)(nil),             // 73: llmleaf.v1.ListModelsResponse
+	(*BatchRequestItem)(nil),               // 74: llmleaf.v1.BatchRequestItem
+	(*BatchCreateRequest)(nil),             // 75: llmleaf.v1.BatchCreateRequest
+	(*BatchCounts)(nil),                    // 76: llmleaf.v1.BatchCounts
+	(*BatchHandle)(nil),                    // 77: llmleaf.v1.BatchHandle
+	(*BatchResultLine)(nil),                // 78: llmleaf.v1.BatchResultLine
+	(*BatchResponse)(nil),                  // 79: llmleaf.v1.BatchResponse
+	(*BatchError)(nil),                     // 80: llmleaf.v1.BatchError
+	nil,                                    // 81: llmleaf.v1.DecisionsRequest.QuestionsEntry
+	nil,                                    // 82: llmleaf.v1.DecisionsRequest.ExtraEntry
+	nil,                                    // 83: llmleaf.v1.DecisionsUsage.ExtraEntry
+	nil,                                    // 84: llmleaf.v1.DecisionsResponse.AnswersEntry
+	nil,                                    // 85: llmleaf.v1.DecisionsResponse.ExtraEntry
 }
 var file_llmleaf_v1_llmleaf_proto_depIdxs = []int32{
 	4,  // 0: llmleaf.v1.Usage.prompt_tokens_details:type_name -> llmleaf.v1.PromptTokensDetails
@@ -6457,80 +6676,83 @@ var file_llmleaf_v1_llmleaf_proto_depIdxs = []int32{
 	11, // 9: llmleaf.v1.ChatMessage.parts:type_name -> llmleaf.v1.ContentParts
 	13, // 10: llmleaf.v1.ChatMessage.tool_calls:type_name -> llmleaf.v1.ToolCall
 	16, // 11: llmleaf.v1.ChatMessage.reasoning_details:type_name -> llmleaf.v1.ReasoningDetail
-	18, // 12: llmleaf.v1.ToolDef.function:type_name -> llmleaf.v1.FunctionDef
-	21, // 13: llmleaf.v1.ToolChoice.named:type_name -> llmleaf.v1.NamedToolChoice
-	22, // 14: llmleaf.v1.NamedToolChoice.function:type_name -> llmleaf.v1.FunctionName
-	17, // 15: llmleaf.v1.ChatRequest.messages:type_name -> llmleaf.v1.ChatMessage
-	19, // 16: llmleaf.v1.ChatRequest.tools:type_name -> llmleaf.v1.ToolDef
-	20, // 17: llmleaf.v1.ChatRequest.tool_choice:type_name -> llmleaf.v1.ToolChoice
-	23, // 18: llmleaf.v1.ChatRequest.response_format:type_name -> llmleaf.v1.ResponseFormat
-	17, // 19: llmleaf.v1.Choice.message:type_name -> llmleaf.v1.ChatMessage
-	1,  // 20: llmleaf.v1.Choice.finish_reason:type_name -> llmleaf.v1.FinishReason
-	25, // 21: llmleaf.v1.ChatResponse.choices:type_name -> llmleaf.v1.Choice
-	3,  // 22: llmleaf.v1.ChatResponse.usage:type_name -> llmleaf.v1.Usage
-	0,  // 23: llmleaf.v1.Delta.role:type_name -> llmleaf.v1.Role
-	15, // 24: llmleaf.v1.Delta.tool_calls:type_name -> llmleaf.v1.ToolCallDelta
-	16, // 25: llmleaf.v1.Delta.reasoning_details:type_name -> llmleaf.v1.ReasoningDetail
-	27, // 26: llmleaf.v1.ChunkChoice.delta:type_name -> llmleaf.v1.Delta
-	1,  // 27: llmleaf.v1.ChunkChoice.finish_reason:type_name -> llmleaf.v1.FinishReason
-	28, // 28: llmleaf.v1.ChatCompletionChunk.choices:type_name -> llmleaf.v1.ChunkChoice
-	3,  // 29: llmleaf.v1.ChatCompletionChunk.usage:type_name -> llmleaf.v1.Usage
-	32, // 30: llmleaf.v1.ResponseItem.message:type_name -> llmleaf.v1.ResponseMessageItem
-	37, // 31: llmleaf.v1.ResponseItem.function_call:type_name -> llmleaf.v1.ResponseFunctionCallItem
-	38, // 32: llmleaf.v1.ResponseItem.function_call_output:type_name -> llmleaf.v1.ResponseFunctionCallOutputItem
-	39, // 33: llmleaf.v1.ResponseItem.reasoning:type_name -> llmleaf.v1.ResponseReasoningItem
-	30, // 34: llmleaf.v1.ResponseItemList.items:type_name -> llmleaf.v1.ResponseItem
-	34, // 35: llmleaf.v1.ResponseMessageItem.parts:type_name -> llmleaf.v1.ResponseContentParts
-	35, // 36: llmleaf.v1.ResponseContentPart.input_text:type_name -> llmleaf.v1.ResponseTextPart
-	36, // 37: llmleaf.v1.ResponseContentPart.input_image:type_name -> llmleaf.v1.ResponseInputImagePart
-	35, // 38: llmleaf.v1.ResponseContentPart.output_text:type_name -> llmleaf.v1.ResponseTextPart
-	33, // 39: llmleaf.v1.ResponseContentParts.items:type_name -> llmleaf.v1.ResponseContentPart
-	40, // 40: llmleaf.v1.ResponseReasoningItem.summary:type_name -> llmleaf.v1.ResponseReasoningText
-	40, // 41: llmleaf.v1.ResponseReasoningItem.content:type_name -> llmleaf.v1.ResponseReasoningText
-	43, // 42: llmleaf.v1.ResponsesToolChoice.named:type_name -> llmleaf.v1.ResponsesNamedToolChoice
-	31, // 43: llmleaf.v1.ResponsesRequest.items:type_name -> llmleaf.v1.ResponseItemList
-	41, // 44: llmleaf.v1.ResponsesRequest.tools:type_name -> llmleaf.v1.ResponsesToolDef
-	42, // 45: llmleaf.v1.ResponsesRequest.tool_choice:type_name -> llmleaf.v1.ResponsesToolChoice
-	44, // 46: llmleaf.v1.ResponsesRequest.reasoning:type_name -> llmleaf.v1.ResponsesReasoning
-	47, // 47: llmleaf.v1.ResponsesUsage.input_tokens_details:type_name -> llmleaf.v1.ResponsesInputTokensDetails
-	48, // 48: llmleaf.v1.ResponsesUsage.output_tokens_details:type_name -> llmleaf.v1.ResponsesOutputTokensDetails
-	49, // 49: llmleaf.v1.ResponsesResponse.incomplete_details:type_name -> llmleaf.v1.ResponsesIncompleteDetails
-	6,  // 50: llmleaf.v1.ResponsesResponse.error:type_name -> llmleaf.v1.ErrorBody
-	30, // 51: llmleaf.v1.ResponsesResponse.output:type_name -> llmleaf.v1.ResponseItem
-	46, // 52: llmleaf.v1.ResponsesResponse.usage:type_name -> llmleaf.v1.ResponsesUsage
-	44, // 53: llmleaf.v1.ResponsesResponse.reasoning:type_name -> llmleaf.v1.ResponsesReasoning
-	50, // 54: llmleaf.v1.ResponsesStreamEvent.response:type_name -> llmleaf.v1.ResponsesResponse
-	30, // 55: llmleaf.v1.ResponsesStreamEvent.item:type_name -> llmleaf.v1.ResponseItem
-	33, // 56: llmleaf.v1.ResponsesStreamEvent.part:type_name -> llmleaf.v1.ResponseContentPart
-	53, // 57: llmleaf.v1.EmbeddingResponse.data:type_name -> llmleaf.v1.Embedding
-	3,  // 58: llmleaf.v1.EmbeddingResponse.usage:type_name -> llmleaf.v1.Usage
-	56, // 59: llmleaf.v1.RerankResponse.results:type_name -> llmleaf.v1.RerankResult
-	3,  // 60: llmleaf.v1.RerankResponse.usage:type_name -> llmleaf.v1.Usage
-	79, // 61: llmleaf.v1.DecisionsRequest.questions:type_name -> llmleaf.v1.DecisionsRequest.QuestionsEntry
-	80, // 62: llmleaf.v1.DecisionsRequest.extra:type_name -> llmleaf.v1.DecisionsRequest.ExtraEntry
-	81, // 63: llmleaf.v1.DecisionsUsage.extra:type_name -> llmleaf.v1.DecisionsUsage.ExtraEntry
-	82, // 64: llmleaf.v1.DecisionsResponse.answers:type_name -> llmleaf.v1.DecisionsResponse.AnswersEntry
-	59, // 65: llmleaf.v1.DecisionsResponse.usage:type_name -> llmleaf.v1.DecisionsUsage
-	83, // 66: llmleaf.v1.DecisionsResponse.extra:type_name -> llmleaf.v1.DecisionsResponse.ExtraEntry
-	62, // 67: llmleaf.v1.VoicesResponse.voices:type_name -> llmleaf.v1.Voice
-	3,  // 68: llmleaf.v1.TranscriptionResponse.usage:type_name -> llmleaf.v1.Usage
-	66, // 69: llmleaf.v1.ModelEntry.architecture:type_name -> llmleaf.v1.Architecture
-	67, // 70: llmleaf.v1.ModelEntry.pricing:type_name -> llmleaf.v1.Pricing
-	68, // 71: llmleaf.v1.ModelEntry.top_provider:type_name -> llmleaf.v1.TopProvider
-	69, // 72: llmleaf.v1.ModelEntry.endpoints:type_name -> llmleaf.v1.ModelEndpoint
-	70, // 73: llmleaf.v1.ListModelsResponse.data:type_name -> llmleaf.v1.ModelEntry
-	24, // 74: llmleaf.v1.BatchRequestItem.body:type_name -> llmleaf.v1.ChatRequest
-	72, // 75: llmleaf.v1.BatchCreateRequest.requests:type_name -> llmleaf.v1.BatchRequestItem
-	2,  // 76: llmleaf.v1.BatchHandle.status:type_name -> llmleaf.v1.BatchStatus
-	74, // 77: llmleaf.v1.BatchHandle.counts:type_name -> llmleaf.v1.BatchCounts
-	77, // 78: llmleaf.v1.BatchResultLine.response:type_name -> llmleaf.v1.BatchResponse
-	78, // 79: llmleaf.v1.BatchResultLine.error:type_name -> llmleaf.v1.BatchError
-	26, // 80: llmleaf.v1.BatchResponse.body:type_name -> llmleaf.v1.ChatResponse
-	81, // [81:81] is the sub-list for method output_type
-	81, // [81:81] is the sub-list for method input_type
-	81, // [81:81] is the sub-list for extension type_name
-	81, // [81:81] is the sub-list for extension extendee
-	0,  // [0:81] is the sub-list for field type_name
+	17, // 12: llmleaf.v1.ChatMessage.compaction:type_name -> llmleaf.v1.CompactionBlock
+	19, // 13: llmleaf.v1.ToolDef.function:type_name -> llmleaf.v1.FunctionDef
+	22, // 14: llmleaf.v1.ToolChoice.named:type_name -> llmleaf.v1.NamedToolChoice
+	23, // 15: llmleaf.v1.NamedToolChoice.function:type_name -> llmleaf.v1.FunctionName
+	18, // 16: llmleaf.v1.ChatRequest.messages:type_name -> llmleaf.v1.ChatMessage
+	20, // 17: llmleaf.v1.ChatRequest.tools:type_name -> llmleaf.v1.ToolDef
+	21, // 18: llmleaf.v1.ChatRequest.tool_choice:type_name -> llmleaf.v1.ToolChoice
+	24, // 19: llmleaf.v1.ChatRequest.response_format:type_name -> llmleaf.v1.ResponseFormat
+	18, // 20: llmleaf.v1.Choice.message:type_name -> llmleaf.v1.ChatMessage
+	1,  // 21: llmleaf.v1.Choice.finish_reason:type_name -> llmleaf.v1.FinishReason
+	26, // 22: llmleaf.v1.ChatResponse.choices:type_name -> llmleaf.v1.Choice
+	3,  // 23: llmleaf.v1.ChatResponse.usage:type_name -> llmleaf.v1.Usage
+	0,  // 24: llmleaf.v1.Delta.role:type_name -> llmleaf.v1.Role
+	15, // 25: llmleaf.v1.Delta.tool_calls:type_name -> llmleaf.v1.ToolCallDelta
+	16, // 26: llmleaf.v1.Delta.reasoning_details:type_name -> llmleaf.v1.ReasoningDetail
+	17, // 27: llmleaf.v1.Delta.compaction:type_name -> llmleaf.v1.CompactionBlock
+	28, // 28: llmleaf.v1.ChunkChoice.delta:type_name -> llmleaf.v1.Delta
+	1,  // 29: llmleaf.v1.ChunkChoice.finish_reason:type_name -> llmleaf.v1.FinishReason
+	29, // 30: llmleaf.v1.ChatCompletionChunk.choices:type_name -> llmleaf.v1.ChunkChoice
+	3,  // 31: llmleaf.v1.ChatCompletionChunk.usage:type_name -> llmleaf.v1.Usage
+	33, // 32: llmleaf.v1.ResponseItem.message:type_name -> llmleaf.v1.ResponseMessageItem
+	38, // 33: llmleaf.v1.ResponseItem.function_call:type_name -> llmleaf.v1.ResponseFunctionCallItem
+	39, // 34: llmleaf.v1.ResponseItem.function_call_output:type_name -> llmleaf.v1.ResponseFunctionCallOutputItem
+	40, // 35: llmleaf.v1.ResponseItem.reasoning:type_name -> llmleaf.v1.ResponseReasoningItem
+	42, // 36: llmleaf.v1.ResponseItem.compaction:type_name -> llmleaf.v1.ResponseCompactionItem
+	31, // 37: llmleaf.v1.ResponseItemList.items:type_name -> llmleaf.v1.ResponseItem
+	35, // 38: llmleaf.v1.ResponseMessageItem.parts:type_name -> llmleaf.v1.ResponseContentParts
+	36, // 39: llmleaf.v1.ResponseContentPart.input_text:type_name -> llmleaf.v1.ResponseTextPart
+	37, // 40: llmleaf.v1.ResponseContentPart.input_image:type_name -> llmleaf.v1.ResponseInputImagePart
+	36, // 41: llmleaf.v1.ResponseContentPart.output_text:type_name -> llmleaf.v1.ResponseTextPart
+	34, // 42: llmleaf.v1.ResponseContentParts.items:type_name -> llmleaf.v1.ResponseContentPart
+	41, // 43: llmleaf.v1.ResponseReasoningItem.summary:type_name -> llmleaf.v1.ResponseReasoningText
+	41, // 44: llmleaf.v1.ResponseReasoningItem.content:type_name -> llmleaf.v1.ResponseReasoningText
+	45, // 45: llmleaf.v1.ResponsesToolChoice.named:type_name -> llmleaf.v1.ResponsesNamedToolChoice
+	32, // 46: llmleaf.v1.ResponsesRequest.items:type_name -> llmleaf.v1.ResponseItemList
+	43, // 47: llmleaf.v1.ResponsesRequest.tools:type_name -> llmleaf.v1.ResponsesToolDef
+	44, // 48: llmleaf.v1.ResponsesRequest.tool_choice:type_name -> llmleaf.v1.ResponsesToolChoice
+	46, // 49: llmleaf.v1.ResponsesRequest.reasoning:type_name -> llmleaf.v1.ResponsesReasoning
+	49, // 50: llmleaf.v1.ResponsesUsage.input_tokens_details:type_name -> llmleaf.v1.ResponsesInputTokensDetails
+	50, // 51: llmleaf.v1.ResponsesUsage.output_tokens_details:type_name -> llmleaf.v1.ResponsesOutputTokensDetails
+	51, // 52: llmleaf.v1.ResponsesResponse.incomplete_details:type_name -> llmleaf.v1.ResponsesIncompleteDetails
+	6,  // 53: llmleaf.v1.ResponsesResponse.error:type_name -> llmleaf.v1.ErrorBody
+	31, // 54: llmleaf.v1.ResponsesResponse.output:type_name -> llmleaf.v1.ResponseItem
+	48, // 55: llmleaf.v1.ResponsesResponse.usage:type_name -> llmleaf.v1.ResponsesUsage
+	46, // 56: llmleaf.v1.ResponsesResponse.reasoning:type_name -> llmleaf.v1.ResponsesReasoning
+	52, // 57: llmleaf.v1.ResponsesStreamEvent.response:type_name -> llmleaf.v1.ResponsesResponse
+	31, // 58: llmleaf.v1.ResponsesStreamEvent.item:type_name -> llmleaf.v1.ResponseItem
+	34, // 59: llmleaf.v1.ResponsesStreamEvent.part:type_name -> llmleaf.v1.ResponseContentPart
+	55, // 60: llmleaf.v1.EmbeddingResponse.data:type_name -> llmleaf.v1.Embedding
+	3,  // 61: llmleaf.v1.EmbeddingResponse.usage:type_name -> llmleaf.v1.Usage
+	58, // 62: llmleaf.v1.RerankResponse.results:type_name -> llmleaf.v1.RerankResult
+	3,  // 63: llmleaf.v1.RerankResponse.usage:type_name -> llmleaf.v1.Usage
+	81, // 64: llmleaf.v1.DecisionsRequest.questions:type_name -> llmleaf.v1.DecisionsRequest.QuestionsEntry
+	82, // 65: llmleaf.v1.DecisionsRequest.extra:type_name -> llmleaf.v1.DecisionsRequest.ExtraEntry
+	83, // 66: llmleaf.v1.DecisionsUsage.extra:type_name -> llmleaf.v1.DecisionsUsage.ExtraEntry
+	84, // 67: llmleaf.v1.DecisionsResponse.answers:type_name -> llmleaf.v1.DecisionsResponse.AnswersEntry
+	61, // 68: llmleaf.v1.DecisionsResponse.usage:type_name -> llmleaf.v1.DecisionsUsage
+	85, // 69: llmleaf.v1.DecisionsResponse.extra:type_name -> llmleaf.v1.DecisionsResponse.ExtraEntry
+	64, // 70: llmleaf.v1.VoicesResponse.voices:type_name -> llmleaf.v1.Voice
+	3,  // 71: llmleaf.v1.TranscriptionResponse.usage:type_name -> llmleaf.v1.Usage
+	68, // 72: llmleaf.v1.ModelEntry.architecture:type_name -> llmleaf.v1.Architecture
+	69, // 73: llmleaf.v1.ModelEntry.pricing:type_name -> llmleaf.v1.Pricing
+	70, // 74: llmleaf.v1.ModelEntry.top_provider:type_name -> llmleaf.v1.TopProvider
+	71, // 75: llmleaf.v1.ModelEntry.endpoints:type_name -> llmleaf.v1.ModelEndpoint
+	72, // 76: llmleaf.v1.ListModelsResponse.data:type_name -> llmleaf.v1.ModelEntry
+	25, // 77: llmleaf.v1.BatchRequestItem.body:type_name -> llmleaf.v1.ChatRequest
+	74, // 78: llmleaf.v1.BatchCreateRequest.requests:type_name -> llmleaf.v1.BatchRequestItem
+	2,  // 79: llmleaf.v1.BatchHandle.status:type_name -> llmleaf.v1.BatchStatus
+	76, // 80: llmleaf.v1.BatchHandle.counts:type_name -> llmleaf.v1.BatchCounts
+	79, // 81: llmleaf.v1.BatchResultLine.response:type_name -> llmleaf.v1.BatchResponse
+	80, // 82: llmleaf.v1.BatchResultLine.error:type_name -> llmleaf.v1.BatchError
+	27, // 83: llmleaf.v1.BatchResponse.body:type_name -> llmleaf.v1.ChatResponse
+	84, // [84:84] is the sub-list for method output_type
+	84, // [84:84] is the sub-list for method input_type
+	84, // [84:84] is the sub-list for extension type_name
+	84, // [84:84] is the sub-list for extension extendee
+	0,  // [0:84] is the sub-list for field type_name
 }
 
 func init() { file_llmleaf_v1_llmleaf_proto_init() }
@@ -6550,76 +6772,79 @@ func file_llmleaf_v1_llmleaf_proto_init() {
 	file_llmleaf_v1_llmleaf_proto_msgTypes[11].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[12].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[13].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[14].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[14].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[15].OneofWrappers = []any{
 		(*ChatMessage_Text)(nil),
 		(*ChatMessage_Parts)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[15].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[17].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[16].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[18].OneofWrappers = []any{
 		(*ToolChoice_Mode)(nil),
 		(*ToolChoice_Named)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[20].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[21].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[22].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[24].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[23].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[25].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[26].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[27].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[27].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[28].OneofWrappers = []any{
 		(*ResponseItem_Message)(nil),
 		(*ResponseItem_FunctionCall)(nil),
 		(*ResponseItem_FunctionCallOutput)(nil),
 		(*ResponseItem_Reasoning)(nil),
+		(*ResponseItem_Compaction)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[29].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[30].OneofWrappers = []any{
 		(*ResponseMessageItem_Text)(nil),
 		(*ResponseMessageItem_Parts)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[30].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[31].OneofWrappers = []any{
 		(*ResponseContentPart_InputText)(nil),
 		(*ResponseContentPart_InputImage)(nil),
 		(*ResponseContentPart_OutputText)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[33].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[34].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[35].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[36].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[38].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[39].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[37].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[39].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[40].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[41].OneofWrappers = []any{
 		(*ResponsesToolChoice_Mode)(nil),
 		(*ResponsesToolChoice_Named)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[41].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[42].OneofWrappers = []any{
+	file_llmleaf_v1_llmleaf_proto_msgTypes[43].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[44].OneofWrappers = []any{
 		(*ResponsesRequest_Text)(nil),
 		(*ResponsesRequest_Items)(nil),
 	}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[43].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[44].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[45].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[46].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[47].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[48].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[49].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[52].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[53].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[56].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[57].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[50].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[51].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[54].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[55].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[58].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[59].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[60].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[61].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[62].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[63].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[64].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[65].OneofWrappers = []any{}
 	file_llmleaf_v1_llmleaf_proto_msgTypes[67].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[72].OneofWrappers = []any{}
-	file_llmleaf_v1_llmleaf_proto_msgTypes[73].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[69].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[74].OneofWrappers = []any{}
+	file_llmleaf_v1_llmleaf_proto_msgTypes[75].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llmleaf_v1_llmleaf_proto_rawDesc), len(file_llmleaf_v1_llmleaf_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   81,
+			NumMessages:   83,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

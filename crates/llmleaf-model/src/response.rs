@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamChunk {
+    /// A complete replay item, in upstream order. Compaction-aware providers emit these alongside
+    /// ordinary deltas so a collected response can retain the exact order across compaction.
+    OutputItem { index: u32, message: crate::Message },
     /// The stream has opened. Carries the resolved response id and the model that actually served.
     Start { id: String, model: String },
     /// Incremental assistant text for choice `index`.
@@ -21,6 +24,20 @@ pub enum StreamChunk {
     ThinkingSignature { index: u32, signature: String },
     /// A redacted (encrypted) thinking block for choice `index`, delivered whole (no deltas).
     RedactedThinking { index: u32, data: String },
+    /// A complete compaction summary or opaque replay token. Providers collect any summary fragments
+    /// before emitting this item so its signature and text remain one replay block.
+    Compaction {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_index: Option<u32>,
+        index: u32,
+        delta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     /// Incremental tool-call construction for choice `index`.
     ToolCall { index: u32, call: ToolCallDelta },
     /// A usage report. May arrive once at the end, or be updated as the provider reports it.
@@ -50,6 +67,7 @@ pub enum FinishReason {
     ToolCalls,
     ContentFilter,
     Error,
+    Compaction,
 }
 
 /// Token accounting as reported by the provider. The optional `cost_usd` is filled at the edge from
@@ -95,6 +113,10 @@ pub struct ChatResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Choice {
+    /// Ordered replay items when a provider supports compaction within a turn. Empty for ordinary
+    /// responses, whose text, thinking and tool-call fields are sufficient to reconstruct output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output: Vec<crate::Message>,
     pub index: u32,
     pub text: String,
     /// Extended-thinking blocks emitted before the visible text/tool calls, in order
@@ -103,6 +125,9 @@ pub struct Choice {
     /// (non-streaming) response round-trips reasoning and its signature, same as the streamed path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<crate::ContentPart>,
+    /// Compaction blocks returned by the model, retained for later conversation replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction: Vec<crate::ContentPart>,
     #[serde(default)]
     pub tool_calls: Vec<crate::ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

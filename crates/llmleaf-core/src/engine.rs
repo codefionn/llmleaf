@@ -551,6 +551,14 @@ impl Engine {
         provider.models(&cx).await
     }
 
+    /// Read a provider's compaction capability without fetching its catalog. This lets an explicit
+    /// provider setting describe configured routes even when the upstream cannot list models.
+    pub fn provider_compaction_support(&self, provider_name: &str, model: &str) -> Option<bool> {
+        let topo = self.topology();
+        let provider = topo.registry.get(provider_name)?;
+        provider.supports_compaction(model, &topo.build_cx(provider_name, ""))
+    }
+
     /// Pick the best target for `model` whose provider serves a *native* realtime session: prefer one
     /// that isn't cooling down, but — mirroring [`Self::dispatch`] — if every realtime-capable target
     /// is down, still return one rather than force the session onto the chat bridge over a stale,

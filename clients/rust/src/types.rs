@@ -101,6 +101,7 @@ pub enum FinishReason {
     Length,
     ToolCalls,
     ContentFilter,
+    Compaction,
 }
 
 /// Batch lifecycle status.
@@ -294,6 +295,21 @@ impl ReasoningDetail {
     }
 }
 
+/// Opaque native compaction state. Carry the fields forward unchanged on the next turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompactionBlock {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Chat — messages
 // ---------------------------------------------------------------------------
@@ -322,6 +338,8 @@ pub struct ChatMessage {
     /// these back verbatim on the next request to preserve signed reasoning across a turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_details: Vec<ReasoningDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction: Vec<CompactionBlock>,
 }
 
 impl ChatMessage {
@@ -349,6 +367,7 @@ impl ChatMessage {
             tool_call_id: None,
             reasoning: None,
             reasoning_details: Vec::new(),
+            compaction: Vec::new(),
         }
     }
 
@@ -590,6 +609,8 @@ pub struct Delta {
     /// Incremental structured reasoning blocks (open / hidden — see [`ReasoningDetail`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_details: Vec<ReasoningDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction: Vec<CompactionBlock>,
 }
 
 /// One streaming choice.
@@ -841,6 +862,7 @@ pub enum ResponseItem {
     FunctionCall(ResponseFunctionCallItem),
     FunctionCallOutput(ResponseFunctionCallOutputItem),
     Reasoning(ResponseReasoningItem),
+    Compaction(CompactionBlock),
     /// An item type not modelled by this SDK version, kept verbatim (forward compatibility).
     Other(serde_json::Value),
 }
@@ -911,6 +933,7 @@ impl Serialize for ResponseItem {
                 TypedItemRef::FunctionCallOutput(f).serialize(serializer)
             }
             ResponseItem::Reasoning(r) => TypedItemRef::Reasoning(r).serialize(serializer),
+            ResponseItem::Compaction(c) => c.serialize(serializer),
             ResponseItem::Other(v) => v.serialize(serializer),
         }
     }
@@ -931,14 +954,17 @@ impl<'de> Deserialize<'de> for ResponseItem {
             None | Some("message") => {
                 ResponseItem::Message(serde_json::from_value(value).map_err(de::Error::custom)?)
             }
-            Some("function_call") => {
-                ResponseItem::FunctionCall(serde_json::from_value(value).map_err(de::Error::custom)?)
-            }
+            Some("function_call") => ResponseItem::FunctionCall(
+                serde_json::from_value(value).map_err(de::Error::custom)?,
+            ),
             Some("function_call_output") => ResponseItem::FunctionCallOutput(
                 serde_json::from_value(value).map_err(de::Error::custom)?,
             ),
             Some("reasoning") => {
                 ResponseItem::Reasoning(serde_json::from_value(value).map_err(de::Error::custom)?)
+            }
+            Some("compaction") => {
+                ResponseItem::Compaction(serde_json::from_value(value).map_err(de::Error::custom)?)
             }
             // An unmodelled item type is kept verbatim rather than dropped or erroring.
             Some(_) => ResponseItem::Other(value),
@@ -1345,7 +1371,9 @@ impl ResponsesStreamEvent {
     /// The terminal `response` snapshot (with the full output and usage), if this is a
     /// terminal event carrying one.
     pub fn terminal_response(&self) -> Option<&ResponsesResponse> {
-        self.is_terminal().then_some(self.response.as_ref()).flatten()
+        self.is_terminal()
+            .then_some(self.response.as_ref())
+            .flatten()
     }
 
     /// Whether the stream parser recognises this event's namespace (`response.*` or
@@ -1551,7 +1579,12 @@ impl DecisionsRequest {
         state: serde_json::Value,
         questions: serde_json::Map<String, serde_json::Value>,
     ) -> Self {
-        Self { model: model.into(), state, questions, extra: serde_json::Map::new() }
+        Self {
+            model: model.into(),
+            state,
+            questions,
+            extra: serde_json::Map::new(),
+        }
     }
 }
 
@@ -1792,6 +1825,8 @@ pub struct ModelEntry {
     /// Admin-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<ModelEndpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_compaction: Option<bool>,
 }
 
 /// `GET /v1/models` response.

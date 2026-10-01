@@ -302,6 +302,16 @@ public data class ResponseReasoningItem(
     val encryptedContent: String? = null,
 ) : ResponseItem
 
+/** Opaque context item emitted during native API compaction. */
+@Serializable
+public data class ResponseCompactionItem(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) @SerialName("type") val type: String = "compaction",
+    @SerialName("id") val id: String? = null,
+    @SerialName("content") val content: String? = null,
+    @SerialName("encrypted_content") val encryptedContent: String? = null,
+    @SerialName("signature") val signature: String? = null,
+) : ResponseItem
+
 public object ResponseReasoningItemSerializer : KSerializer<ResponseReasoningItem> {
     override val descriptor: SerialDescriptor = buildClassSerialDescriptor("ResponseReasoningItem")
 
@@ -366,6 +376,7 @@ public object ResponseItemSerializer : KSerializer<ResponseItem> {
             is ResponseFunctionCallOutputItem ->
                 json.encodeToJsonElement(ResponseFunctionCallOutputItemSerializer, value)
             is ResponseReasoningItem -> json.encodeToJsonElement(ResponseReasoningItemSerializer, value)
+            is ResponseCompactionItem -> json.encodeToJsonElement(ResponseCompactionItem.serializer(), value)
         }
         jsonEncoder.encodeJsonElement(element)
     }
@@ -381,6 +392,7 @@ public object ResponseItemSerializer : KSerializer<ResponseItem> {
             "function_call" -> json.decodeFromJsonElement(ResponseFunctionCallItemSerializer, obj)
             "function_call_output" -> json.decodeFromJsonElement(ResponseFunctionCallOutputItemSerializer, obj)
             "reasoning" -> json.decodeFromJsonElement(ResponseReasoningItemSerializer, obj)
+            "compaction" -> json.decodeFromJsonElement(ResponseCompactionItem.serializer(), obj)
             else -> error("unknown response item type: $type")
         }
     }

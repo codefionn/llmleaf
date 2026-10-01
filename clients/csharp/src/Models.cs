@@ -140,6 +140,15 @@ public sealed record ReasoningDetail
     public string? OpenText => Text ?? Summary;
 }
 
+/// <summary>Opaque native compaction state to replay unchanged on the next turn.</summary>
+public sealed record CompactionBlock
+{
+    public string? Id { get; init; }
+    public string? Content { get; init; }
+    public string? EncryptedContent { get; init; }
+    public string? Signature { get; init; }
+}
+
 /// <summary>A single chat message.</summary>
 public sealed record ChatMessage
 {
@@ -165,6 +174,7 @@ public sealed record ChatMessage
     /// <summary>Structured reasoning blocks (open and hidden, with signatures — see <see cref="ReasoningDetail"/>).
     /// Echo these back verbatim on the next request to preserve signed reasoning across a turn.</summary>
     public IReadOnlyList<ReasoningDetail>? ReasoningDetails { get; init; }
+    public IReadOnlyList<CompactionBlock>? Compaction { get; init; }
 
     /// <summary>Convenience constructor for a plain-text message.</summary>
     public static ChatMessage Text(Role role, string content) => new() { Role = role, Content = content };
@@ -264,7 +274,8 @@ public sealed record Delta(
     string? Content = null,
     IReadOnlyList<ToolCallDelta>? ToolCalls = null,
     string? Reasoning = null,
-    IReadOnlyList<ReasoningDetail>? ReasoningDetails = null);
+    IReadOnlyList<ReasoningDetail>? ReasoningDetails = null,
+    IReadOnlyList<CompactionBlock>? Compaction = null);
 
 /// <summary>One streaming choice.</summary>
 public sealed record ChunkChoice(uint Index, Delta Delta, FinishReason? FinishReason = null);
@@ -380,6 +391,15 @@ public sealed record ResponseReasoningItem : ResponseItem
     public IReadOnlyList<ResponseReasoningText>? Summary { get; init; }
     public IReadOnlyList<ResponseReasoningText>? Content { get; init; }
     public string? EncryptedContent { get; init; }
+}
+
+/// <summary>A Responses item carrying opaque context for the next request.</summary>
+public sealed record ResponseCompactionItem : ResponseItem
+{
+    public string? Id { get; init; }
+    public string? Content { get; init; }
+    public string? EncryptedContent { get; init; }
+    public string? Signature { get; init; }
 }
 
 /// <summary>The request <c>input</c>: a bare string (one user message) or an array of items. Exactly one
@@ -748,6 +768,7 @@ public sealed record ModelEntry
 
     /// <summary>Admin-only; populated when the request carries the admin token.</summary>
     public IReadOnlyList<ModelEndpoint> Endpoints { get; init; } = [];
+    public bool? SupportsCompaction { get; init; }
 }
 
 public sealed record ListModelsResponse(IReadOnlyList<ModelEntry> Data);

@@ -122,6 +122,29 @@ fn writeReasoningDetail(s: *Stringify, rd: gen.ReasoningDetail) !void {
     try s.endObject();
 }
 
+fn writeCompactionBlock(s: *Stringify, block: gen.CompactionBlock) !void {
+    try s.beginObject();
+    try s.objectField("type");
+    try s.write("compaction");
+    if (block.id) |id| {
+        try s.objectField("id");
+        try s.write(id);
+    }
+    if (block.content) |content| {
+        try s.objectField("content");
+        try s.write(content);
+    }
+    if (block.encrypted_content) |data| {
+        try s.objectField("encrypted_content");
+        try s.write(data);
+    }
+    if (block.signature) |signature| {
+        try s.objectField("signature");
+        try s.write(signature);
+    }
+    try s.endObject();
+}
+
 fn writeMessage(s: *Stringify, gpa: Allocator, m: gen.ChatMessage) !void {
     try s.beginObject();
     try s.objectField("role");
@@ -167,6 +190,12 @@ fn writeMessage(s: *Stringify, gpa: Allocator, m: gen.ChatMessage) !void {
         try s.objectField("reasoning_details");
         try s.beginArray();
         for (m.reasoning_details) |rd| try writeReasoningDetail(s, rd);
+        try s.endArray();
+    }
+    if (m.compaction.len > 0) {
+        try s.objectField("compaction");
+        try s.beginArray();
+        for (m.compaction) |block| try writeCompactionBlock(s, block);
         try s.endArray();
     }
     _ = gpa;
@@ -448,6 +477,26 @@ fn writeResponseItem(s: *Stringify, item: gen.ResponseItem) !void {
             if (r.encrypted_content) |ec| {
                 try s.objectField("encrypted_content");
                 try s.write(ec);
+            }
+        },
+        .compaction => |block| {
+            try s.objectField("type");
+            try s.write("compaction");
+            if (block.id) |id| {
+                try s.objectField("id");
+                try s.write(id);
+            }
+            if (block.content) |content| {
+                try s.objectField("content");
+                try s.write(content);
+            }
+            if (block.encrypted_content) |data| {
+                try s.objectField("encrypted_content");
+                try s.write(data);
+            }
+            if (block.signature) |signature| {
+                try s.objectField("signature");
+                try s.write(signature);
             }
         },
     }
@@ -873,6 +922,21 @@ fn parseReasoningDetails(arena: Allocator, v: ?Value) ![]const gen.ReasoningDeta
     return out[0..n];
 }
 
+fn parseCompactionBlocks(arena: Allocator, v: ?Value) ![]const gen.CompactionBlock {
+    const arr = switch (v orelse return &.{}) {
+        .array => |a| a,
+        else => return &.{},
+    };
+    var out = try arena.alloc(gen.CompactionBlock, arr.items.len);
+    var n: usize = 0;
+    for (arr.items) |item| {
+        if (item != .object or !std.mem.eql(u8, getStr(item, "type") orelse "", "compaction")) continue;
+        out[n] = .{ .id = getStr(item, "id"), .content = getStr(item, "content"), .encrypted_content = getStr(item, "encrypted_content"), .signature = getStr(item, "signature") };
+        n += 1;
+    }
+    return out[0..n];
+}
+
 fn parseMessage(arena: Allocator, v: Value) !gen.ChatMessage {
     return gen.ChatMessage{
         .role = if (getStr(v, "role")) |r| (gen.enumFromWire(gen.Role, r) orelse .assistant) else .assistant,
@@ -882,6 +946,7 @@ fn parseMessage(arena: Allocator, v: Value) !gen.ChatMessage {
         .tool_call_id = getStr(v, "tool_call_id"),
         .reasoning = getStr(v, "reasoning"),
         .reasoning_details = try parseReasoningDetails(arena, objGet(v, "reasoning_details")),
+        .compaction = try parseCompactionBlocks(arena, objGet(v, "compaction")),
     };
 }
 
@@ -930,6 +995,7 @@ pub fn decodeChunk(arena: Allocator, root: Value) !gen.ChatCompletionChunk {
             delta.tool_calls = try parseToolCallDeltas(arena, objGet(delta_v, "tool_calls"));
             delta.reasoning = getStr(delta_v, "reasoning");
             delta.reasoning_details = try parseReasoningDetails(arena, objGet(delta_v, "reasoning_details"));
+            delta.compaction = try parseCompactionBlocks(arena, objGet(delta_v, "compaction"));
         }
         choices[i] = .{
             .index = getInt(u32, c, "index") orelse 0,
@@ -1066,6 +1132,13 @@ fn parseResponseItem(arena: Allocator, v: Value) !?gen.ResponseItem {
             .summary = try parseReasoningTexts(arena, objGet(v, "summary")),
             .content = try parseReasoningTexts(arena, objGet(v, "content")),
             .encrypted_content = getStr(v, "encrypted_content"),
+        } };
+    } else if (std.mem.eql(u8, t, "compaction")) {
+        return gen.ResponseItem{ .compaction = .{
+            .id = getStr(v, "id"),
+            .content = getStr(v, "content"),
+            .encrypted_content = getStr(v, "encrypted_content"),
+            .signature = getStr(v, "signature"),
         } };
     }
     return null; // unknown item type — ignore
@@ -1424,6 +1497,7 @@ fn decodeModelEntry(arena: Allocator, v: Value) !gen.ModelEntry {
         .unsupported_parameters = try dupStrArray(arena, objGet(v, "unsupported_parameters")),
         .default_parameters = default_params,
         .endpoints = endpoints,
+        .supports_compaction = getBool(v, "supports_compaction"),
     };
 }
 

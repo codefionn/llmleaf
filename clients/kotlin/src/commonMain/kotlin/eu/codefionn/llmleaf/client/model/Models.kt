@@ -51,6 +51,7 @@ public data class ModelEntry(
     @SerialName("unsupported_parameters") val unsupportedParameters: List<String> = emptyList(),
     @SerialName("default_parameters") val defaultParameters: RawJson? = null,
     @SerialName("endpoints") val endpoints: List<ModelEndpoint> = emptyList(), // admin-only
+    @SerialName("supports_compaction") val supportsCompaction: Boolean? = null,
 )
 
 @Serializable

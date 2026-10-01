@@ -121,8 +121,10 @@ impl Provider for MockBatchProvider {
                     model: "demo".into(),
                     choices: vec![Choice {
                         index: 0,
+                        output: Vec::new(),
                         text: "hi a".into(),
                         thinking: vec![],
+                        compaction: vec![],
                         tool_calls: vec![],
                         finish_reason: Some(FinishReason::Stop),
                     }],

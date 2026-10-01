@@ -103,6 +103,11 @@ settings = { organization = "org-xxxx" }
 # OpenAI and OpenRouter accept inline `input_audio` parts by default. For another OpenAI-wire
 # endpoint that supports the same Chat Completions shape, opt in explicitly:
 #   settings = { audio_input = true }
+# A generic OpenAI-compatible API may implement native Responses compaction without publishing a
+# model capability flag. Declare support for this provider's language models:
+#   settings = { chat_api = "responses", supports_compaction = true }
+# `supports_compaction = false` overrides detected support. Omit it to use the provider's defaults.
+# This changes discovery metadata; callers must still request compaction explicitly.
 # Node-local rate limits (optional) — flow control TOWARD this provider so a node never pushes it past
 # its published limits and eats 429s. This is the node-local HA family (principles 8 and 9), NOT per-key
 # usage accounting (that is the pulled [control.limits] verdicts, principle 5). Each dimension is

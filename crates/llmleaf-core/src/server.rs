@@ -1258,6 +1258,11 @@ async fn list_models(
         let mut info = upstream_info
             .cloned()
             .unwrap_or_else(|| ModelInfo::new(&model));
+        if let Some(supports_compaction) = primary
+            .and_then(|target| engine.provider_compaction_support(&target.provider, upstream))
+        {
+            info.supports_compaction = Some(supports_compaction);
+        }
         info.id = model.clone();
         let meta = enrich(info, card);
         entries.insert(
@@ -1491,6 +1496,14 @@ fn render_model(id: &str, entry: &ModelEntry, admin: bool, engine: &Engine, now:
     obj.insert("pricing".into(), pricing_json(meta));
     obj.insert("top_provider".into(), Value::Object(top_provider));
     obj.insert("per_request_limits".into(), Value::Null);
+    obj.insert(
+        "supports_compaction".into(),
+        json!(
+            entry.callable
+                && matches!(modality, None | Some(Modality::Llm))
+                && meta.and_then(|m| m.supports_compaction) == Some(true)
+        ),
+    );
     for key in ["tier", "prompts_used_for_training"] {
         if let Some(value) = meta.and_then(|m| m.extra.get(key)) {
             obj.insert(key.into(), value.clone());
