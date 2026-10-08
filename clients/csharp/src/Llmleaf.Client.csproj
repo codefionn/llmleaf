@@ -30,7 +30,7 @@
   <ItemGroup>
     <!-- The generated typed model (src/Gen/Llmleaf.cs) uses the Google.Protobuf runtime. It is the
          codegen artifact / schema proof; the wire transport is hand-written System.Text.Json. -->
-    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
   </ItemGroup>
 
   <ItemGroup>

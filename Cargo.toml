@@ -41,7 +41,7 @@ cyper = { version = "0.9", default-features = false, features = ["json", "rustls
 cyper-axum = { version = "0.9", features = ["ws"] }
 libc = "0.2"
 axum = { version = "0.8", features = ["multipart", "ws"] }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "cors"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "multipart"] }
 # WebSocket client for first-party native realtime providers (e.g. OpenAI Realtime). Pinned to the
 # tungstenite version axum 0.8's `ws` feature uses so the workspace links one copy; rustls with webpki
@@ -60,7 +60,7 @@ toml = "1"
 bytes = "1"
 # OpenRouter's `/audio/transcriptions` wants the audio base64-encoded in a JSON body (it rejects the
 # OpenAI multipart upload every other brand uses). Provider-edge only, never on the core hot path.
-base64 = "0.22"
+base64 = "0.23"
 # CLI parsing for the example clients only (dev-dependency of the binary crate, never the release
 # binary). `derive` for the arg structs; `env` so each flag documents and falls back to its
 # `LLMLEAF_*` environment variable.
@@ -72,12 +72,12 @@ pwhash = "1"
 # JWT/JWKS validation for the optional OAuth2 resource-server surface (llmleaf-core `oauth` feature).
 # Pure crypto, no HTTP — signature verification must never be hand-rolled, so this is a justified dep,
 # gated off by default so the lean core stays lean (the shipped binary turns it on).
-jsonwebtoken = "9"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # HMAC-SHA256 (RustCrypto, pure Rust): signs the opaque batch ids ([server].batch_id_secret) so a
 # batch is bound to the key that created it, and digests the admin token so it is never held in
 # memory as plaintext. Never hand-rolled — same rule as JWT signature verification.
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 
 [profile.release]
 lto = "thin"

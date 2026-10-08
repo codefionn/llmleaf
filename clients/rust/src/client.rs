@@ -46,7 +46,7 @@ impl ClientBuilder {
         #[cfg(feature = "tokio")]
         let backend = { let client = match self.http { Some(client) => client, None => { let mut builder = reqwest::Client::builder(); if let Some(timeout) = self.timeout { builder = builder.timeout(timeout); } builder.build()? } }; Backend::Tokio { client } };
         #[cfg(all(not(feature = "tokio"), feature = "compio"))]
-        let backend = Backend::Compio { client: self.compio_http.unwrap_or_else(cyper::Client::new), timeout: self.timeout };
+        let backend = Backend::Compio { client: match self.compio_http { Some(client) => client, None => cyper::Client::new()? }, timeout: self.timeout };
         Ok(Client { backend, base_url, bearer: format!("Bearer {}", self.api_key), admin_token: self.admin_token })
     }
 }

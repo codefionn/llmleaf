@@ -13,7 +13,7 @@ serde types at the crate root are what you actually use.
 This crate is its own standalone workspace inside the monorepo (intentionally not a member of
 the root workspace). Depend on it by path or git:
 
-The MSRV is Rust 1.85.
+The MSRV is Rust 1.95.
 
 ```toml
 [dependencies]

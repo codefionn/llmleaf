@@ -2,7 +2,7 @@
 //! The web app is the downstream "others account" half of SOUL.md principle 5: the core observes and
 //! forgets; here we store and aggregate.
 
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row, Sqlite};
 
 use super::{now_secs, Db};
 use crate::dto::{EventRow, UsageBy, UsagePoint, UsageTotals};
@@ -163,11 +163,12 @@ fn row_to_totals(r: &sqlx::sqlite::SqliteRow) -> UsageTotals {
 
 /// Totals over events with `ts_ms >= since_ms` (pass 0 for all-time).
 pub async fn totals_since(db: &Db, since_ms: u64) -> Result<UsageTotals, sqlx::Error> {
-    let sql = format!("SELECT {TOTALS_SELECT} FROM events WHERE ts_ms >= ?");
-    let row = sqlx::query(&sql)
-        .bind(since_ms as i64)
-        .fetch_one(db)
-        .await?;
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(TOTALS_SELECT)
+        .push(" FROM events WHERE ts_ms >= ")
+        .push_bind(since_ms as i64);
+    let row = query.build().fetch_one(db).await?;
     Ok(row_to_totals(&row))
 }
 
@@ -210,16 +211,18 @@ async fn by_column(
     limit: u32,
 ) -> Result<Vec<UsageBy>, sqlx::Error> {
     // `column` is a fixed internal literal ("model" | "key_id"), never user input — safe to interpolate.
-    let sql = format!(
-        "SELECT COALESCE({column}, '(unattributed)') AS label, {TOTALS_SELECT}
-         FROM events WHERE ts_ms >= ? AND (kind='usage' OR kind='request_started')
-         GROUP BY {column} ORDER BY cost DESC, tt DESC LIMIT ?"
-    );
-    let rows = sqlx::query(&sql)
-        .bind(since_ms as i64)
-        .bind(limit as i64)
-        .fetch_all(db)
-        .await?;
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT COALESCE(");
+    query
+        .push(column)
+        .push(", '(unattributed)') AS label, ")
+        .push(TOTALS_SELECT)
+        .push(" FROM events WHERE ts_ms >= ")
+        .push_bind(since_ms as i64)
+        .push(" AND (kind='usage' OR kind='request_started') GROUP BY ")
+        .push(column)
+        .push(" ORDER BY cost DESC, tt DESC LIMIT ")
+        .push_bind(limit as i64);
+    let rows = query.build().fetch_all(db).await?;
     Ok(rows
         .iter()
         .map(|r| UsageBy {

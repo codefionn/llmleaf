@@ -31,7 +31,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use thiserror::Error;
 
@@ -68,7 +68,7 @@ pub struct BatchIdSigner {
 impl BatchIdSigner {
     pub fn new(secret: &str) -> Self {
         BatchIdSigner {
-            mac: <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+            mac: Hmac::<Sha256>::new_from_slice(secret.as_bytes())
                 .expect("HMAC accepts any key length"),
         }
     }

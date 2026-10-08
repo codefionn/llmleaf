@@ -2,7 +2,7 @@
 //! browser cookie carries only the token, so logout and expiry are server-authoritative.
 
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 use sqlx::Row;
 
 use super::{now_ms, Db};
@@ -11,7 +11,7 @@ use crate::dto::Session;
 /// 256 bits of CSPRNG, URL-safe base64 (no padding). Used for session tokens and OIDC state/nonce.
 pub fn random_token() -> String {
     let mut buf = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
 }
 

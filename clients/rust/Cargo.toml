@@ -8,7 +8,7 @@
 name = "llmleaf-client"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.95"
 description = "Official Rust client SDK for the llmleaf LLM proxy (OpenAI/OpenRouter-shaped JSON over HTTP)."
 authors = ["Fionn Langhans <fionnlanghans@codefionn.eu>"]
 license = "MIT OR Apache-2.0"
@@ -26,21 +26,21 @@ tokio = ["dep:reqwest", "dep:tokio"]
 compio = ["dep:compio", "dep:cyper"]
 
 [dependencies]
-reqwest = { version = "0.12", optional = true, default-features = false, features = [
-    "rustls-tls",
+reqwest = { version = "0.13", optional = true, default-features = false, features = [
+    "rustls",
     "json",
     "stream",
     "multipart",
 ] }
 tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "macros"] }
-compio = { version = "0.16", optional = true, default-features = false, features = ["runtime", "time", "bytes", "macros"] }
-cyper = { version = "0.5", optional = true, default-features = false, features = ["rustls", "json", "stream"] }
+compio = { version = "0.19", optional = true, default-features = false, features = ["runtime", "time", "bytes", "macros"] }
+cyper = { version = "0.9", optional = true, default-features = false, features = ["rustls", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 thiserror = "2"
 bytes = "1"
-base64 = "0.22"
+base64 = "0.23"
 prost = "0.14"
 url = "2"
 http = "1"

@@ -20,19 +20,19 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // ----------------------------------------------------------------------------
 
 plugins {
-    kotlin("multiplatform") version "2.4.20"
-    kotlin("plugin.serialization") version "2.4.20"
-    id("com.squareup.wire") version "5.5.0"
+    kotlin("multiplatform") version "2.4.21"
+    kotlin("plugin.serialization") version "2.4.21"
+    id("com.squareup.wire") version "7.1.0"
     // Maven Central publishing for the whole Kotlin Multiplatform artifact set (the root
     // `kotlinMultiplatform` metadata module plus the per-target jvm / js / linuxX64 modules),
     // including POM generation, in-memory GPG signing and the Central Portal upload. Hand-rolling
     // `maven-publish` + `signing` across every KMP publication is brittle; this plugin owns it.
     // The release workflow drives it with `./gradlew publishToMavenCentral`. See RELEASING.md.
-    id("com.vanniktech.maven.publish") version "0.35.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
     // Declared (not applied) here so the Kotlin/JVM plugin is resolved onto the build classpath
     // once at the root; the :example subproject applies it WITHOUT a version, avoiding the
     // "plugin already on the classpath must not include a version" error.
-    kotlin("jvm") version "2.4.20" apply false
+    kotlin("jvm") version "2.4.21" apply false
 }
 
 group = "eu.codefionn.llmleaf"

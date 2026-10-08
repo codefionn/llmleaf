@@ -17,6 +17,6 @@ serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 reqwest.workspace = true
-scraper = "0.23"
+scraper = "0.27"
 tokio.workspace = true
 toml.workspace = true
