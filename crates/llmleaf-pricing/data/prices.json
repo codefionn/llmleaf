@@ -134,6 +134,12 @@
       "output_per_mtok": 1.5,
       "modality": "llm"
     },
+    "chat-latest": {
+      "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
+      "output_per_mtok": 30.0,
+      "modality": "llm"
+    },
     "claude-fable-5": {
       "input_per_mtok": 10.0,
       "cached_input_per_mtok": 1.0,
@@ -178,6 +184,16 @@
       "modality": "llm",
       "max_context": 200000,
       "max_output": 64000,
+      "unsupported_parameters": [
+        "frequency_penalty",
+        "presence_penalty"
+      ]
+    },
+    "claude-haiku-5-5": {
+      "input_per_mtok": 0.1,
+      "cached_input_per_mtok": 0.01,
+      "output_per_mtok": 0.5,
+      "modality": "llm",
       "unsupported_parameters": [
         "frequency_penalty",
         "presence_penalty"
@@ -348,7 +364,7 @@
     },
     "claude-sonnet-5-5": {
       "input_per_mtok": 2.0,
-      "cached_input_per_mtok": 0.2,
+      "cached_input_per_mtok": 0.1,
       "output_per_mtok": 10.0,
       "modality": "llm",
       "max_context": 1000000,
@@ -364,17 +380,26 @@
     },
     "codestral": {
       "input_per_mtok": 0.3,
+      "cached_input_per_mtok": 0.03,
       "output_per_mtok": 0.9,
       "modality": "llm"
     },
     "codestral-embed": {
       "input_per_mtok": 0.15,
+      "cached_input_per_mtok": 0.015,
       "modality": "embedding"
     },
     "command": {
       "input_per_mtok": 1.0,
       "output_per_mtok": 2.0,
       "modality": "llm"
+    },
+    "command-a-03-2025": {
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 10.0,
+      "modality": "llm",
+      "max_context": 256000,
+      "max_output": 8000
     },
     "command-light": {
       "input_per_mtok": 0.3,
@@ -384,6 +409,11 @@
     "command-r-03-2024": {
       "input_per_mtok": 0.5,
       "output_per_mtok": 1.5,
+      "modality": "llm"
+    },
+    "command-r-08-2024": {
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.6,
       "modality": "llm"
     },
     "command-r-plus": {
@@ -407,6 +437,11 @@
       "default_parameters": {
         "temperature": 0.3
       }
+    },
+    "command-r7b-12-2024": {
+      "input_per_mtok": 0.0375,
+      "output_per_mtok": 0.15,
+      "modality": "llm"
     },
     "deepseek-flash": {
       "modality": "llm",
@@ -485,6 +520,14 @@
       "output_per_mtok": 0.0,
       "modality": "embedding",
       "max_context": 512
+    },
+    "embed-v5.0-fast": {
+      "input_per_mtok": 0.08,
+      "modality": "embedding"
+    },
+    "embed-v5.0-pro": {
+      "input_per_mtok": 0.12,
+      "modality": "embedding"
     },
     "glm-4-32b-0414-128k": {
       "input_per_mtok": 0.1,
@@ -1019,6 +1062,12 @@
         "top_p": 1
       }
     },
+    "gpt-5.3-codex": {
+      "input_per_mtok": 1.75,
+      "cached_input_per_mtok": 0.175,
+      "output_per_mtok": 14.0,
+      "modality": "llm"
+    },
     "gpt-5.4": {
       "input_per_mtok": 2.5,
       "cached_input_per_mtok": 0.25,
@@ -1200,6 +1249,12 @@
       "max_context": 131072,
       "max_output": 40960
     },
+    "gpt-rosalind-research": {
+      "input_per_mtok": 5.0,
+      "cached_input_per_mtok": 0.5,
+      "output_per_mtok": 25.0,
+      "modality": "llm"
+    },
     "kimi-k2.5": {
       "input_per_mtok": 0.6,
       "output_per_mtok": 3.0,
@@ -1273,16 +1328,19 @@
     },
     "ministral-3-14b": {
       "input_per_mtok": 0.2,
+      "cached_input_per_mtok": 0.02,
       "output_per_mtok": 0.2,
       "modality": "llm"
     },
     "ministral-3-3b": {
       "input_per_mtok": 0.1,
+      "cached_input_per_mtok": 0.01,
       "output_per_mtok": 0.1,
       "modality": "llm"
     },
     "ministral-3-8b": {
       "input_per_mtok": 0.15,
+      "cached_input_per_mtok": 0.015,
       "output_per_mtok": 0.15,
       "modality": "llm"
     },
@@ -1292,11 +1350,19 @@
     },
     "mistral-large-3": {
       "input_per_mtok": 0.5,
+      "cached_input_per_mtok": 0.05,
       "output_per_mtok": 1.5,
+      "modality": "llm"
+    },
+    "mistral-large-4": {
+      "input_per_mtok": 0.68,
+      "cached_input_per_mtok": 0.07,
+      "output_per_mtok": 2.09,
       "modality": "llm"
     },
     "mistral-medium-3.5": {
       "input_per_mtok": 1.5,
+      "cached_input_per_mtok": 0.15,
       "output_per_mtok": 7.5,
       "modality": "llm"
     },
@@ -1311,6 +1377,7 @@
     },
     "mistral-small-4": {
       "input_per_mtok": 0.15,
+      "cached_input_per_mtok": 0.015,
       "output_per_mtok": 0.6,
       "modality": "llm"
     },
@@ -1415,6 +1482,22 @@
       "unsupported_parameters": [
         "stop"
       ]
+    },
+    "muse-spark-1.3": {
+      "input_per_mtok": 1.25,
+      "cached_input_per_mtok": 0.15,
+      "output_per_mtok": 4.25,
+      "modality": "llm",
+      "tier": "standard",
+      "prompts_used_for_training": false
+    },
+    "muse-spark-1.3-contributor": {
+      "input_per_mtok": 0.1,
+      "cached_input_per_mtok": 0.002,
+      "output_per_mtok": 0.2,
+      "modality": "llm",
+      "tier": "contributor",
+      "prompts_used_for_training": true
     },
     "o1": {
       "input_per_mtok": 15.0,

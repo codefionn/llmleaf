@@ -424,7 +424,7 @@ pub mod collect {
                 html_lines(&body)
             };
             let mut page_infos = match normalized_kind(&p.kind).as_str() {
-                "cohere" => parse_cohere_pricing_lines(&lines),
+                "cohere" => parse_cohere_pricing_html(&body),
                 // Anthropic's current page puts every price in a separate DOM node. Preserve the
                 // table rows here instead of relying on text-node line breaks, which are an
                 // incidental detail of the documentation site's renderer.
@@ -442,6 +442,16 @@ pub mod collect {
             };
             if normalized_kind(&p.kind) == "openai" {
                 enrich_openai_model_details(http, &mut page_infos).await?;
+                if p.pricing_url.is_none() {
+                    let pricing = http
+                        .get("https://developers.openai.com/api/docs/pricing")
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await?;
+                    page_infos.extend(parse_openai_category_pricing_html(&pricing));
+                }
             }
             infos.append(&mut page_infos);
         }
@@ -937,7 +947,8 @@ pub mod collect {
     /// emits only ids the authenticated account actually received instead of manufacturing a fixed
     /// catalog or an unavailable Contributor tier.
     ///
-    /// Sources (audited 2026-08-14): <https://dev.meta.ai/docs/models>,
+    /// Sources: <https://dev.meta.ai/docs/pricing-rate-limits>,
+    /// <https://dev.meta.ai/docs/models>,
     /// <https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/>, and
     /// <https://developer.meta.com/ai/resources/blog/build-with-muse-code/>.
     pub(crate) fn parse_meta_model_api(value: Value) -> Vec<ModelInfo> {
@@ -946,6 +957,27 @@ pub mod collect {
             .filter_map(list_item_to_model_info)
             .filter(|info| info.id.starts_with("muse-spark-"))
             .map(|mut info| {
+                // Pricing documents both 1.3 tiers, but does not establish that the older
+                // models' context, parameter, reasoning, or architecture details carry over.
+                let new_tier = match info.id.as_str() {
+                    "muse-spark-1.3" => Some(("standard", 1.25, 0.15, 4.25, false)),
+                    "muse-spark-1.3-contributor" => Some(("contributor", 0.10, 0.002, 0.20, true)),
+                    _ => None,
+                };
+                if let Some((tier, input, cached_input, output, prompts_used_for_training)) =
+                    new_tier
+                {
+                    info.modality = Some(Modality::Llm);
+                    info.input_per_mtok = Some(input);
+                    info.cached_input_per_mtok = Some(cached_input);
+                    info.output_per_mtok = Some(output);
+                    info.extra.insert("tier".into(), Value::from(tier));
+                    info.extra.insert(
+                        "prompts_used_for_training".into(),
+                        Value::from(prompts_used_for_training),
+                    );
+                    return info;
+                }
                 let documented = match info.id.as_str() {
                     "muse-spark-1.1" => Some(("standard", 1.25, 0.15, 4.25, false)),
                     "muse-spark-1.2" => Some(("standard", 1.25, 0.15, 4.25, false)),
@@ -1310,6 +1342,59 @@ pub mod collect {
         ))
     }
 
+    /// The API pricing page publishes a small category table for models omitted from the model
+    /// overview (notably chat-latest and restricted research models). Read only its Standard
+    /// input/cache/output columns; other tables include long-context, batch, and fast rates.
+    pub(crate) fn parse_openai_category_pricing_html(html: &str) -> Vec<ModelInfo> {
+        let document = scraper::Html::parse_document(html);
+        let table_selector = scraper::Selector::parse("table").expect("valid table selector");
+        let row_selector = scraper::Selector::parse("tr").expect("valid row selector");
+        let cell_selector = scraper::Selector::parse("th, td").expect("valid cell selector");
+        document
+            .select(&table_selector)
+            .filter(|table| {
+                table
+                    .select(&row_selector)
+                    .next()
+                    .map(|row| {
+                        row.select(&cell_selector)
+                            .map(|cell| cell.text().collect::<String>().trim().to_string())
+                            .collect::<Vec<_>>()
+                            == ["Category", "Model", "Input", "Cached input", "Output"]
+                    })
+                    .unwrap_or(false)
+            })
+            // The same heading also appears in the Fast pane. Standard is first in the
+            // official switcher and is the rate represented by this dataset.
+            .take(1)
+            .flat_map(|table| table.select(&row_selector).skip(1))
+            .filter_map(|row| {
+                let cells = row.select(&cell_selector).collect::<Vec<_>>();
+                if cells.len() != 5 {
+                    return None;
+                }
+                let id = cells[1].text().collect::<String>().trim().to_string();
+                if !is_openai_api_model_id(&id) {
+                    return None;
+                }
+                let prices = cells[2..]
+                    .iter()
+                    .map(|cell| {
+                        dollar_prices(&cell.text().collect::<String>())
+                            .first()
+                            .copied()
+                    })
+                    .collect::<Vec<_>>();
+                let mut info = ModelInfo::new(id);
+                info.modality = Some(Modality::Llm);
+                info.input_per_mtok = prices[0];
+                info.cached_input_per_mtok = prices[1];
+                info.output_per_mtok = prices[2];
+                (info.input_per_mtok.is_some() && info.output_per_mtok.is_some()).then_some(info)
+            })
+            .collect()
+    }
+
     fn openai_detail_price(lines: &[String], label: &str) -> Option<f64> {
         // The model page repeats these labels in its navigation, summary, pricing cards, and
         // comparison controls. Only a pricing-card occurrence is immediately followed by a dollar
@@ -1322,7 +1407,7 @@ pub mod collect {
     }
 
     fn is_openai_api_model_id(id: &str) -> bool {
-        let valid_prefix = ["gpt-", "o1", "o3", "o4"]
+        let valid_prefix = ["gpt-", "chat-latest", "o1", "o3", "o4"]
             .iter()
             .any(|prefix| id.starts_with(prefix));
         valid_prefix
@@ -1598,6 +1683,73 @@ pub mod collect {
         out
     }
 
+    /// Cohere's current API rates are serialized in Next.js Flight data rather than rendered in
+    /// the page body. The visible FAQ still supplies several older model prices.
+    pub(crate) fn parse_cohere_pricing_html(html: &str) -> Vec<ModelInfo> {
+        let mut rows = parse_cohere_pricing_lines(&html_lines(html));
+        let document = scraper::Html::parse_document(html);
+        let scripts = scraper::Selector::parse("script").expect("valid script selector");
+        for script in document.select(&scripts) {
+            let content = script.text().collect::<String>();
+            let Some(encoded) = content
+                .strip_prefix("self.__next_f.push(")
+                .and_then(|text| text.strip_suffix(')'))
+            else {
+                continue;
+            };
+            let Ok(flight) = serde_json::from_str::<Value>(encoded) else {
+                continue;
+            };
+            if let Some(payload) = flight.get(1).and_then(Value::as_str) {
+                rows.extend(parse_cohere_model_cards_payload(payload));
+            }
+        }
+        rows
+    }
+
+    fn parse_cohere_model_cards_payload(payload: &str) -> Vec<ModelInfo> {
+        let mut rows = Vec::new();
+        for (position, _) in payload.match_indices("\"_type\":\"model\"") {
+            let Some(start) = payload[..position].rfind("{\"_key\":") else {
+                continue;
+            };
+            let Some(Ok(model)) = serde_json::Deserializer::from_str(&payload[start..])
+                .into_iter::<Value>()
+                .next()
+            else {
+                continue;
+            };
+            let (id, modality) = match model.get("modelName").and_then(Value::as_str) {
+                Some("Command R") => ("command-r-08-2024", Modality::Llm),
+                Some("Command R7B") => ("command-r7b-12-2024", Modality::Llm),
+                Some("Embed 5 Pro") => ("embed-v5.0-pro", Modality::Embedding),
+                Some("Embed 5 Fast") => ("embed-v5.0-fast", Modality::Embedding),
+                _ => continue,
+            };
+            if model.get("per").and_then(Value::as_str) != Some("1M tokens") {
+                continue;
+            }
+            let Some(pricing) = model
+                .get("pricings")
+                .and_then(Value::as_array)
+                .and_then(|rates| rates.first())
+            else {
+                continue;
+            };
+            let input = pricing.get("inputPrice").and_then(Value::as_f64);
+            let output = pricing.get("outputPrice").and_then(Value::as_f64);
+            if input.is_none() || (modality == Modality::Llm && output.is_none()) {
+                continue;
+            }
+            let mut info = ModelInfo::new(id);
+            info.modality = Some(modality);
+            info.input_per_mtok = input;
+            info.output_per_mtok = output;
+            rows.push(info);
+        }
+        rows
+    }
+
     pub(crate) fn parse_mistral_pricing_lines(lines: &[String]) -> Vec<ModelInfo> {
         let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
@@ -1631,27 +1783,59 @@ pub mod collect {
         out
     }
 
-    /// Parse only the API catalogue cards. The page also has featured cards above the catalogue;
-    /// their text is interleaved with the next card when flattened, so parsing whole-page text can
-    /// accidentally give an audio-only card a later model's token prices.
+    /// Read the Standard USD token-rate tables. Other rows quote pages, minutes, characters, or
+    /// free service, and the third-party table belongs to another provider.
     pub(crate) fn parse_mistral_pricing_html(html: &str) -> Vec<ModelInfo> {
         let document = scraper::Html::parse_document(html);
-        let card_selector = scraper::Selector::parse(".model-item")
-            .expect("valid Mistral API catalogue card selector");
+        let table_selector = scraper::Selector::parse("table").expect("valid table selector");
+        let row_selector = scraper::Selector::parse("tr").expect("valid row selector");
+        let cell_selector = scraper::Selector::parse("td").expect("valid cell selector");
         let rows = document
-            .select(&card_selector)
-            .flat_map(|card| {
-                let lines = card
-                    .text()
-                    .flat_map(|text| text.split('\n'))
-                    .map(|line| line.replace('\u{a0}', " "))
-                    .map(|line| line.trim().to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>();
-                parse_mistral_pricing_lines(&lines)
+            .select(&table_selector)
+            .flat_map(|table| table.select(&row_selector))
+            .filter_map(|row| {
+                let cells = row.select(&cell_selector).collect::<Vec<_>>();
+                if cells.len() != 4 {
+                    return None;
+                }
+                let label = cells[0].text().collect::<String>();
+                let label = label.split('↗').next()?.trim();
+                if !is_mistral_model_heading(label) {
+                    return None;
+                }
+                let rate = |cell: scraper::ElementRef<'_>| {
+                    let text = cell.text().collect::<String>();
+                    if text.contains('/') || text.contains("Free") {
+                        return None;
+                    }
+                    dollar_prices(&text).last().copied()
+                };
+                let input = rate(cells[1])?;
+                let cached = rate(cells[2]);
+                let output = rate(cells[3]);
+                let mut info = ModelInfo::new(mistral_label_to_model_id(label));
+                info.modality = Some(if label.to_ascii_lowercase().contains("embed") {
+                    Modality::Embedding
+                } else {
+                    Modality::Llm
+                });
+                info.input_per_mtok = Some(input);
+                info.cached_input_per_mtok = cached;
+                info.output_per_mtok = output;
+                Some(info)
             })
             .collect::<Vec<_>>();
-        rows
+        if rows.is_empty() {
+            // Older API pricing pages rendered separate model cards.
+            let card_selector = scraper::Selector::parse(".model-item")
+                .expect("valid Mistral API catalogue card selector");
+            document
+                .select(&card_selector)
+                .flat_map(|card| parse_mistral_pricing_lines(&html_lines(&card.html())))
+                .collect()
+        } else {
+            rows
+        }
     }
 
     fn mistral_label_to_model_id(label: &str) -> String {
@@ -2059,11 +2243,13 @@ mod tests {
                     "metadata": null
                 },
                 { "id": "muse-spark-1.3", "owned_by": "meta" },
+                { "id": "muse-spark-1.3-contributor", "owned_by": "meta" },
+                { "id": "muse-spark-1.4", "owned_by": "meta" },
                 { "id": "unrelated-model" }
             ]
         }));
 
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 5);
         let v11 = rows.iter().find(|row| row.id == "muse-spark-1.1").unwrap();
         assert_eq!(v11.modality, Some(Modality::Llm));
         assert_eq!(v11.supports_reasoning, Some(true));
@@ -2089,7 +2275,30 @@ mod tests {
         assert_eq!(v12.input_per_mtok, Some(1.25));
         assert_eq!(v12.cached_input_per_mtok, Some(0.15));
         assert_eq!(v12.output_per_mtok, Some(4.25));
-        let future = rows.iter().find(|row| row.id == "muse-spark-1.3").unwrap();
+        for (id, tier, input, cached, output, training) in [
+            ("muse-spark-1.3", "standard", 1.25, 0.15, 4.25, false),
+            (
+                "muse-spark-1.3-contributor",
+                "contributor",
+                0.10,
+                0.002,
+                0.20,
+                true,
+            ),
+        ] {
+            let row = rows.iter().find(|row| row.id == id).unwrap();
+            assert_eq!(row.modality, Some(Modality::Llm));
+            assert_eq!(row.input_per_mtok, Some(input));
+            assert_eq!(row.cached_input_per_mtok, Some(cached));
+            assert_eq!(row.output_per_mtok, Some(output));
+            assert_eq!(row.extra["tier"], tier);
+            assert_eq!(row.extra["prompts_used_for_training"], training);
+            assert_eq!(row.max_context, None);
+            assert_eq!(row.supports_reasoning, None);
+            assert!(row.unsupported_parameters.is_empty());
+            assert!(!row.extra.contains_key("architecture"));
+        }
+        let future = rows.iter().find(|row| row.id == "muse-spark-1.4").unwrap();
         assert_eq!(future.input_per_mtok, None);
         assert_eq!(future.modality, None);
         assert!(rows
@@ -2346,6 +2555,18 @@ mod tests {
     }
 
     #[test]
+    fn openai_category_table_includes_models_missing_from_overview() {
+        let html = r#"<table><thead><tr><th>Category</th><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th></tr></thead><tbody><tr><td>ChatGPT</td><td>chat-latest</td><td>$5.00</td><td>$0.50</td><td>$30.00</td></tr><tr><td>Life Sciences</td><td>gpt-rosalind-research</td><td>$5.00</td><td>$0.50</td><td>$25.00</td></tr></tbody></table><table><tr><th>Category</th><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th></tr><tr><td>Codex</td><td>gpt-5.3-codex</td><td>$3.50</td><td>$0.35</td><td>$28.00</td></tr></table>"#;
+        let rows = collect::parse_openai_category_pricing_html(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "chat-latest");
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.5));
+        assert_eq!(rows[1].id, "gpt-rosalind-research");
+        assert_eq!(rows[1].output_per_mtok, Some(25.0));
+        assert!(!rows.iter().any(|row| row.id == "gpt-5.3-codex"));
+    }
+
+    #[test]
     fn moonshot_pricing_parser_reads_cache_write_columns() {
         let lines = vec![
             r#"["kimi-k3", "1M tokens", <>{"$"}3.00</>, <>{"$"}6.00</>, <>{"$"}0.30</>, <>{"$"}3.00</>, <>{"$"}15.00</>, "1,048,576 tokens"],"#.to_string(),
@@ -2560,6 +2781,22 @@ mod tests {
     }
 
     #[test]
+    fn cohere_pricing_page_parser_reads_flight_model_cards() {
+        let payload = r#"0:[{"_key":"a","_type":"model","modelName":"Command R","per":"1M tokens","pricings":[{"inputPrice":0.15,"outputPrice":0.6}]},{"_key":"b","_type":"model","modelName":"Command R7B","per":"1M tokens","pricings":[{"inputPrice":0.0375,"outputPrice":0.15}]},{"_key":"c","_type":"model","modelName":"Embed 5 Pro","per":"1M tokens","pricings":[{"inputPrice":0.12}]},{"_key":"d","_type":"model","modelName":"Embed 5 Fast","per":"1M tokens","pricings":[{"inputPrice":0.08}]},{"_key":"e","_type":"model","modelName":"Rerank 4 Pro","per":"1000 searches","pricings":[{"inputPrice":2.5}]}]"#;
+        let flight = serde_json::to_string(&serde_json::json!([1, payload])).unwrap();
+        let html = format!("<script>self.__next_f.push({flight})</script>");
+        let rows = collect::parse_cohere_pricing_html(&html);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].id, "command-r-08-2024");
+        assert_eq!(rows[0].input_per_mtok, Some(0.15));
+        assert_eq!(rows[1].id, "command-r7b-12-2024");
+        assert_eq!(rows[2].id, "embed-v5.0-pro");
+        assert_eq!(rows[2].input_per_mtok, Some(0.12));
+        assert_eq!(rows[2].output_per_mtok, None);
+        assert_eq!(rows[3].id, "embed-v5.0-fast");
+    }
+
+    #[test]
     fn mistral_pricing_page_parser_reads_api_cards_only() {
         let lines = vec![
             "Mistral Medium 3.5",
@@ -2641,5 +2878,17 @@ mod tests {
         assert!(!rows
             .iter()
             .any(|row| row.id.contains("voxtral-mini-transcribe")));
+    }
+
+    #[test]
+    fn mistral_pricing_html_parser_reads_current_tables_and_sale_rates() {
+        let html = r#"<table><tr><th>Model</th><th>Input</th><th>Cached input</th><th>Output</th></tr><tr><td>Mistral Large 4 ↗ Sale price</td><td>Original price: $1.36 Sale price: $0.68</td><td>Original price: $0.14 Sale price: $0.07</td><td>Original price: $4.18 Sale price: $2.09</td></tr><tr><td>Ministral 3 14B ↗</td><td>$0.2</td><td>$0.02</td><td>$0.2</td></tr><tr><td>Voxtral TTS ↗</td><td>$0 /M Chars</td><td>$0 /M Chars</td><td>$16 /M Chars</td></tr><tr><td>Z.ai GLM 5.3 ↗</td><td>$1.4</td><td>$0.14</td><td>$4.4</td></tr></table>"#;
+        let rows = collect::parse_mistral_pricing_html(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "mistral-large-4");
+        assert_eq!(rows[0].input_per_mtok, Some(0.68));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.07));
+        assert_eq!(rows[0].output_per_mtok, Some(2.09));
+        assert_eq!(rows[1].id, "ministral-3-14b");
     }
 }
