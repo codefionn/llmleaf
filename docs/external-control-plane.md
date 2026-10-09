@@ -376,7 +376,7 @@ equally to providers delivered through pulled topology and providers declared in
 
 The built-in binary recognizes the provider kinds listed by
 `llmleaf-providers::known_kinds`; common canonical values include `openai`, `openrouter`,
-`anthropic`, `gemini`, `vertex`, `cohere`, `ollama`, `lmstudio`, and `echo`. See
+`anthropic`, `gemini`, `vertex`, `cohere`, `ollama`, `lmstudio`, `llmleaf`, and `echo`. See
 [`llmleaf.example.toml`](../llmleaf.example.toml) for the current full list, aliases, and
 provider-specific settings.
 

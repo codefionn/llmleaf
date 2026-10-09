@@ -48,6 +48,7 @@ max_body_bytes = 33554432
 #   distinct dialects : anthropic (claude), gemini (google), vertex (vertex-ai, google-vertex), cohere,
 #                       ollama (native `/api/*`), lmstudio (lm-studio; native `/api/v0/*`)
 #   decisions only    : typesafe (jev; native `/v1/systemone`)
+#   another node      : llmleaf (a second llmleaf instance; see the example block below)
 #   OpenAI-wire family: openai, meta (meta-ai, meta-model-api, muse), openrouter, requesty, groq,
 #                       deepseek, xai (grok), mistral, together,
 #                       fireworks, perplexity, cerebras, zai (z.ai, glm),
@@ -216,6 +217,20 @@ kind = "requesty"
 credential = "env:REQUESTY_API_KEY"
 prefix = "rq"  # e.g. `rq/openai/gpt-4o` -> requesty with model `openai/gpt-4o`
 settings = { http_referer = "https://your.app", x_title = "your-app" }
+
+# Another llmleaf node as the upstream, e.g. a regional node or a team gateway. The credential is a
+# consumer key on THAT node. Chat uses its `/v1/responses` (signed reasoning survives the hop; requests
+# with `stop` or input audio use `/v1/chat/completions`). Realtime sessions dial its `/v1/realtime`
+# WebSocket directly; if the dial fails before the first frame, this node bridges over HTTP chat
+# instead. Embeddings, rerank, speech, voices, transcription, decisions, and batch map 1:1. When the
+# upstream answers "unsupported" for a modality, routing falls past it without a health penalty.
+# Never point a node at itself: the request loops until it times out.
+[[providers]]
+name = "upstream-leaf"
+kind = "llmleaf"
+endpoint = "https://llmleaf.internal.example/v1"  # default http://localhost:8080/v1
+credential = "env:UPSTREAM_LLMLEAF_KEY"
+prefix = "leaf"  # e.g. `leaf/or/openai/gpt-4o` -> the upstream node's `or/openai/gpt-4o`
 
 # Amazon Bedrock's OpenAI-compatible Mantle endpoint. Region is part of the URL, so `endpoint` is
 # required. Bedrock API keys are bearer tokens; IAM/SigV4 and native Converse are not used by this kind.

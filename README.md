@@ -42,6 +42,9 @@ Please use web sockets, it fixes latency and prompt caching issues.
 
 - **Native dialects:** Anthropic, Google Gemini, Vertex AI, Cohere, Ollama, LM Studio.
 - **Decisions:** TypeSafe JEV (`typesafe`, alias `jev`) and OpenRouter.
+- **Another llmleaf node** (`llmleaf`): chains nodes, e.g. a regional node in front of a central
+  gateway. Every modality maps through, and realtime sessions use the upstream's WebSocket with an
+  HTTP chat fallback.
 - **OpenAI-wire family:** OpenAI, Meta Model API (Muse), OpenRouter, Requesty, Groq, DeepSeek, xAI (Grok), Mistral,
   Together, Fireworks, Perplexity, Cerebras, Z.AI (GLM), Moonshot (Kimi), MiniMax, Amazon Bedrock,
   Hugging Face Inference Providers, DeepInfra, Cloudflare Workers AI, OCI Generative AI,

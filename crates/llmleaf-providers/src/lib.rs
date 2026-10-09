@@ -21,6 +21,8 @@
 //!     its own transport: OAuth2 bearer, a project/location publisher URL, and the `:predict`
 //!     embeddings dialect. LM Studio reuses the OpenAI-wire chat/embeddings mapping but owns its
 //!     `/api/v0` transport and rich model catalog.)
+//!   - **another llmleaf node** ([`llmleaf`]) — the `llmleaf` compat row for the OpenAI-wire
+//!     operations, plus llmleaf's own decisions, voices, and inline batch endpoints.
 
 use std::sync::Arc;
 
@@ -34,6 +36,7 @@ mod compat;
 mod decisions;
 mod gemini;
 mod http;
+mod llmleaf;
 mod lmstudio;
 mod meta;
 mod mock;
@@ -66,6 +69,7 @@ pub use baidu::BaiduProvider;
 pub use cohere::CohereProvider;
 pub use compat::{Brand, ChatApi, OpenAiCompatProvider};
 pub use gemini::GeminiProvider;
+pub use llmleaf::LlmleafProvider;
 pub use lmstudio::LmStudioProvider;
 pub use meta::MetaProvider;
 pub use mock::EchoProvider;
@@ -97,6 +101,8 @@ pub fn build(kind: &str, transports: &Transports) -> Option<Arc<dyn Provider>> {
         "ollama" => Some(Arc::new(OllamaProvider::new(transports))),
         "lmstudio" | "lm-studio" => Some(Arc::new(LmStudioProvider::new(transports))),
         "typesafe" | "jev" => Some(Arc::new(TypeSafeProvider::new(transports))),
+        // Another llmleaf node: the `llmleaf` compat row plus its own decisions/voices/batch paths.
+        "llmleaf" => Some(Arc::new(LlmleafProvider::new(transports))),
         // Baidu and Moonshot kinds resolve to thin provider-edge wrappers around their compat rows:
         // Baidu normalizes CNY catalog pricing and blocks incompatible audio dialects; Moonshot
         // rewrites tool JSON schemas into the upstream's "flavored" subset. Everything else falls

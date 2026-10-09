@@ -211,7 +211,7 @@ pub struct Brand {
     /// conservative: only documented brands opt in; an operator can enable a compatible/self-hosted
     /// endpoint with `settings.audio_input = true`.
     pub audio_input: bool,
-    /// Whether this brand exposes a native OpenAI-Realtime WebSocket upstream (only OpenAI today). When
+    /// Whether this brand exposes a native OpenAI-Realtime WebSocket upstream (OpenAI and llmleaf). When
     /// `false`, [`Provider::realtime`] returns `Unsupported` and the core bridges over chat streaming.
     pub realtime_native: bool,
     /// Whether `/audio/transcriptions` takes OpenRouter's JSON+base64 body instead of the OpenAI
@@ -335,9 +335,9 @@ impl Brand {
             responses_flavor: ResponsesFlavor::OpenAi,
         };
         Some(match kind {
-            // OpenAI is the one brand with a native Realtime WebSocket upstream, and the one whose primary
-            // chat surface is now the Responses API (`POST /responses`) — every OpenAI chat model serves
-            // on it, so it is the brand default (an operator can pin it back with `chat_api`).
+            // OpenAI has a native Realtime WebSocket upstream, and its primary chat surface is now the
+            // Responses API (`POST /responses`) — every OpenAI chat model serves on it, so it is the
+            // brand default (an operator can pin it back with `chat_api`).
             "openai" => Brand {
                 realtime_native: true,
                 models_api: true,
@@ -506,6 +506,22 @@ impl Brand {
                 "https://api.fireworks.ai/inference/v1",
                 AuthStyle::Bearer,
             ),
+            // Another llmleaf node. Its consumer surface is the OpenAI wire this table already speaks,
+            // so every modality rides the shared mappings: an OpenRouter-shaped `/models` catalog,
+            // `input_audio` chat parts, Jina/Cohere `/rerank`, multipart transcription, and a native
+            // OpenAI-Realtime `/realtime` socket. Its `/responses` is the OpenRouter flavor (signed
+            // open reasoning replays verbatim), which keeps Anthropic thinking intact across the hop,
+            // so that is the default chat wire. Decisions, voices, and batch use llmleaf's own paths
+            // and shapes; [`crate::LlmleafProvider`] owns those.
+            "llmleaf" => Brand {
+                models_api: true,
+                audio_input: true,
+                rerank_api: true,
+                realtime_native: true,
+                chat_api: ChatApi::Responses,
+                responses_flavor: ResponsesFlavor::OpenRouter,
+                ..bc("llmleaf", "http://localhost:8080/v1", AuthStyle::Bearer)
+            },
             "perplexity" => Brand {
                 documented_models: Some(PERPLEXITY_SONAR_MODELS),
                 ..b("perplexity", "https://api.perplexity.ai", AuthStyle::Bearer)
@@ -669,6 +685,7 @@ impl Brand {
             "mistral",
             "together",
             "fireworks",
+            "llmleaf",
             "perplexity",
             "cerebras",
             "zai",
@@ -1259,7 +1276,7 @@ fn voice_from_value(v: &Value) -> Option<VoiceInfo> {
 /// and an `id`/`status`; counts and the output-file key differ and are normalized below. Upstream file
 /// ids are deliberately *not* carried in `extra` — the consumer fetches results via llmleaf's own
 /// `/results` route, so an opaque-free upstream id must never leak.
-fn batch_value_to_handle(value: &Value) -> BatchHandle {
+pub(crate) fn batch_value_to_handle(value: &Value) -> BatchHandle {
     let id = value
         .get("id")
         .and_then(Value::as_str)
@@ -1349,7 +1366,7 @@ fn batch_result_file_ids(batch: &Value) -> Vec<String> {
 /// One line of an OpenAI/Mistral batch output file → canonical [`BatchResult`]. A success carries the
 /// response body (an OpenAI-wire chat completion) mapped through the same chunk path the chat surface
 /// uses, then folded; a top-level `error` or a ≥400 status code becomes an `Errored` outcome.
-fn openai_batch_result_line(value: Value) -> Option<BatchResult> {
+pub(crate) fn openai_batch_result_line(value: Value) -> Option<BatchResult> {
     let custom_id = value.get("custom_id")?.as_str()?.to_string();
     if let Some(err) = value.get("error") {
         if !err.is_null() {
@@ -1875,7 +1892,7 @@ impl Provider for OpenAiCompatProvider {
         peer: RealtimePeer,
         cx: &ProviderCx,
     ) -> Result<(), ModelError> {
-        // Only the OpenAI brand has a native Realtime WS upstream; every other compatible brand
+        // Only OpenAI and llmleaf have a native Realtime WS upstream; every other compatible brand
         // declares it unsupported so the core bridges over chat streaming (no health penalty).
         if !self.brand.realtime_native {
             return Err(ModelError::Unsupported(format!(

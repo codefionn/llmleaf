@@ -973,6 +973,14 @@ fn wire_modality(obj: &Map<String, Value>) -> Option<Modality> {
         if outs.contains(&"decisions") {
             return Some(Modality::Decisions);
         }
+        // Vector and score outputs are what llmleaf's own catalog (and OpenRouter's embedding
+        // listings) report for embedding and rerank models.
+        if outs.contains(&"embeddings") {
+            return Some(Modality::Embedding);
+        }
+        if outs.contains(&"scores") {
+            return Some(Modality::Rerank);
+        }
         if has_audio(&outs) {
             return Some(Modality::Tts);
         }
