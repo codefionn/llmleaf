@@ -418,6 +418,9 @@ mod tests {
                 .find(|item| item["type"] == "reasoning")
                 .expect("signed thinking replays as a reasoning item");
             assert_eq!(reasoning["signature"], "SIG");
+            // The upstream node sets these for its own provider; an Anthropic one rejects them.
+            assert!(body.get("store").is_none());
+            assert!(body.get("include").is_none());
             Ok(FakeResponse::ok_json(&json!({
                 "id": "resp_1",
                 "object": "response",

@@ -277,7 +277,8 @@ pub struct Brand {
     pub chat_api: ChatApi,
     /// Which Responses-wire flavor the brand's `POST /responses` endpoint speaks (see
     /// [`ResponsesFlavor`]): [`ResponsesFlavor::OpenRouter`] for OpenRouter's beta endpoint (open
-    /// reasoning + signature replay), [`ResponsesFlavor::OpenAi`] for everyone else. Only consulted when
+    /// reasoning + signature replay), [`ResponsesFlavor::Groq`] for Groq, [`ResponsesFlavor::Llmleaf`]
+    /// for a chained llmleaf node, [`ResponsesFlavor::OpenAi`] for everyone else. Only consulted when
     /// the effective chat API is [`ChatApi::Responses`].
     pub responses_flavor: ResponsesFlavor,
 }
@@ -509,17 +510,17 @@ impl Brand {
             // Another llmleaf node. Its consumer surface is the OpenAI wire this table already speaks,
             // so every modality rides the shared mappings: an OpenRouter-shaped `/models` catalog,
             // `input_audio` chat parts, Jina/Cohere `/rerank`, multipart transcription, and a native
-            // OpenAI-Realtime `/realtime` socket. Its `/responses` is the OpenRouter flavor (signed
-            // open reasoning replays verbatim), which keeps Anthropic thinking intact across the hop,
-            // so that is the default chat wire. Decisions, voices, and batch use llmleaf's own paths
-            // and shapes; [`crate::LlmleafProvider`] owns those.
+            // OpenAI-Realtime `/realtime` socket. Its `/responses` replays signed open reasoning
+            // verbatim, which keeps Anthropic thinking intact across the hop, so that is the default
+            // chat wire. Decisions, voices, and batch use llmleaf's own paths and shapes;
+            // [`crate::LlmleafProvider`] owns those.
             "llmleaf" => Brand {
                 models_api: true,
                 audio_input: true,
                 rerank_api: true,
                 realtime_native: true,
                 chat_api: ChatApi::Responses,
-                responses_flavor: ResponsesFlavor::OpenRouter,
+                responses_flavor: ResponsesFlavor::Llmleaf,
                 ..bc("llmleaf", "http://localhost:8080/v1", AuthStyle::Bearer)
             },
             "perplexity" => Brand {
@@ -2987,6 +2988,10 @@ mod tests {
         assert_eq!(
             Brand::for_kind("groq").unwrap().responses_flavor,
             ResponsesFlavor::Groq
+        );
+        assert_eq!(
+            Brand::for_kind("llmleaf").unwrap().responses_flavor,
+            ResponsesFlavor::Llmleaf
         );
         for kind in ["openai", "meta", "xai", "together", "deepseek", "azure"] {
             assert_eq!(

@@ -54,6 +54,12 @@ pub enum ResponsesFlavor {
     /// documented-unsupported), so the `include` statelessness default is omitted and encrypted replay
     /// items have no representation.
     Groq,
+    /// Another llmleaf node's `POST /responses`. Its ingress reads every reasoning shape the
+    /// OpenRouter flavor emits, plus encrypted replay items. It also applies its own `store`/`include`
+    /// defaults per upstream, and it passes request fields it does not model through to that upstream.
+    /// Sending our defaults would put `include` in front of an Anthropic model, which rejects the
+    /// unknown field, so this flavor sends neither.
+    Llmleaf,
 }
 
 impl ResponsesFlavor {
@@ -62,20 +68,26 @@ impl ResponsesFlavor {
     /// (reasoning stays server-side or encrypted); OpenRouter and Groq accept back exactly what they
     /// emit.
     fn replays_open_reasoning(self) -> bool {
-        matches!(self, Self::OpenRouter | Self::Groq)
+        matches!(self, Self::OpenRouter | Self::Groq | Self::Llmleaf)
     }
 
     /// Whether the dialect models the per-item reasoning `signature`. OpenRouter alone — it is what
     /// ports signed reasoning across the router's providers; OpenAI and Groq reject the unknown field.
     fn models_signature(self) -> bool {
-        self == Self::OpenRouter
+        matches!(self, Self::OpenRouter | Self::Llmleaf)
     }
 
     /// Whether the dialect models encrypted reasoning — the `include: ["reasoning.encrypted_content"]`
     /// statelessness default and `encrypted_content` replay items. Groq documents `include` as
     /// unsupported and never emits encrypted reasoning, so both are omitted there.
     fn models_encrypted_reasoning(self) -> bool {
-        matches!(self, Self::OpenAi | Self::OpenRouter)
+        matches!(self, Self::OpenAi | Self::OpenRouter | Self::Llmleaf)
+    }
+
+    /// Whether we add the `store`/`include` statelessness defaults. An llmleaf upstream adds its own
+    /// for the provider it routes to, so the hop must not send them.
+    fn sends_stateless_defaults(self) -> bool {
+        self != Self::Llmleaf
     }
 }
 
@@ -179,9 +191,12 @@ pub fn request_to_openai_responses(
     // Flavor-gated: Groq documents `include` as unsupported (its reasoning comes back open, with no
     // encrypted form to ask for), so the default is omitted there — a consumer's explicit `include`
     // still rides through above (their field, principle 7).
-    obj.entry("store").or_insert(json!(false));
-    if flavor.models_encrypted_reasoning() && !obj.contains_key("include") {
-        obj.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    // An llmleaf upstream applies both defaults itself (see [`ResponsesFlavor::Llmleaf`]).
+    if flavor.sends_stateless_defaults() {
+        obj.entry("store").or_insert(json!(false));
+        if flavor.models_encrypted_reasoning() && !obj.contains_key("include") {
+            obj.insert("include".into(), json!(["reasoning.encrypted_content"]));
+        }
     }
 
     Value::Object(obj)
@@ -1373,6 +1388,28 @@ mod tests {
             serde_json::from_value(json!({ "include": ["message.output_text.logprobs"] })).unwrap();
         let wire = request_to_openai_responses(&req, false, ResponsesFlavor::Groq);
         assert_eq!(wire["include"], json!(["message.output_text.logprobs"]));
+    }
+
+    #[test]
+    fn llmleaf_flavor_replays_all_reasoning_without_stateless_defaults() {
+        // The upstream node adds `store`/`include` for its own provider. Sent from here they would
+        // ride through to an Anthropic upstream, which rejects them.
+        let req = thinking_replay_req();
+        let wire = request_to_openai_responses(&req, false, ResponsesFlavor::Llmleaf);
+        let input = wire["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["signature"], "sig");
+        assert_eq!(input[1]["encrypted_content"], "ENC");
+        assert_eq!(input[2]["type"], "message");
+        assert!(wire.get("store").is_none());
+        assert!(wire.get("include").is_none());
+
+        // A consumer's explicit fields still ride through.
+        let mut req = user_req("hi");
+        req.extra = serde_json::from_value(json!({ "store": true, "include": ["x"] })).unwrap();
+        let wire = request_to_openai_responses(&req, false, ResponsesFlavor::Llmleaf);
+        assert_eq!(wire["store"], true);
+        assert_eq!(wire["include"], json!(["x"]));
     }
 
     #[test]
