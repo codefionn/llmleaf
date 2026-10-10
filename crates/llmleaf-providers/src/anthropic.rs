@@ -6,7 +6,9 @@
 //! here so the core stays dialect-free.
 //!
 //! Extended thinking is one more quirk handled here. When the canonical request carries a `thinking`
-//! effort, it maps to a `thinking: { type: "enabled", budget_tokens }` block. Anthropic counts thinking
+//! effort, it maps to a `thinking: { type: "enabled", budget_tokens }` block, or on Claude 4.6 and later
+//! to `thinking: { type: "adaptive" }` plus `output_config.effort` ([`ThinkingStyle`]: newer models
+//! reject `budget_tokens`). Anthropic counts thinking
 //! tokens toward `max_tokens` and *requires* `budget_tokens < max_tokens`, so the wire `max_tokens` is
 //! raised to the caller's requested response room plus the budget (translating two canonical intents —
 //! response cap and thinking budget — onto Anthropic's single combined cap). Anthropic also rejects
@@ -27,7 +29,7 @@ use futures::stream;
 use llmleaf_model::{
     collect_chunks, BatchCounts, BatchHandle, BatchOutcome, BatchResult, BatchResultStream,
     BatchSpec, BatchStatus, ChatRequest, ContentPart, FinishReason, Message, Modality, ModelError,
-    ModelInfo, ResponseStream, Role, StreamChunk, ToolCallDelta, ToolChoice, Usage,
+    ModelInfo, ResponseStream, Role, StreamChunk, Thinking, ToolCallDelta, ToolChoice, Usage,
 };
 use llmleaf_provider::{Provider, ProviderCx};
 use serde_json::{json, Map, Value};
@@ -304,7 +306,10 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
     // toward `max_tokens` and *requires* `budget_tokens < max_tokens`, so raise the cap to fit the
     // budget on top of the response room the caller asked for. With thinking on, Anthropic also rejects
     // `temperature`/`top_p` — both are omitted below. Opt-in via `thinking`; a documented dialect
-    // mapping, not silent magic (principle 7).
+    // mapping, not silent magic (principle 7). Claude 4.6 and later reject `budget_tokens` and take
+    // adaptive thinking plus an effort instead; their thinking still counts toward `max_tokens`, so the
+    // budget stays as headroom on the cap.
+    let thinking_style = ThinkingStyle::for_model(&req.model);
     let thinking_budget = req.thinking.map(crate::thinking::budget_tokens);
     let effective_max = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
     let max_tokens = match thinking_budget {
@@ -395,16 +400,97 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
             },
         );
     }
-    if let Some(budget) = thinking_budget {
-        obj.insert(
-            "thinking".into(),
-            json!({ "type": "enabled", "budget_tokens": budget }),
-        );
+    if let Some(t) = req.thinking {
+        match thinking_style {
+            ThinkingStyle::Adaptive { xhigh } => {
+                obj.insert("thinking".into(), json!({ "type": "adaptive" }));
+                obj.insert(
+                    "output_config".into(),
+                    json!({ "effort": adaptive_effort(t, xhigh) }),
+                );
+            }
+            ThinkingStyle::Budget => {
+                obj.insert(
+                    "thinking".into(),
+                    json!({ "type": "enabled", "budget_tokens": crate::thinking::budget_tokens(t) }),
+                );
+            }
+        }
     }
     for (k, v) in &req.extra {
-        obj.entry(k.clone()).or_insert_with(|| v.clone());
+        match (obj.get_mut(k), v) {
+            // A caller's own `output_config` (a structured-output `format`, an explicit `effort`) is
+            // merged over the mapped effort rather than dropped.
+            (Some(Value::Object(ours)), Value::Object(theirs)) if k == "output_config" => {
+                for (field, value) in theirs {
+                    ours.insert(field.clone(), value.clone());
+                }
+            }
+            (Some(_), _) => {}
+            (None, _) => {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
     }
     Value::Object(obj)
+}
+
+/// How a model takes extended thinking. Claude 4.6 and later want `{ type: "adaptive" }` with
+/// `output_config.effort`, and Claude 4.7 and later reject `budget_tokens` with a 400. Older Claude
+/// models and non-Claude models behind an Anthropic-compatible endpoint keep `{ type: "enabled",
+/// budget_tokens }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThinkingStyle {
+    Budget,
+    /// `xhigh` effort arrived with Claude 4.7; 4.6 has no rung between `high` and `max`.
+    Adaptive {
+        xhigh: bool,
+    },
+}
+
+impl ThinkingStyle {
+    /// Read the generation from the model id: `claude-<family>-<major>[-<minor>]`, optionally behind a
+    /// platform prefix (`anthropic.`, `us.anthropic.`) or followed by a date or `@` snapshot suffix.
+    /// The Claude 3 naming (`claude-3-5-sonnet-…`) and ids that don't parse as Claude stay on budgets.
+    fn for_model(model: &str) -> Self {
+        let Some(start) = model.find("claude-") else {
+            return Self::Budget;
+        };
+        let rest = &model[start + "claude-".len()..];
+        let rest = rest.split('@').next().unwrap_or(rest);
+        let mut parts = rest.split('-');
+        let family = parts.next().unwrap_or_default();
+        if family.is_empty() || family.starts_with(|c: char| c.is_ascii_digit()) {
+            return Self::Budget;
+        }
+        let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+            return Self::Budget;
+        };
+        // A minor version is one or two digits; a longer number is a date snapshot.
+        let minor = parts
+            .next()
+            .filter(|p| p.len() <= 2)
+            .and_then(|p| p.parse::<u32>().ok())
+            .unwrap_or(0);
+        match (major, minor) {
+            v if v < (4, 6) => Self::Budget,
+            (4, 6) => Self::Adaptive { xhigh: false },
+            _ => Self::Adaptive { xhigh: true },
+        }
+    }
+}
+
+/// The canonical ladder as Anthropic's `output_config.effort`. Without `xhigh`, `Highx` collapses to
+/// `high`, the rung below.
+fn adaptive_effort(t: Thinking, xhigh: bool) -> &'static str {
+    match t {
+        Thinking::Low => "low",
+        Thinking::Med => "medium",
+        Thinking::High => "high",
+        Thinking::Highx if xhigh => "xhigh",
+        Thinking::Highx => "high",
+        Thinking::Max => "max",
+    }
 }
 
 fn message_to_anthropic(msg: &Message) -> Value {
@@ -1107,6 +1193,60 @@ mod tests {
         // ...and sampling params are forbidden alongside thinking, so they are omitted.
         assert!(wire.get("temperature").is_none());
         assert!(wire.get("top_p").is_none());
+    }
+
+    #[test]
+    fn thinking_is_adaptive_with_effort_on_current_claude() {
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-haiku-5-5".into();
+        req.max_tokens = Some(1000);
+        req.temperature = Some(0.7);
+        req.thinking = Some(Thinking::Highx);
+        let wire = request_to_anthropic(&req, None);
+
+        assert_eq!(wire["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(wire["output_config"], json!({ "effort": "xhigh" }));
+        // Adaptive thinking still counts toward max_tokens, so the budget stays as headroom.
+        assert_eq!(wire["max_tokens"], 1000 + 16384);
+        assert!(wire.get("temperature").is_none());
+    }
+
+    #[test]
+    fn caller_output_config_merges_over_mapped_effort() {
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-opus-5-5".into();
+        req.thinking = Some(Thinking::Low);
+        req.extra.insert(
+            "output_config".into(),
+            json!({ "format": { "type": "json_schema" } }),
+        );
+        let wire = request_to_anthropic(&req, None);
+        assert_eq!(wire["output_config"]["effort"], "low");
+        assert_eq!(wire["output_config"]["format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn thinking_style_follows_the_model_generation() {
+        use ThinkingStyle::*;
+        let cases = [
+            ("claude-sonnet-4", Budget),
+            ("claude-sonnet-4-20250514", Budget),
+            ("claude-haiku-4-5", Budget),
+            ("claude-opus-4-5@20251101", Budget),
+            ("claude-3-7-sonnet-20250219", Budget),
+            ("kimi-k2", Budget),
+            ("claude-sonnet-4-6", Adaptive { xhigh: false }),
+            ("claude-opus-4-7", Adaptive { xhigh: true }),
+            ("us.anthropic.claude-opus-4-8", Adaptive { xhigh: true }),
+            ("claude-fable-5-1", Adaptive { xhigh: true }),
+            ("claude-sonnet-5", Adaptive { xhigh: true }),
+            ("claude-haiku-5-5", Adaptive { xhigh: true }),
+        ];
+        for (model, style) in cases {
+            assert_eq!(ThinkingStyle::for_model(model), style, "{model}");
+        }
+        assert_eq!(adaptive_effort(Thinking::Highx, false), "high");
+        assert_eq!(adaptive_effort(Thinking::Med, true), "medium");
     }
 
     #[test]
