@@ -94,7 +94,7 @@ impl UsageReporter {
                     }
                 }
             }
-            tracing::info!(url = %url, "usage reporter stopped");
+            tracing::info!(url = %crate::redact_url(&url), "usage reporter stopped");
         })
     }
 }
@@ -130,9 +130,11 @@ async fn send_batch(
     }
     .await;
     match result {
-        Ok(()) => tracing::debug!(count = batch.len(), url = %url, "pushed usage batch"),
+        Ok(()) => {
+            tracing::debug!(count = batch.len(), url = %crate::redact_url(url), "pushed usage batch")
+        }
         Err(e) => {
-            tracing::warn!(error = %e, count = batch.len(), url = %url, "usage push failed; dropping batch")
+            tracing::warn!(error = %e, count = batch.len(), url = %crate::redact_url(url), "usage push failed; dropping batch")
         }
     }
     batch.clear();

@@ -61,11 +61,17 @@ impl Default for ServerSection {
 }
 
 /// Guards the machine-facing control endpoints (identity/verdicts/usage). The core presents this as
-/// `Authorization: Bearer <token>`. Omit ⇒ the endpoints are open (DEV only; logged loudly).
+/// `Authorization: Bearer <token>`. With no token configured the endpoints are **closed** (503) unless
+/// `allow_unauthenticated = true` is set explicitly — absence of configuration never means "open".
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ControlSection {
     #[serde(default)]
     pub token: Option<Secret>,
+    /// Explicit dev opt-in: serve the control endpoints (and the web terminal) without any credential
+    /// when `[control].token` is unset/unresolvable. Default `false` ⇒ fail closed. Never enable in
+    /// production: `/llmleaf/keys` exposes the full key roster and `/api/terminal/*` is a shell.
+    #[serde(default)]
+    pub allow_unauthenticated: bool,
 }
 
 /// A core node's read-only admin surface, for the dashboard's routes/health mirror. Optional — omit and
@@ -81,10 +87,16 @@ pub struct CoreSection {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthSection {
     /// crypt(3) MCF hash (bcrypt `$2*$`) of the operator master password. `htpasswd -bnBC 12 x <pw>`.
+    /// With no hash configured (or one that cannot be resolved) password login is **disabled** — there
+    /// is no dev fallback password.
     #[serde(default)]
     pub master_password_hash: Option<Secret>,
     #[serde(default = "default_session_ttl")]
     pub session_ttl_secs: u64,
+    /// Set the session cookie's `Secure` flag so it is only sent over HTTPS. Default `true`; set
+    /// `false` only for plain-HTTP local development (the DEV defaults do so automatically).
+    #[serde(default = "default_secure_cookie")]
+    pub secure_cookie: bool,
 }
 
 // Manual `Default` (NOT derived): the derived impl would zero `session_ttl_secs`, expiring every session
@@ -94,6 +106,7 @@ impl Default for AuthSection {
         AuthSection {
             master_password_hash: None,
             session_ttl_secs: default_session_ttl(),
+            secure_cookie: default_secure_cookie(),
         }
     }
 }
@@ -151,6 +164,9 @@ fn default_database_url() -> String {
 fn default_session_ttl() -> u64 {
     86_400
 }
+fn default_secure_cookie() -> bool {
+    true
+}
 fn default_oidc_scopes() -> Vec<String> {
     vec!["openid".into(), "email".into(), "profile".into()]
 }
@@ -169,8 +185,10 @@ impl WebConfig {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
-    /// Resolve config the way the binary does: explicit `LLMLEAF_WEB_CONFIG`, else `./llmleaf-web.toml`,
-    /// else a DEV default (in-file SQLite, dev master password, open control endpoints) with a warning.
+    /// Resolve config the way the binary does: explicit `LLMLEAF_WEB_CONFIG`, else `./llmleaf-web.toml`.
+    /// A config file that exists but fails to load is a hard startup error (exit 1) — silently falling
+    /// back to DEV defaults would put a production deployment on the well-known dev credentials. Only
+    /// the complete *absence* of any config file yields the loud DEV default.
     pub fn load() -> Self {
         if let Ok(path) = std::env::var("LLMLEAF_WEB_CONFIG") {
             match Self::from_path(&path) {
@@ -179,7 +197,13 @@ impl WebConfig {
                     return c;
                 }
                 Err(e) => {
-                    tracing::error!(%path, error = %e, "failed to load config; using DEV defaults")
+                    tracing::error!(
+                        %path,
+                        error = %e,
+                        "failed to load the config file named by LLMLEAF_WEB_CONFIG — refusing to \
+                         start rather than falling back to DEV defaults"
+                    );
+                    std::process::exit(1);
                 }
             }
         }
@@ -191,39 +215,77 @@ impl WebConfig {
                     return c;
                 }
                 Err(e) => {
-                    tracing::error!(path = default_path, error = %e, "failed to load config; using DEV defaults")
+                    tracing::error!(
+                        path = default_path,
+                        error = %e,
+                        "failed to parse llmleaf-web.toml — refusing to start rather than falling \
+                         back to DEV defaults"
+                    );
+                    std::process::exit(1);
                 }
             }
         }
         tracing::warn!(
-            "no llmleaf-web config found — DEV defaults: SQLite ./llmleaf-web.db, OPEN control endpoints, \
-             master password 'llmleaf-dev'. NOT for production."
+            "no llmleaf-web config found — DEV defaults: SQLite ./llmleaf-web.db, OPEN control \
+             endpoints (allow_unauthenticated), master password 'llmleaf-dev', non-Secure cookies. \
+             NOT for production."
         );
         Self::dev_default()
     }
 
-    /// DEV fallback. Master password defaults to `llmleaf-dev` (see [`AuthSection::resolved_password_hash`]).
+    /// DEV fallback for a completely config-less run (`cargo leptos watch`). Makes the dev posture
+    /// *explicit*: the well-known dev password is set as a real hash and the control/terminal surface
+    /// is opened via the same `allow_unauthenticated` flag an operator would otherwise have to set.
     fn dev_default() -> Self {
         WebConfig {
             server: ServerSection::default(),
-            control: ControlSection::default(),
+            control: ControlSection {
+                token: None,
+                allow_unauthenticated: true,
+            },
             core: None,
-            auth: AuthSection::default(),
+            auth: AuthSection {
+                master_password_hash: Some(Secret(
+                    pwhash::bcrypt::hash(DEV_PASSWORD).unwrap_or_default(),
+                )),
+                session_ttl_secs: default_session_ttl(),
+                secure_cookie: false,
+            },
             oidc: None,
             limiter: LimiterSection::default(),
         }
     }
 }
 
+/// The well-known DEV master password — only ever installed by [`WebConfig::dev_default`], which runs
+/// exclusively when no config file exists at all.
+pub const DEV_PASSWORD: &str = "llmleaf-dev";
+
 impl AuthSection {
-    /// The bcrypt hash to verify operator logins against. Configured hash if present; otherwise a
-    /// freshly-computed hash of the DEV password `llmleaf-dev` so a config-less dev run can still log in.
+    /// The crypt(3) hash to verify operator logins against: the configured hash if present **and**
+    /// resolvable. `None` when unset or when the `env:`/`file:` indirection fails — in both cases
+    /// password login is disabled (fail closed). There is deliberately no default password: a missing
+    /// `MASTER_PASSWORD_HASH` in production must never mean "the password is `llmleaf-dev`".
     pub fn resolved_password_hash(&self) -> Option<String> {
-        if let Some(h) = self.master_password_hash.as_ref().and_then(Secret::resolve) {
-            return Some(h);
+        match self.master_password_hash.as_ref() {
+            Some(secret) => {
+                let resolved = secret.resolve();
+                if resolved.is_none() {
+                    tracing::error!(
+                        "[auth].master_password_hash is set but could not be resolved (missing env \
+                         var or unreadable file) — password login is DISABLED"
+                    );
+                }
+                resolved
+            }
+            None => {
+                tracing::warn!(
+                    "[auth].master_password_hash is not set — password login is DISABLED (OIDC \
+                     login still works when configured)"
+                );
+                None
+            }
         }
-        // DEV fallback: hash the well-known dev password at startup (default cost/variant).
-        pwhash::bcrypt::hash("llmleaf-dev").ok()
     }
 }
 
@@ -283,12 +345,46 @@ mod tests {
         assert!(cfg.control.token.is_none());
         assert!(cfg.core.is_none());
         assert!(!cfg.limiter.enabled);
-        // DEV password hash is always available so a config-less run can log in.
-        assert!(cfg.auth.resolved_password_hash().is_some());
+        // Fail closed: with no master_password_hash there is NO dev fallback password — password
+        // login is disabled entirely (OIDC, when configured, is the login path).
+        assert!(cfg.auth.resolved_password_hash().is_none());
+        // Control surface is closed unless allow_unauthenticated is set explicitly.
+        assert!(!cfg.control.allow_unauthenticated);
+        // Cookies are Secure by default.
+        assert!(cfg.auth.secure_cookie);
         // Regression: an omitted [auth] section must still carry the real session TTL, not 0 (which
         // would expire every session immediately). The struct Default must match the serde field default.
         assert_eq!(cfg.auth.session_ttl_secs, default_session_ttl());
         assert_eq!(AuthSection::default().session_ttl_secs, 86_400);
+    }
+
+    #[test]
+    fn dev_default_is_explicit_about_its_insecure_posture() {
+        let cfg = WebConfig::dev_default();
+        // The dev password only ever exists in the config-less DEV default — and the open control
+        // surface / non-Secure cookies are explicit opt-ins there, not silent fallbacks elsewhere.
+        let hash = cfg.auth.resolved_password_hash().expect("dev hash set");
+        assert!(password_ok(&hash));
+        assert!(cfg.control.allow_unauthenticated);
+        assert!(!cfg.auth.secure_cookie);
+    }
+
+    #[test]
+    fn unresolvable_hash_disables_password_login() {
+        let cfg = WebConfig::from_toml_str(
+            r#"
+            [auth]
+            master_password_hash = "env:LLMLEAF_WEB_TEST_MISSING_VAR"
+        "#,
+        )
+        .unwrap();
+        // A configured-but-broken secret must NOT fall back to any default password.
+        assert!(cfg.auth.resolved_password_hash().is_none());
+    }
+
+    /// Verify a bcrypt hash against the DEV password (mirrors `auth::password::verify`).
+    fn password_ok(hash: &str) -> bool {
+        pwhash::unix::verify(super::DEV_PASSWORD, hash)
     }
 
     #[test]

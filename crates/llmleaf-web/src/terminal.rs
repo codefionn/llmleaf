@@ -282,20 +282,20 @@ async fn require_terminal_auth(
                 return Ok(());
             }
         }
-    } else {
-        // no token configured => allow bearer-less for DEV, but still require either bearer or session;
-        // in DEV mode we allow all (mirrors control router)
-        // check if we are in DEV (no token) -> allow without auth for local dev
-        // But still prefer session check; if no token, any request is allowed (open).
-        // To keep parity with control endpoints, no token => open.
-        return Ok(());
     }
 
-    // session cookie check (async DB lookup)
+    // session cookie check (async DB lookup) — a logged-in operator may use the terminal regardless
+    // of whether a control token is configured.
     if let Some(c) = jar.get(crate::auth::COOKIE) {
         if let Ok(Some(_sess)) = crate::db::session::lookup_session(&state.db, c.value()).await {
             return Ok(());
         }
+    }
+
+    // No credential worked. Only an *explicit* dev opt-in opens the shell without auth — never the
+    // mere absence of a configured token (this endpoint spawns a real PTY: unauth = RCE).
+    if state.config.control.allow_unauthenticated {
+        return Ok(());
     }
 
     Err((

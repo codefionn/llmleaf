@@ -35,9 +35,13 @@ use crate::config::OAuthConfig;
 use crate::keys::{AuthError, KeyId};
 
 /// Bound on the proven-token cache. Unlike the key store (one valid token per key), distinct JWTs are
-/// unbounded, so we prune expired entries once the map grows past this — live tokens are then bounded
-/// by issuance-rate × token-lifetime, not by total traffic.
+/// unbounded, so the cache is strictly capped: once full, a batch of entries is evicted on insert
+/// (expired first in effect — they are ignored at lookup — and arbitrary ones otherwise).
 const MAX_VERIFIED: usize = 16_384;
+
+/// How many entries an insert evicts once [`MAX_VERIFIED`] is reached. Amortizes to O(1) per insert
+/// while keeping the map bounded; a re-verification after eviction is cheap (one signature check).
+const EVICT_BATCH: usize = 64;
 
 /// The models a token may use: every routed model (a role mapped to a bare `"*"`), or an explicit
 /// set whose entries may be `*` wildcard patterns (`"gpt-*"`, `"openrouter/openai/*"`) — the same
@@ -285,7 +289,17 @@ impl OAuthVerifier {
         {
             let mut verified = self.verified.write().unwrap();
             if verified.len() >= MAX_VERIFIED {
-                verified.retain(|_t, e| now < e.exp);
+                // Keep the cache strictly bounded: once full, evict a batch of arbitrary entries
+                // before inserting. The previous guard only removed *expired* entries, which is
+                // nothing in the steady state of a busy IdP — so any principal able to mint many
+                // distinct valid tokens (refresh grant, client credentials) could grow this map, and
+                // its full-JWT keys, without limit until the node OOMed. Expired entries are ignored
+                // at lookup, so they need no sweep here; eviction is arbitrary (a hit only costs a
+                // re-verification).
+                let victims: Vec<String> = verified.keys().take(EVICT_BATCH).cloned().collect();
+                for token in victims {
+                    verified.remove(&token);
+                }
             }
             verified.insert(
                 token.to_string(),

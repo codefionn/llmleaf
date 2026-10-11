@@ -33,12 +33,53 @@ pub enum Method {
 /// A transport-neutral outbound request the provider edge builds; the [`HttpTransport`] executes it.
 /// Query parameters are baked into `url` (as every provider already does), so there is no separate
 /// query field.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written to redact credential header values (see [`is_credential_header`]): the
+/// derived impl would happily print live API keys into a panic message or a future `{:#?}` log line.
+#[derive(Clone)]
 pub struct HttpRequest {
     pub method: Method,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: HttpBody,
+}
+
+/// Whether a header carries a credential (`Authorization`, `x-api-key`, `x-goog-api-key`, custom
+/// control headers, cookies…). Conservative by name on purpose: anything that smells like a key,
+/// token, secret or auth is redacted from debug output.
+fn is_credential_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "authorization"
+        || n == "cookie"
+        || n.contains("key")
+        || n.contains("token")
+        || n.contains("secret")
+        || n.contains("auth")
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str(),
+                    if is_credential_header(k) {
+                        "<redacted>"
+                    } else {
+                        v.as_str()
+                    },
+                )
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -172,14 +213,52 @@ impl HttpResponse {
     }
 
     /// Drain the entire body into one buffer (used by `post_json` and by collect-only callers).
+    /// Bounded by [`MAX_COLLECTED_BODY_BYTES`]: a hostile or broken upstream streaming an endless
+    /// body must not OOM the proxy.
     pub async fn collect_body(self) -> Result<Bytes, ModelError> {
         let mut body = self.body;
         let mut buf: Vec<u8> = Vec::new();
         while let Some(chunk) = body.next().await {
-            buf.extend_from_slice(&chunk?);
+            let chunk = chunk?;
+            if buf.len() + chunk.len() > MAX_COLLECTED_BODY_BYTES {
+                return Err(ModelError::Unavailable(format!(
+                    "response body exceeds {MAX_COLLECTED_BODY_BYTES} bytes"
+                )));
+            }
+            buf.extend_from_slice(&chunk);
         }
         Ok(Bytes::from(buf))
     }
+}
+
+/// Upper bound on any fully-collected upstream response body (JSON responses, error excerpts).
+/// Streaming consumers (SSE, JSONL, audio) are not affected — they never buffer the whole body.
+pub const MAX_COLLECTED_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// A [`cyper::redirect::Policy`] that follows at most `max` hops and **only within one origin**
+/// (same scheme + host + port).
+///
+/// This is a credential-leak guard: cyper strips only `Authorization`/`Cookie`-style headers when a
+/// redirect crosses hosts, but provider credentials ride custom headers (`x-api-key`,
+/// `x-goog-api-key`, `api-key`, …) which would be replayed to whatever host the redirect names.
+/// Requiring the same origin keeps every credential on the configured endpoint, and requiring the
+/// same scheme blocks https→http downgrades. Cross-origin `Location`s fail the request instead.
+pub fn same_origin_redirects(max: usize) -> cyper::redirect::Policy {
+    cyper::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > max {
+            return attempt.error("too many redirects");
+        }
+        let hop_is_same_origin = attempt.previous().last().is_some_and(|prev| {
+            prev.scheme() == attempt.url().scheme()
+                && prev.host_str() == attempt.url().host_str()
+                && prev.port_or_known_default() == attempt.url().port_or_known_default()
+        });
+        if hop_is_same_origin {
+            attempt.follow()
+        } else {
+            attempt.error("cross-origin redirect refused (credential protection)")
+        }
+    })
 }
 
 /// The outbound HTTP transport a provider executes its requests through.
@@ -227,7 +306,13 @@ pub struct ReqwestTransport {
 impl ReqwestTransport {
     pub fn new() -> Self {
         Self {
-            client: cyper::Client::new().expect("cyper client configuration is valid"),
+            client: cyper::Client::builder()
+                // Credential protection: never follow a redirect off the request's origin (see
+                // [`same_origin_redirects`]) — a hostile upstream must not be able to 302 the
+                // provider API key to a third party.
+                .redirect(same_origin_redirects(5))
+                .build()
+                .expect("cyper client configuration is valid"),
         }
     }
 

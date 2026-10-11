@@ -33,7 +33,7 @@ pub async fn start_oauth(
 
     if let Some(intro) = &cfg.introspection {
         verifier.install_introspector(Arc::new(HttpIntrospector::new(http.clone(), intro)));
-        tracing::info!(url = %intro.url, "wired OAuth token introspection");
+        tracing::info!(url = %crate::redact_url(&intro.url), "wired OAuth token introspection");
     }
 
     // Pull only when there is a remote source: an explicit jwks_uri, or no inline keys to fall back on.
@@ -175,16 +175,16 @@ impl HttpIntrospector {
 #[async_trait::async_trait]
 impl TokenIntrospector for HttpIntrospector {
     async fn introspect(&self, token: &str) -> Result<bool, String> {
-        // RFC 7662 wants the token in an `application/x-www-form-urlencoded` body. We set it directly
-        // rather than pull in reqwest's `urlencoded` feature: only JWT-shaped bearers reach here, and a
-        // JWT is base64url + `.` (`[A-Za-z0-9_.-]`), every byte of which is safe in a form value.
+        // RFC 7662 wants the token in an `application/x-www-form-urlencoded` body. The value is
+        // percent-encoded so that even a future caller passing a non-JWT opaque token (this is a
+        // public trait) cannot smuggle extra `&`/`=` form parameters into the introspection request.
         let mut req = self
             .http
             .post(&self.url)
             .map_err(|e| e.to_string())?
             .header("content-type", "application/x-www-form-urlencoded")
             .map_err(|e| e.to_string())?
-            .body(format!("token={token}"));
+            .body(format!("token={}", form_encode(token)));
         if let Some(c) = &self.credential {
             req = req.bearer_auth(c).map_err(|e| e.to_string())?;
         }
@@ -197,5 +197,34 @@ impl TokenIntrospector for HttpIntrospector {
         }
         let body: IntrospectionResponse = resp.json().await.map_err(|e| e.to_string())?;
         Ok(body.active)
+    }
+}
+
+/// Percent-encode one `application/x-www-form-urlencoded` value (unreserved bytes and space-as-`+`
+/// pass/convert per the form encoding; everything else becomes `%XX`).
+fn form_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn form_encode_blocks_parameter_smuggling() {
+        assert_eq!(form_encode("abc.def-123"), "abc.def-123");
+        assert_eq!(form_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(form_encode("a b"), "a+b");
+        assert_eq!(form_encode("100%"), "100%25");
     }
 }

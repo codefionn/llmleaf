@@ -190,9 +190,62 @@ pub(crate) fn apply_auth(
     }
 }
 
+/// Render a URL for logs with any `user:pass@` userinfo stripped. Control/usage/intercept URLs are
+/// operator config and may embed credentials (e.g. `https://user:secret@control/keys`); those must
+/// never reach log collectors. The rest of the URL (host, path, query) is kept for diagnosability.
+pub(crate) fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let auth_start = scheme_end + 3;
+    let auth_end = url[auth_start..]
+        .find('/')
+        .map(|i| auth_start + i)
+        .unwrap_or(url.len());
+    let authority = &url[auth_start..auth_end];
+    match authority.rfind('@') {
+        Some(at) => {
+            let mut out = String::with_capacity(url.len());
+            out.push_str(&url[..auth_start]);
+            out.push_str("<redacted>@");
+            out.push_str(&authority[at + 1..]);
+            out.push_str(&url[auth_end..]);
+            out
+        }
+        None => url.to_string(),
+    }
+}
+
 pub(crate) fn new_http_client() -> cyper::Client {
     let _ = compio::rustls::crypto::ring::default_provider().install_default();
-    cyper::Client::new().expect("cyper client configuration is valid")
+    cyper::Client::builder()
+        // Credential protection: never follow a redirect off the request's origin — the control
+        // bearer/credential header must not be replayed to whatever host a `Location` names (cyper
+        // strips only `Authorization`-family headers cross-host, and not on same-host scheme
+        // downgrades). Mirrors llmleaf-providers' transport policy.
+        .redirect(same_origin_redirects(5))
+        .build()
+        .expect("cyper client configuration is valid")
+}
+
+/// A [`cyper::redirect::Policy`] that follows at most `max` hops and only within one origin
+/// (same scheme + host + port). Cross-origin hops and https→http downgrades fail the request.
+pub(crate) fn same_origin_redirects(max: usize) -> cyper::redirect::Policy {
+    cyper::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > max {
+            return attempt.error("too many redirects");
+        }
+        let hop_is_same_origin = attempt.previous().last().is_some_and(|prev| {
+            prev.scheme() == attempt.url().scheme()
+                && prev.host_str() == attempt.url().host_str()
+                && prev.port_or_known_default() == attempt.url().port_or_known_default()
+        });
+        if hop_is_same_origin {
+            attempt.follow()
+        } else {
+            attempt.error("cross-origin redirect refused (credential protection)")
+        }
+    })
 }
 
 /// Await a `Send` request future with a Compio timer while retaining the `Send` contract required by
@@ -218,5 +271,27 @@ where
     tokio::select! {
         result = request => result.map_err(|e| e.to_string()),
         _ = &mut timer_rx => Err("control request timed out".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_url_strips_userinfo_only() {
+        assert_eq!(
+            redact_url("https://user:secret@control.example/llmleaf/keys"),
+            "https://<redacted>@control.example/llmleaf/keys"
+        );
+        assert_eq!(
+            redact_url("http://control.example:3000/llmleaf/usage?x=1"),
+            "http://control.example:3000/llmleaf/usage?x=1"
+        );
+        assert_eq!(redact_url("not-a-url"), "not-a-url");
+        assert_eq!(
+            redact_url("https://user@host/x"),
+            "https://<redacted>@host/x"
+        );
     }
 }

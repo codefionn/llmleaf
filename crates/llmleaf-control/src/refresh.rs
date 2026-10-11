@@ -70,7 +70,7 @@ impl VerdictRefresher {
                     _ = tick.tick() => self.refresh_once().await,
                 }
             }
-            tracing::info!(url = %self.url, "verdict refresher stopped");
+            tracing::info!(url = %crate::redact_url(&self.url), "verdict refresher stopped");
         })
     }
 
@@ -81,9 +81,9 @@ impl VerdictRefresher {
             Ok(resp) => {
                 let n = resp.verdicts.len();
                 self.keys.install_verdicts(resp.verdicts);
-                tracing::debug!(count = n, url = %self.url, "installed verdict overlay");
+                tracing::debug!(count = n, url = %crate::redact_url(&self.url), "installed verdict overlay");
             }
-            Err(e) => tracing::warn!(error = %e, url = %self.url,
+            Err(e) => tracing::warn!(error = %e, url = %crate::redact_url(&self.url),
                 "verdict pull failed; keeping last-good overlay (fail open)"),
         }
     }
@@ -152,7 +152,7 @@ impl TopologyRefresher {
                     _ = tick.tick() => self.refresh_once().await,
                 }
             }
-            tracing::info!(url = %self.url, "topology refresher stopped");
+            tracing::info!(url = %crate::redact_url(&self.url), "topology refresher stopped");
         })
     }
 
@@ -167,10 +167,10 @@ impl TopologyRefresher {
                     self.factory.as_ref(),
                 );
                 for reason in &diff.skipped {
-                    tracing::warn!(url = %self.url, "pulled topology entry skipped: {reason}");
+                    tracing::warn!(url = %crate::redact_url(&self.url), "pulled topology entry skipped: {reason}");
                 }
                 if diff.is_noop() {
-                    tracing::debug!(url = %self.url, "pulled topology unchanged");
+                    tracing::debug!(url = %crate::redact_url(&self.url), "pulled topology unchanged");
                 } else {
                     tracing::info!(
                         providers_added = diff.providers_added,
@@ -179,12 +179,12 @@ impl TopologyRefresher {
                         routes_added = diff.routes_added,
                         routes_updated = diff.routes_updated,
                         routes_removed = diff.routes_removed,
-                        url = %self.url,
+                        url = %crate::redact_url(&self.url),
                         "installed pulled topology"
                     );
                 }
             }
-            Err(e) => tracing::warn!(error = %e, url = %self.url,
+            Err(e) => tracing::warn!(error = %e, url = %crate::redact_url(&self.url),
                 "topology pull failed; keeping last-good dynamic layer (fail open)"),
         }
     }
@@ -256,9 +256,9 @@ impl IdentityRefresher {
             Ok(roster) => {
                 let n = roster.len();
                 self.keys.install_identities(roster);
-                tracing::info!(count = n, url = %self.url, "primed identity roster from control plane");
+                tracing::info!(count = n, url = %crate::redact_url(&self.url), "primed identity roster from control plane");
             }
-            Err(e) => tracing::warn!(error = %e, url = %self.url,
+            Err(e) => tracing::warn!(error = %e, url = %crate::redact_url(&self.url),
                 "identity prime failed; starting with config-seeded keys only (fail closed)"),
         }
     }
@@ -275,7 +275,7 @@ impl IdentityRefresher {
                     _ = tick.tick() => self.refresh_once().await,
                 }
             }
-            tracing::info!(url = %self.url, "identity refresher stopped");
+            tracing::info!(url = %crate::redact_url(&self.url), "identity refresher stopped");
         })
     }
 
@@ -284,9 +284,9 @@ impl IdentityRefresher {
             Ok(roster) => {
                 let n = roster.len();
                 self.keys.install_identities(roster);
-                tracing::debug!(count = n, url = %self.url, "installed identity roster");
+                tracing::debug!(count = n, url = %crate::redact_url(&self.url), "installed identity roster");
             }
-            Err(e) => tracing::warn!(error = %e, url = %self.url,
+            Err(e) => tracing::warn!(error = %e, url = %crate::redact_url(&self.url),
                 "identity pull failed; keeping last-good roster"),
         }
     }

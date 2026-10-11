@@ -39,9 +39,18 @@ async fn main() {
     };
     let master_hash = Arc::new(config.auth.resolved_password_hash());
     if config.control.token.is_none() {
-        tracing::warn!(
-            "[control].token is unset — the identity/verdicts/usage endpoints are OPEN. Set it in production."
-        );
+        if config.control.allow_unauthenticated {
+            tracing::warn!(
+                "[control].token is unset and allow_unauthenticated = true — the \
+                 identity/verdicts/usage endpoints AND the web terminal are OPEN (dev only)."
+            );
+        } else {
+            tracing::warn!(
+                "[control].token is unset — the identity/verdicts/usage endpoints and the web \
+                 terminal are DISABLED (fail closed). Set [control].token, or set \
+                 allow_unauthenticated = true for local development."
+            );
+        }
     }
 
     // Leptos config: site address, output paths, etc., from cargo-leptos env / Cargo.toml metadata.
@@ -54,7 +63,12 @@ async fn main() {
         leptos_options: leptos_options.clone(),
         db: db.clone(),
         config: config.clone(),
-        http: reqwest::Client::new(),
+        http: reqwest::Client::builder()
+            // OIDC + core-admin calls never need redirects: following them could replay the auth code
+            // / bearer to a foreign host. Refuse them outright.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("http client configuration is valid"),
         master_hash,
         terminal: TerminalManager::new(),
     };
@@ -96,7 +110,10 @@ async fn main() {
         .await
         .expect("failed to bind listener");
 
-    let server = axum::serve(listener, app.into_make_service());
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    );
     let graceful = server.with_graceful_shutdown(async move {
         wait_for_shutdown().await;
         tracing::info!("shutdown signal received; draining");

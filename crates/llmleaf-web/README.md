@@ -64,5 +64,8 @@ LLMLEAF_WEB_CONFIG=./llmleaf-web.toml ./target/release/llmleaf-web
 ```
 
 Configuration: copy [`llmleaf-web.example.toml`](./llmleaf-web.example.toml) to `llmleaf-web.toml`.
-With no config file, a DEV fallback runs (SQLite `./llmleaf-web.db`, **open** control endpoints, master
-password `llmleaf-dev`) and logs a warning — never use it in production.
+With no config file at all, a DEV fallback runs (SQLite `./llmleaf-web.db`, **open** control endpoints,
+master password `llmleaf-dev`) and logs a warning — never use it in production. A config file that
+exists but fails to parse is a hard startup error. In a real config the control endpoints and the web
+terminal require `[control].token` (or an explicit `allow_unauthenticated = true`), and password login
+requires `[auth].master_password_hash` — there is no fallback password.

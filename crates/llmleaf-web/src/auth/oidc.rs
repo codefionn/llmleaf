@@ -40,11 +40,27 @@ fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Whether a URL may carry OIDC traffic: `https` anywhere, plain `http` only to loopback (local dev
+/// IdPs). Anything else (other schemes, cleartext to a remote host) is refused.
+fn secure_endpoint_url(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    match u.scheme() {
+        "https" => true,
+        "http" => matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "::1")),
+        _ => false,
+    }
+}
+
 async fn discover(http: &reqwest::Client, issuer: &str) -> Result<Discovery, String> {
-    let url = format!(
-        "{}/.well-known/openid-configuration",
-        issuer.trim_end_matches('/')
-    );
+    let issuer = issuer.trim_end_matches('/');
+    if !secure_endpoint_url(issuer) {
+        return Err(format!(
+            "issuer '{issuer}' must be https (http only allowed for loopback dev IdPs)"
+        ));
+    }
+    let url = format!("{issuer}/.well-known/openid-configuration");
     let resp = http
         .get(&url)
         .timeout(std::time::Duration::from_secs(10))
@@ -53,9 +69,35 @@ async fn discover(http: &reqwest::Client, issuer: &str) -> Result<Discovery, Str
         .map_err(|e| format!("discovery request failed: {e}"))?
         .error_for_status()
         .map_err(|e| format!("discovery returned error: {e}"))?;
-    resp.json::<Discovery>()
+    let disc: Discovery = resp
+        .json()
         .await
-        .map_err(|e| format!("discovery parse failed: {e}"))
+        .map_err(|e| format!("discovery parse failed: {e}"))?;
+
+    // OIDC Discovery §4.3: the returned `issuer` MUST be identical to the URL the document was
+    // fetched from. Without this check a MITM'd/redirected discovery can substitute its own issuer,
+    // token_endpoint and jwks_uri and mint self-signed id_tokens that pass every later check.
+    if disc.issuer.trim_end_matches('/') != issuer {
+        return Err(format!(
+            "discovery issuer mismatch: document says '{}', expected '{issuer}'",
+            disc.issuer
+        ));
+    }
+    for (name, url) in [
+        (
+            "authorization_endpoint",
+            disc.authorization_endpoint.as_str(),
+        ),
+        ("token_endpoint", disc.token_endpoint.as_str()),
+        ("jwks_uri", disc.jwks_uri.as_str()),
+    ] {
+        if !secure_endpoint_url(url) {
+            return Err(format!(
+                "discovery {name} '{url}' is not an acceptable https/loopback URL"
+            ));
+        }
+    }
+    Ok(disc)
 }
 
 /// Begin login: build the PKCE pair + state/nonce, persist the flow, and return the IdP redirect URL.
@@ -196,7 +238,9 @@ async fn verify_id_token(
 
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[&oidc.client_id]);
-    validation.set_issuer(&[disc.issuer.as_str()]);
+    // Bound to the *configured* issuer (equal to the validated discovery issuer by the check above),
+    // never to whatever a fetched document claimed.
+    validation.set_issuer(&[oidc.issuer.trim_end_matches('/')]);
     validation.validate_exp = true;
 
     let data = decode::<IdClaims>(id_token, &key, &validation)

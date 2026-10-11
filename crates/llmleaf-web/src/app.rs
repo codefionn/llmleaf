@@ -82,7 +82,11 @@ fn Nav() -> impl IntoView {
                     </nav>
                     <div class="who">
                         <span class="muted">{session.subject}</span>
-                        <a class="btn-ghost" href="/auth/logout">"Sign out"</a>
+                        // POST + form button (not a GET link): a GET logout is CSRF-able into forced
+                        // sign-out; SameSite=Lax cookies never ride a cross-site form POST.
+                        <form action="/auth/logout" method="post" style="display:inline">
+                            <button class="btn-ghost" type="submit">"Sign out"</button>
+                        </form>
                     </div>
                 })}
             </Suspense>

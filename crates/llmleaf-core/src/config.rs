@@ -70,6 +70,17 @@ impl Config {
         let mut ids = HashSet::with_capacity(self.keys.len());
         let mut displays = HashSet::with_capacity(self.keys.len());
         for k in &self.keys {
+            if crate::keys::has_control_bytes(&k.id)
+                || k.name
+                    .as_deref()
+                    .is_some_and(crate::keys::has_control_bytes)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "key id '{}' / name contains ASCII control bytes; ids and names must be plain \
+                     printable text (the signed batch-id format splits fields on 0x1f)",
+                    k.id
+                )));
+            }
             if !ids.insert(k.id.as_str()) {
                 return Err(ConfigError::Invalid(format!(
                     "duplicate key id '{}'; ids must be unique",

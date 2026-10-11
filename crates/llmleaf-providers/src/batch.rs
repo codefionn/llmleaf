@@ -25,6 +25,11 @@ pub fn build_jsonl<I: IntoIterator<Item = Value>>(lines: I) -> Vec<u8> {
     out
 }
 
+/// Upper bound on one pending (un-newline-terminated) result line. Batch result lines carry full
+/// request/response payloads, so this is generous — it exists to bound memory against a hostile
+/// upstream, not to constrain real results.
+const MAX_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+
 /// Stream a result-file response as canonical [`BatchResult`]s, applying `parse` to each non-empty
 /// line's JSON. `parse` returning `None` skips that line (a shape we choose not to surface) without
 /// failing the stream; a malformed line or a transport error ends the stream with a [`ModelError`].
@@ -55,6 +60,13 @@ where
                         return;
                     }
                 }
+            }
+            // Bound the pending line: a peer that never sends a newline must not grow `buf` forever.
+            if buf.len() > MAX_JSONL_LINE_BYTES {
+                yield Err(ModelError::Unavailable(format!(
+                    "batch result line exceeds {MAX_JSONL_LINE_BYTES} bytes"
+                )));
+                return;
             }
         }
         // A final line not terminated by a newline.

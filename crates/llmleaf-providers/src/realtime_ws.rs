@@ -139,7 +139,9 @@ async fn run_realtime_session(
 }
 
 /// Derive the realtime `wss://…/realtime?model=…` URL from a provider's base endpoint (`https`→`wss`,
-/// `http`→`ws`). Model ids are simple tokens (no spaces), so they are appended without escaping.
+/// `http`→`ws`). The model id is percent-encoded as one query value — it is routed/request-derived
+/// (pass-through routes and `<prefix>/*` namespaces let arbitrary suffixes through), so an unescaped
+/// `&`/`?`/`#` would inject extra query parameters or truncate the query.
 /// `pub(crate)` so the OpenAI-wire provider builds the URL before handing it to the transport.
 pub(crate) fn build_ws_url(endpoint: &str, model: &str) -> String {
     let base = endpoint.trim_end_matches('/');
@@ -150,7 +152,10 @@ pub(crate) fn build_ws_url(endpoint: &str, model: &str) -> String {
     } else {
         base.to_string()
     };
-    format!("{ws_base}/realtime?model={model}")
+    format!(
+        "{ws_base}/realtime?model={}",
+        crate::llmleaf::encode_component(model)
+    )
 }
 
 #[cfg(test)]
@@ -167,6 +172,19 @@ mod tests {
         assert_eq!(
             build_ws_url("http://localhost:8080/", "m"),
             "ws://localhost:8080/realtime?model=m"
+        );
+    }
+
+    #[test]
+    fn model_is_escaped_as_one_query_value() {
+        // A hostile/derived model id must not inject extra query parameters or a fragment.
+        assert_eq!(
+            build_ws_url("https://api.openai.com/v1", "gpt-4o&admin=true"),
+            "wss://api.openai.com/v1/realtime?model=gpt-4o%26admin%3Dtrue"
+        );
+        assert_eq!(
+            build_ws_url("https://api.openai.com/v1", "m#frag"),
+            "wss://api.openai.com/v1/realtime?model=m%23frag"
         );
     }
 }

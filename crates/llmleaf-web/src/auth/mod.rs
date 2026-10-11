@@ -5,8 +5,11 @@
 
 pub mod oidc;
 pub mod password;
+pub mod throttle;
 
-use axum::extract::{Query, Request, State};
+use std::net::{IpAddr, SocketAddr};
+
+use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -23,12 +26,13 @@ use crate::state::AppState;
 /// The session cookie name.
 pub const COOKIE: &str = "llmleaf_session";
 
-/// Build the session cookie. `HttpOnly` + `SameSite=Lax` + root path. (Set `Secure` at your TLS
-/// terminator / reverse proxy in production — left off here so config-less `http://localhost` dev works.)
-fn session_cookie(token: String) -> Cookie<'static> {
+/// Build the session cookie: `HttpOnly` + `SameSite=Lax` + root path + `Secure` (per
+/// `[auth].secure_cookie`, default on — turn it off only for plain-HTTP local dev).
+fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
     Cookie::build((COOKIE, token))
         .http_only(true)
         .same_site(SameSite::Lax)
+        .secure(secure)
         .path("/")
         .build()
 }
@@ -36,9 +40,21 @@ fn session_cookie(token: String) -> Cookie<'static> {
 /// Only allow same-origin relative redirects (`/...`, never `//host`) to avoid an open redirect.
 fn safe_redirect(target: Option<&str>) -> String {
     match target {
-        Some(t) if t.starts_with('/') && !t.starts_with("//") => t.to_string(),
+        Some(t) if is_safe_redirect_target(t) => t.to_string(),
         _ => "/".to_string(),
     }
+}
+
+/// A redirect target is safe when it is a same-site absolute path: starts with exactly one `/`, and
+/// contains nothing a URL parser or header could reinterpret — no backslash (browsers normalize `\/`
+/// to `//`, making `/\evil.com` an external redirect), no `://`, no control bytes (CRLF header
+/// injection; also axum 500s on them).
+fn is_safe_redirect_target(t: &str) -> bool {
+    t.starts_with('/')
+        && !t.starts_with("//")
+        && !t.contains('\\')
+        && !t.contains("://")
+        && t.bytes().all(|b| (0x20..0x7f).contains(&b))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -133,7 +149,9 @@ fn urlencoding_min(s: &str) -> String {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/auth/login", post(login))
-        .route("/auth/logout", get(logout))
+        // POST-only: a GET logout would be CSRF-able (SameSite=Lax cookies ride top-level cross-site
+        // navigations, so any external link could force-sign-out the operator).
+        .route("/auth/logout", post(logout))
         .route("/auth/oidc/login", get(oidc_login))
         .route("/auth/oidc/callback", get(oidc_callback))
 }
@@ -146,10 +164,19 @@ struct LoginForm {
 }
 
 async fn login(
+    connect: ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     jar: CookieJar,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    let ip = client_ip(connect);
+    if let Err(retry_after) = throttle::check(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("too many failed login attempts; retry in {retry_after}s"),
+        )
+            .into_response();
+    }
     let ok = state
         .master_hash
         .as_ref()
@@ -157,12 +184,14 @@ async fn login(
         .map(|hash| password::verify(&form.password, hash))
         .unwrap_or(false);
     if !ok {
+        throttle::record_failure(ip);
         return Redirect::to("/login?error=bad_password").into_response();
     }
+    throttle::reset(ip);
     let ttl = state.config.auth.session_ttl_secs;
     match db::session::create_session(&state.db, "operator", "password", ttl).await {
         Ok(token) => (
-            jar.add(session_cookie(token)),
+            jar.add(session_cookie(token, state.config.auth.secure_cookie)),
             Redirect::to(&safe_redirect(form.redirect_to.as_deref())),
         )
             .into_response(),
@@ -171,6 +200,11 @@ async fn login(
             Redirect::to("/login?error=server").into_response()
         }
     }
+}
+
+/// The client address to throttle by (falls back to one shared bucket when unavailable).
+fn client_ip(connect: ConnectInfo<SocketAddr>) -> IpAddr {
+    connect.0.ip()
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
@@ -187,13 +221,26 @@ struct RedirectQuery {
     redirect_to: Option<String>,
 }
 
-async fn oidc_login(State(state): State<AppState>, Query(q): Query<RedirectQuery>) -> Response {
+async fn oidc_login(
+    connect: ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+    Query(q): Query<RedirectQuery>,
+) -> Response {
+    let ip = client_ip(connect);
+    if let Err(retry_after) = throttle::check(ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("too many login attempts; retry in {retry_after}s"),
+        )
+            .into_response();
+    }
     let Some(oidc) = state.config.oidc.as_ref() else {
         return (StatusCode::NOT_FOUND, "OIDC login is not configured").into_response();
     };
     match oidc::begin_login(&state, oidc, q.redirect_to.as_deref()).await {
         Ok(url) => Redirect::to(&url).into_response(),
         Err(e) => {
+            throttle::record_failure(ip);
             tracing::warn!(error = %e, "OIDC begin_login failed");
             Redirect::to("/login?error=oidc").into_response()
         }
@@ -230,7 +277,7 @@ async fn oidc_callback(
             let ttl = state.config.auth.session_ttl_secs;
             match db::session::create_session(&state.db, &subject, "oidc", ttl).await {
                 Ok(token) => (
-                    jar.add(session_cookie(token)),
+                    jar.add(session_cookie(token, state.config.auth.secure_cookie)),
                     Redirect::to(&safe_redirect(redirect_to.as_deref())),
                 )
                     .into_response(),

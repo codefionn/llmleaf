@@ -110,7 +110,7 @@ impl Interceptor for HttpInterceptor {
         let resp = match result {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, url = %self.url, "interceptor call failed; applying on_error");
+                tracing::warn!(error = %e, url = %crate::redact_url(&self.url), "interceptor call failed; applying on_error");
                 return self.on_error_outcome("interceptor unavailable");
             }
         };
@@ -121,7 +121,7 @@ impl Interceptor for HttpInterceptor {
             },
             Ok(InterceptResponse::Rewrite { payload }) => InterceptOutcome::Rewrite(payload),
             Err(e) => {
-                tracing::warn!(error = %e, url = %self.url, "interceptor response invalid; applying on_error");
+                tracing::warn!(error = %e, url = %crate::redact_url(&self.url), "interceptor response invalid; applying on_error");
                 self.on_error_outcome("interceptor response invalid")
             }
         }

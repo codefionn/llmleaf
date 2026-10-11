@@ -26,9 +26,10 @@ pub fn router() -> Router<AppState> {
         .route("/llmleaf/usage", post(usage))
 }
 
-/// Verify the `Authorization: Bearer <token>` against `[control].token`. With no token configured the
-/// surface is open (logged once at startup); otherwise a mismatch is `401`. Constant-time compare so the
-/// token isn't an timing oracle.
+/// Verify the `Authorization: Bearer <token>` against `[control].token`. With no (resolvable) token
+/// configured the surface is **closed** (503) unless the operator explicitly set
+/// `[control].allow_unauthenticated = true` — a missing secret must never silently mean "open".
+/// A mismatch is `401`. Constant-time compare so the token isn't a timing oracle.
 // The Err carries a ready axum `Response` (the 401) — intentional; it's returned straight to the client.
 #[allow(clippy::result_large_err)]
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
@@ -39,7 +40,18 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
         .as_ref()
         .and_then(|s| s.resolve())
     else {
-        return Ok(()); // open surface (DEV)
+        if state.config.control.allow_unauthenticated {
+            return Ok(()); // explicit dev opt-in (logged at startup)
+        }
+        tracing::warn!(
+            "control endpoint called with no [control].token configured — refusing (set \
+             allow_unauthenticated = true only for local development)"
+        );
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "control token not configured; endpoint disabled" })),
+        )
+            .into_response());
     };
     let presented = headers
         .get(axum::http::header::AUTHORIZATION)

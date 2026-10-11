@@ -691,6 +691,8 @@ fn register_lookups(suite: &mut Suite, state: &llmleaf_core::AppState) {
     }
     {
         let keys = state.keys.clone();
+        // An unknown id is NOT a fast path: it pays one dummy bcrypt KDF so a miss costs exactly a
+        // wrong-password hit (no id-enumeration oracle) — hence its place in CEILINGS, not ZERO_ALLOC.
         suite.bench(
             "keys/authorize_miss",
             || (),

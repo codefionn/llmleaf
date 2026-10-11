@@ -28,8 +28,13 @@ use llmleaf_bench::alloc::{self, CountingAllocator};
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 /// Operations that must allocate nothing at all (principle 5: a lookup and a comparison).
+///
+/// One deliberate exception, moved to [`CEILINGS`] with its justification: `keys/authorize_miss`
+/// verifies against a dummy bcrypt hash so an unknown key id costs exactly what a wrong password
+/// does. Making that path allocation-free would itself be a side channel (the wrong-password path
+/// allocates the KDF's scratch), so the two stay indistinguishable in timing *and* allocation
+/// profile. See `DUMMY_PW_HASH` in llmleaf-core's `keys.rs`.
 const ZERO_ALLOC: &[&str] = &[
-    "keys/authorize_miss",
     "keys/authorize_denied", // warm identity, model gated out — a `contains`, no id to clone
     "router/resolve_hit",
     "router/resolve_miss",
@@ -47,7 +52,12 @@ const CEILINGS: &[(&str, u64)] = &[
     // Single, identifiable allocations — held tight so a +1 regression trips immediately.
     ("keys/authorize_hit", 1),        // the returned key-id string
     ("keys/authorize_restricted", 1), // ditto, after the allow-list check
-    ("health/penalize", 1),           // the provider name inserted into the cooldown map
+    // A security-driven allocation, deliberately NOT zero: an auth failure pays one dummy cost-12
+    // bcrypt KDF so a miss is indistinguishable from a wrong password (closes the key-id enumeration
+    // oracle — `DUMMY_PW_HASH` in llmleaf-core's `keys.rs`). The hot success path (warm cache) is
+    // untouched. ~4 allocs today; the wrong-password path allocates the same way by construction.
+    ("keys/authorize_miss", 8),
+    ("health/penalize", 1), // the provider name inserted into the cooldown map
     ("events/emit_no_subscriber", 1), // the Arc<Envelope>
     ("events/emit_with_subscriber", 1),
     // The per-request loops — budgets with headroom over the observed counts.

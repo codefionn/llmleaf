@@ -54,6 +54,11 @@ pub async fn send_checked(
 /// several chunks. Only newline-terminated fields are decoded; a trailing partial field stays in
 /// `buf` for the next call. Event names and comments are deliberately ignored because every provider
 /// we use puts a self-describing `type` in the JSON data object.
+///
+/// The pending partial field is bounded by [`MAX_SSE_LINE_BYTES`]: a peer that streams bytes without
+/// ever sending a newline must not grow the buffer without limit. An over-long pending line is
+/// dropped (the eventual truncated JSON surfaces as a parse error), so a hostile upstream can waste
+/// at most one line's worth of memory per connection.
 pub fn sse_payloads(buf: &mut Vec<u8>, incoming: &[u8]) -> Vec<String> {
     buf.extend_from_slice(incoming);
     let mut out = Vec::new();
@@ -73,8 +78,15 @@ pub fn sse_payloads(buf: &mut Vec<u8>, incoming: &[u8]) -> Vec<String> {
         }
         buf.drain(..=nl);
     }
+    if buf.len() > MAX_SSE_LINE_BYTES {
+        buf.clear();
+    }
     out
 }
+
+/// Upper bound on one pending (un-newline-terminated) SSE field. Generous for any real event — even a
+/// single 100k-token completion delta serializes to a few hundred KiB.
+pub const MAX_SSE_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Decode a JSON-over-SSE response body into the canonical response stream.
 ///

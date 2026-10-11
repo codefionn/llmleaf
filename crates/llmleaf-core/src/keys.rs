@@ -216,7 +216,14 @@ impl KeyStore {
         let (id, password) = split_credential(&buf[..len]).ok_or(AuthError::Unknown)?;
 
         let (outcome, pw_hash) = {
-            let state = snap.keys.get(id).ok_or(AuthError::Unknown)?;
+            let Some(state) = snap.keys.get(id) else {
+                // Unknown key id: still pay one KDF so response timing does not reveal whether the id
+                // exists. Without this, a miss returned in microseconds while a hit with a wrong
+                // password paid a full bcrypt — a clean enumeration oracle against the deliberately
+                // non-secret, human-chosen key ids.
+                let _ = pwhash::unix::verify(password, DUMMY_PW_HASH);
+                return Err(AuthError::Unknown);
+            };
             if !pwhash::unix::verify(password, &state.pw_hash) {
                 return Err(AuthError::Unknown);
             }
@@ -244,11 +251,32 @@ impl KeyStore {
     /// for keys that survive. Bumps the identity generation so warm cache entries re-check their hash
     /// (a string compare, not a KDF) on next use, and prunes cached tokens for keys that vanished.
     /// Called only by the control plane's refresher, never on the hot path.
+    ///
+    /// The same integrity rules as config load apply ([`crate::config::Config::from_toml_str`]):
+    /// display ids (`name` if set, else the key id) must be unique — model scoping and the signed
+    /// batch-id owner binding address keys by display id — and ids/names must carry no control bytes
+    /// (the batch-id wire format splits fields on `0x1f`). Entries that violate either rule are
+    /// dropped with a warning (first entry wins), never silently aliased.
     pub fn install_identities(&self, roster: Vec<IdentityInput>) {
         let mut guard = self.snapshot.write().unwrap();
         let prev = &guard.keys;
         let mut keys = HashMap::with_capacity(roster.len());
+        let mut displays: HashSet<String> = HashSet::with_capacity(roster.len());
         for k in roster {
+            let display_id = k.name.clone().unwrap_or_else(|| k.id.clone());
+            if has_control_bytes(&k.id) || k.name.as_deref().is_some_and(has_control_bytes) {
+                tracing::warn!(
+                    id = %k.id, "identity pull entry contains control bytes; dropping it"
+                );
+                continue;
+            }
+            if !displays.insert(display_id.clone()) {
+                tracing::warn!(
+                    id = %k.id, display_id = %display_id,
+                    "identity pull entry collides with another display id; dropping it"
+                );
+                continue;
+            }
             // Carry over the current verdict overlay for a surviving key; reset for a new one.
             let verdict = prev
                 .get(&k.id)
@@ -446,6 +474,20 @@ fn enforce(state: &KeyState, id: &str, model: Option<&str>, now: u64) -> Result<
 
 /// Split a decoded `key-id:password` on its first `:`. `None` if there is no colon or either half is
 /// not valid UTF-8. Borrows out of `bytes`, so it allocates nothing.
+/// A throwaway cost-12 bcrypt hash (of a fixed, meaningless string — not a credential) to verify
+/// against when a key id does not exist: it equalizes the cost of an unknown id with a wrong password
+/// so auth timing is not an id-enumeration oracle. A constant rather than a computed hash so the miss
+/// path stays allocation-free; cost 12 matches the documented `htpasswd -bnBC 12` default for real
+/// key hashes, so the dummy KDF costs what a real wrong-password verify costs.
+const DUMMY_PW_HASH: &str = "$2y$12$u9eQ8FzvKdGjx52a1JQGN.O/Bcr0G0noVF3iy5Qtu43vwlshmAxRy";
+
+/// Whether a key id/name contains any ASCII control byte (`0x00..=0x1f`, `0x7f`). The signed batch-id
+/// wire format splits its fields on `0x1f` (see [`crate::batch_id`]), so control bytes in an id would
+/// silently mis-split the owner boundary — load and the identity pull both reject such ids.
+pub(crate) fn has_control_bytes(s: &str) -> bool {
+    s.bytes().any(|b| b.is_ascii_control())
+}
+
 fn split_credential(bytes: &[u8]) -> Option<(&str, &str)> {
     let colon = bytes.iter().position(|&b| b == b':')?;
     let id = std::str::from_utf8(&bytes[..colon]).ok()?;
@@ -725,6 +767,16 @@ mod tests {
             store().authorize(&b64("ghost:s3cret"), "gpt-4o", 0),
             Err(AuthError::Unknown)
         );
+    }
+
+    #[test]
+    fn dummy_hash_is_a_valid_cost_12_bcrypt() {
+        // The timing-equalizer constant must stay a real bcrypt hash at the documented cost for key
+        // hashes (`htpasswd -bnBC 12`), or the unknown-id path stops costing a wrong-password verify
+        // and the enumeration oracle returns.
+        assert!(DUMMY_PW_HASH.starts_with("$2y$12$"));
+        // Parses and runs a real KDF (a wrong guess must be rejected): it is not a live credential.
+        assert!(!pwhash::unix::verify("s3cret", DUMMY_PW_HASH));
     }
 
     #[test]

@@ -548,6 +548,11 @@ async fn get_response(
 // Realtime surface (`GET /v1/realtime`, WebSocket) — the OpenAI Realtime dialect
 // ---------------------------------------------------------------------------------------------
 
+/// Upper bound on consumer frames buffered during the realtime probe phase for fallback replay.
+/// Generous — a normal probe window buffers only a session config plus a turn or two — it exists to
+/// bound memory against a black-holing upstream, not to constrain real sessions.
+const MAX_REALTIME_REPLAY_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Deserialize)]
 struct RealtimeQuery {
     #[serde(default)]
@@ -673,7 +678,12 @@ async fn run_native_realtime(
     // ---- Phase 1: probe. The socket stays UNSPLIT until the provider proves the session is live.
     // Every non-committed outcome is handled inline and returns here; the loop only *breaks* with the
     // first provider frame, so `socket`/`out_rx`/`in_tx`/`provider_task` all survive intact into phase 2.
+    // The probe buffer is bounded by `MAX_REALTIME_REPLAY_BYTES`: a black-holing upstream would
+    // otherwise let a client grow `replay` at its full send rate (each frame is cloned in) while the
+    // bounded channel keeps this loop unblocked.
     let mut replay: Vec<RealtimeWire> = Vec::new();
+    let mut replay_bytes = 0usize;
+    let mut replay_overflow = false;
     let committed: RealtimeWire = loop {
         tokio::select! {
             maybe_wire = out_rx.recv() => {
@@ -694,6 +704,20 @@ async fn run_native_realtime(
                                     provider = %provider_name, error = %e,
                                     "native realtime failed before first frame; falling back to chat bridge"
                                 );
+                                if replay_overflow {
+                                    // Replay is no longer sound (frames were dropped to bound memory);
+                                    // a partial replay would silently corrupt the conversation.
+                                    let _ = socket
+                                        .send(WsMessage::Close(None))
+                                        .await;
+                                    events.emit(Event::RequestFailed {
+                                        id: request_id,
+                                        error: "realtime probe exceeded its replay buffer before the \
+                                                upstream produced a frame"
+                                            .to_string(),
+                                    });
+                                    return;
+                                }
                                 rt_session::run_bridge_replaying(
                                     socket,
                                     engine,
@@ -731,15 +755,28 @@ async fn run_native_realtime(
                 match maybe_msg {
                     Some(Ok(msg)) => match msg {
                         // A fast client may send frames before the upstream is up. Forward them to the
-                        // (connecting) provider AND buffer a copy so a fallback can replay them.
+                        // (connecting) provider AND buffer a copy so a fallback can replay them. The
+                        // buffer is bounded; once it overflows the frames still flow to the provider,
+                        // but the replay-based fallback is no longer sound (it would replay a partial
+                        // conversation), so that path fails cleanly instead.
                         WsMessage::Text(t) => {
+                            replay_bytes += t.len();
                             let wire = RealtimeWire::Text(t.as_str().to_owned());
-                            replay.push(wire.clone());
+                            if replay_overflow || replay_bytes > MAX_REALTIME_REPLAY_BYTES {
+                                replay_overflow = true;
+                            } else {
+                                replay.push(wire.clone());
+                            }
                             let _ = in_tx.send(wire).await;
                         }
                         WsMessage::Binary(b) => {
+                            replay_bytes += b.len();
                             let wire = RealtimeWire::Binary(b);
-                            replay.push(wire.clone());
+                            if replay_overflow || replay_bytes > MAX_REALTIME_REPLAY_BYTES {
+                                replay_overflow = true;
+                            } else {
+                                replay.push(wire.clone());
+                            }
                             let _ = in_tx.send(wire).await;
                         }
                         // The consumer closed before the upstream produced anything: nothing to proxy.
@@ -1050,6 +1087,18 @@ async fn audio_speech(
     let content_type = content_type
         .unwrap_or_else(|| speech::content_type_for_format(response_format.as_deref()).to_string());
 
+    // The upstream's declared MIME type rides the response `Content-Type`; a malformed value (CR/LF,
+    // non-visible bytes) from a hostile/compromised upstream must not panic the handler via header
+    // construction. Validate it and fall back to the format-derived type; then set the header without
+    // a fallible builder step.
+    let content_type = match axum::http::HeaderValue::from_str(&content_type) {
+        Ok(v) => v,
+        Err(_) => axum::http::HeaderValue::from_str(speech::content_type_for_format(
+            response_format.as_deref(),
+        ))
+        .expect("the format-derived content type is a valid header value"),
+    };
+
     // The remaining audio bytes stream straight to the client; the instrumented stream behind it emits
     // usage/completion events as they pass.
     let body = Body::from_stream(async_stream::stream! {
@@ -1067,10 +1116,9 @@ async fn audio_speech(
         }
     });
 
-    Response::builder()
-        .header(CONTENT_TYPE, content_type)
-        .body(body)
-        .expect("valid audio response")
+    let mut response = Response::new(body);
+    response.headers_mut().insert(CONTENT_TYPE, content_type);
+    response
 }
 
 // ---------------------------------------------------------------------------------------------

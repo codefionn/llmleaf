@@ -13,7 +13,8 @@
 #   [control.usage]    url = "http://llmleaf-web:3000/llmleaf/usage"    credential = "env:LLMLEAF_CONTROL_TOKEN"
 #
 # Load order: $LLMLEAF_WEB_CONFIG, else ./llmleaf-web.toml, else built-in DEV defaults (a warning is
-# logged). Every secret accepts `env:VAR` and `file:/path` indirection.
+# logged). A config file that exists but fails to parse is a hard startup error — never a silent
+# fallback to DEV defaults. Every secret accepts `env:VAR` and `file:/path` indirection.
 #
 # Run with cargo-leptos (serves the UI bundle too):  LLMLEAF_WEB_CONFIG=./llmleaf-web.toml cargo leptos serve
 
@@ -24,7 +25,10 @@ database_url = "sqlite://llmleaf-web.db?mode=rwc"
 # --- Machine control endpoints (what the core pulls/pushes) ---------------------------------------
 [control]
 # Shared bearer token the core presents as `Authorization: Bearer <token>` on /llmleaf/keys,
-# /llmleaf/verdicts, /llmleaf/usage. OMIT to leave the endpoints OPEN — DEV ONLY (a warning is logged).
+# /llmleaf/verdicts, /llmleaf/usage — and for web-terminal access. With no token configured (or an
+# unresolvable env:/file: indirection) these endpoints are DISABLED (503) and the web terminal
+# requires an operator session. Only local development should set:
+# allow_unauthenticated = true   # DEV ONLY: open the control endpoints and terminal without a token
 token = "env:LLMLEAF_CONTROL_TOKEN"
 
 # --- The core's read-only admin surface (for the dashboard's Core page) ---------------------------
@@ -36,14 +40,19 @@ admin_token = "env:LLMLEAF_ADMIN_TOKEN"   # sent as the `x-admin-token` header
 # --- Operator login ------------------------------------------------------------------------------
 [auth]
 # crypt(3) MCF hash (bcrypt) of the master password — generate with `htpasswd -bnBC 12 "" <password> | tr -d ':\n'`
-# or `openssl passwd -6`. OMIT for a DEV fallback password of `llmleaf-dev` (a warning is logged).
+# or `openssl passwd -6`. With no hash configured (or an unresolvable env:/file: indirection) password
+# login is DISABLED — there is no default/fallback password. (A completely config-less dev run gets
+# the well-known dev password `llmleaf-dev`; a config file never does.)
 master_password_hash = "env:LLMLEAF_WEB_ADMIN_HASH"
 session_ttl_secs = 86400
+# Session cookie `Secure` flag (default true — the cookie is only sent over HTTPS). Set false only
+# for plain-HTTP local development.
+secure_cookie = true
 
 # --- OIDC SSO (optional, additive to the master password) -----------------------------------------
 # Standard authorization-code flow with PKCE; the id_token is verified against the issuer JWKS.
 # [oidc]
-# issuer = "https://idp.example.com"                          # OIDC discovery base
+# issuer = "https://idp.example.com"                          # OIDC discovery base (https required; http only for loopback dev IdPs)
 # client_id = "llmleaf-web"
 # client_secret = "env:LLMLEAF_WEB_OIDC_SECRET"               # omit for a public client
 # redirect_url = "https://llmleaf-web.example.com/auth/oidc/callback"  # must match the IdP registration

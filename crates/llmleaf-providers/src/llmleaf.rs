@@ -327,7 +327,9 @@ fn llmleaf_batch_result_line(value: Value) -> Option<BatchResult> {
 }
 
 /// Percent-encode a path segment or query value. Model ids carry `/` and `:`, batch ids are opaque.
-fn encode_component(s: &str) -> String {
+/// Percent-encode one path/query component (unreserved bytes pass through). `pub(crate)` so sibling
+/// modules (e.g. the realtime WS URL builder) can embed dynamic values safely.
+pub(crate) fn encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
