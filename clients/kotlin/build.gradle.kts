@@ -22,7 +22,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     kotlin("multiplatform") version "2.4.21"
     kotlin("plugin.serialization") version "2.4.21"
-    id("com.squareup.wire") version "7.1.0"
+    id("com.squareup.wire") version "7.2.1"
     // Maven Central publishing for the whole Kotlin Multiplatform artifact set (the root
     // `kotlinMultiplatform` metadata module plus the per-target jvm / js / linuxX64 modules),
     // including POM generation, in-memory GPG signing and the Central Portal upload. Hand-rolling
@@ -47,9 +47,9 @@ version = (findProperty("version") as? String)?.takeUnless { it.isBlank() || it 
 // FAIL_ON_PROJECT_REPOS); declaring them here too would fail configuration, so we don't.
 
 // Pinned, mutually-consistent dependency versions.
-val ktorVersion = "3.6.0"
+val ktorVersion = "3.6.1"
 val coroutinesVersion = "1.11.0"
-val serializationVersion = "1.11.0"
+val serializationVersion = "1.13.0"
 
 kotlin {
     // Note: explicit-API mode is intentionally NOT enabled. The public types below already

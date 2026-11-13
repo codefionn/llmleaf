@@ -11,7 +11,7 @@ plugins {
     application
 }
 
-val ktorVersion = "3.6.0"
+val ktorVersion = "3.6.1"
 val coroutinesVersion = "1.11.0"
 
 dependencies {

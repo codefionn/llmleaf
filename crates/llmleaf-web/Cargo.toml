@@ -26,8 +26,8 @@ serde_json = { workspace = true }
 # --- Hydrate-only (wasm) ---
 console_error_panic_hook = { version = "0.1", optional = true }
 # Pinned to the exact wasm-bindgen the installed cargo-leptos embeds (schema versions must match for
-# `cargo leptos build` to bundle the wasm). web-sys/js-sys cascade to the paired 0.3.102 automatically.
-wasm-bindgen = { version = "=0.2.125", optional = true }
+# `cargo leptos build` to bundle the wasm). web-sys/js-sys cascade to the paired 0.3.107 automatically.
+wasm-bindgen = { version = "=0.2.130", optional = true }
 
 # --- SSR-only (the server). All optional + gated behind `ssr` so the wasm build never sees them. ---
 leptos_axum = { version = "0.8", optional = true }

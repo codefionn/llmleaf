@@ -39,10 +39,10 @@
     "example": "tsx examples/basic.ts"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.16.0"
+    "@bufbuild/protobuf": "2.17.0"
   },
   "devDependencies": {
-    "@bufbuild/protoc-gen-es": "2.13.0",
+    "@bufbuild/protoc-gen-es": "2.17.0",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
