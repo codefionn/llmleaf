@@ -431,7 +431,10 @@ pub mod collect {
                 "anthropic" => parse_anthropic_pricing_html(&body),
                 "mistral" => parse_mistral_pricing_html(&body),
                 "openai" => parse_openai_pricing_lines(&lines),
-                "moonshot" | "kimi" | "kimi-k2" => parse_moonshot_pricing_lines(&lines),
+                "moonshot" | "kimi" | "kimi-k2" if url.ends_with(".md") => {
+                    parse_moonshot_pricing_lines(&lines)
+                }
+                "moonshot" | "kimi" | "kimi-k2" => parse_moonshot_doctable_html(&body),
                 _ => {
                     return Err(format!(
                         "{name} ({}) has no pricing-page parser; supported page parsers: openai, anthropic, cohere, mistral, moonshot",
@@ -483,16 +486,11 @@ pub mod collect {
             "cohere" => vec!["https://cohere.com/pricing".to_string()],
             "mistral" => vec!["https://mistral.ai/pricing/api/".to_string()],
             // Prices are split by model family; query every official MDX source and merge by id.
-            "moonshot" | "kimi" | "kimi-k2" => [
-                "chat-k3",
-                "chat-k27-code",
-                "chat-k26",
-                "chat-k25",
-                "chat-v1",
-            ]
-            .into_iter()
-            .map(|page| format!("https://platform.kimi.ai/docs/pricing/{page}.md"))
-            .collect(),
+            // Kimi merged its per-family pages into one. The `.md` export leaves the client-side
+            // tables empty, so read the compiled MDX that the rendered page ships instead.
+            "moonshot" | "kimi" | "kimi-k2" => {
+                vec!["https://platform.kimi.ai/docs/pricing/chat".to_string()]
+            }
             _ => Vec::new(),
         }
     }
@@ -1198,6 +1196,112 @@ pub mod collect {
             out.push(info);
         }
         out
+    }
+
+    /// Parse the `DocTable` components in the compiled MDX that Kimi's rendered pricing page
+    /// ships. Columns are matched by title, so the cache-write columns (which this dataset cannot
+    /// represent) are ignored wherever they appear. Each table inherits the context window stated
+    /// in the paragraph before it ("All K3 series models support a 1,048,576-token context
+    /// window.").
+    pub(crate) fn parse_moonshot_doctable_html(body: &str) -> Vec<ModelInfo> {
+        let mut out = Vec::new();
+        let mut cursor = 0;
+        while let Some(at) = body[cursor..].find("DocTable,{") {
+            let table_start = cursor + at;
+            let context = moonshot_series_context(&body[cursor..table_start]);
+            let Some(cols_at) = body[table_start..].find("columns:[") else {
+                break;
+            };
+            let Some(rows_at) = body[table_start..].find("rows:[") else {
+                break;
+            };
+            let columns_src = &body[table_start + cols_at..table_start + rows_at];
+            let rows_start = table_start + rows_at + "rows:[".len();
+            let rows_end = body[rows_start..]
+                .find("]]")
+                .map(|end| rows_start + end + 1)
+                .unwrap_or(body.len());
+            cursor = rows_end;
+
+            // Each column object ends in `width:`; its title is the last template literal before.
+            let titles: Vec<String> = columns_src
+                .split(",width:")
+                .filter_map(|chunk| backtick_strings(chunk).pop())
+                .map(|title| title.to_ascii_lowercase())
+                .collect();
+            let column = |want: &dyn Fn(&str) -> bool| titles.iter().position(|t| want(t));
+            let (Some(input_col), Some(output_col)) =
+                (column(&|t| t == "input"), column(&|t| t == "output"))
+            else {
+                continue;
+            };
+            let cached_col = column(&|t| t.starts_with("cached"));
+
+            for row in body[rows_start..rows_end].split("],[") {
+                let cells = row_cells(row);
+                let Some(id) = cells.first().and_then(|cell| {
+                    backtick_strings(cell)
+                        .into_iter()
+                        .find(|s| s.starts_with("kimi-") || s.starts_with("moonshot-v1-"))
+                }) else {
+                    continue;
+                };
+                let price = |col: usize| {
+                    cells
+                        .get(col)
+                        .and_then(|cell| dollar_prices(cell).first().copied())
+                };
+                let (Some(input), Some(output)) = (price(input_col), price(output_col)) else {
+                    continue;
+                };
+                let mut info = ModelInfo::new(id);
+                info.modality = Some(Modality::Llm);
+                info.max_context = context;
+                info.input_per_mtok = Some(input);
+                info.cached_input_per_mtok = cached_col.and_then(price);
+                info.output_per_mtok = Some(output);
+                out.push(info);
+            }
+        }
+        out
+    }
+
+    /// Top-level cells of one compiled MDX table row, split on commas outside nested calls.
+    fn row_cells(row: &str) -> Vec<String> {
+        let row = row.trim_start_matches('[').trim_end_matches(']');
+        let mut cells = Vec::new();
+        let (mut depth, mut in_tick, mut start) = (0i32, false, 0);
+        for (i, ch) in row.char_indices() {
+            match ch {
+                '`' => in_tick = !in_tick,
+                '(' | '{' | '[' if !in_tick => depth += 1,
+                ')' | '}' | ']' if !in_tick => depth -= 1,
+                ',' if !in_tick && depth == 0 => {
+                    cells.push(row[start..i].to_string());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        cells.push(row[start..].to_string());
+        cells
+    }
+
+    fn backtick_strings(src: &str) -> Vec<String> {
+        src.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The last "support(s) a N-token context window" statement in `src`.
+    fn moonshot_series_context(src: &str) -> Option<u32> {
+        let at = src.rfind("-token context window")?;
+        let digits = src[..at]
+            .rsplit(|ch: char| !(ch.is_ascii_digit() || ch == ','))
+            .next()?;
+        digits.replace(',', "").parse().ok()
     }
 
     fn moonshot_mdx_prices(line: &str) -> Vec<f64> {
@@ -2564,6 +2668,32 @@ mod tests {
         assert_eq!(rows[1].id, "gpt-rosalind-research");
         assert_eq!(rows[1].output_per_mtok, Some(25.0));
         assert!(!rows.iter().any(|row| row.id == "gpt-5.3-codex"));
+    }
+
+    #[test]
+    fn moonshot_doctable_parser_maps_columns_by_title() {
+        let html = concat!(
+            "_jsx(_components.p,{children:`All K3 series models support a 1,048,576-token context window.`}),",
+            "_jsx(DocTable,{groups:[{title:`Base tokens`,span:2}],columns:[{title:`Model`,width:`25%`},",
+            "{title:`Input`,width:`15%`},{title:`Output`,width:`15%`},",
+            "{title:_jsx(Tooltip,{tip:`Cached input is billed at this rate.`,children:`Cached Input`}),width:`15%`},",
+            "{title:_jsx(Tooltip,{tip:`5-minute TTL.`,children:`5m writes`}),width:`15%`}],",
+            "rows:[[_jsx(_components.a,{href:`/guide/kimi-k3-1-pro-quickstart`,children:`kimi-k3.1-pro`}),",
+            "`$2.00 / MTok`,`$10.00 / MTok`,`$0.20 / MTok`,`$2.00 / MTok`]]}),",
+            "_jsx(_components.p,{children:`All K2 series models support a 262,144-token context window.`}),",
+            "_jsx(DocTable,{columns:[{title:`Model`,width:`34%`},{title:`Input`,width:`22%`},",
+            "{title:`Output`,width:`22%`}],rows:[[`kimi-k2.6`,`$0.95 / MTok`,`$4.00 / MTok`]]})",
+        );
+        let rows = collect::parse_moonshot_doctable_html(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "kimi-k3.1-pro");
+        assert_eq!(rows[0].input_per_mtok, Some(2.0));
+        assert_eq!(rows[0].output_per_mtok, Some(10.0));
+        assert_eq!(rows[0].cached_input_per_mtok, Some(0.2));
+        assert_eq!(rows[0].max_context, Some(1_048_576));
+        assert_eq!(rows[1].id, "kimi-k2.6");
+        assert_eq!(rows[1].cached_input_per_mtok, None);
+        assert_eq!(rows[1].max_context, Some(262_144));
     }
 
     #[test]
