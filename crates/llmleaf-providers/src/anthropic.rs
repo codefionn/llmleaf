@@ -1320,7 +1320,10 @@ mod tests {
             request_to_anthropic(&req, None)
         };
         // Current Claude: generous room, plus the thinking headroom, under the 128k limit.
-        assert_eq!(wire_for("claude-opus-5-5", None, None)["max_tokens"], 64_000);
+        assert_eq!(
+            wire_for("claude-opus-5-5", None, None)["max_tokens"],
+            64_000
+        );
         assert_eq!(
             wire_for("claude-sonnet-5-5", None, Some(Thinking::Low))["max_tokens"],
             64_000 + 1024
@@ -1358,7 +1361,10 @@ mod tests {
             wire_for("claude-3-7-sonnet-20250219", None, None)["max_tokens"],
             4096
         );
-        assert_eq!(wire_for("kimi-k2", Some(200_000), None)["max_tokens"], 200_000);
+        assert_eq!(
+            wire_for("kimi-k2", Some(200_000), None)["max_tokens"],
+            200_000
+        );
     }
 
     #[test]
