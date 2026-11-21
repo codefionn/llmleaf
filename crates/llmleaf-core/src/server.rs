@@ -2275,9 +2275,10 @@ mod architecture_tests {
         let info = enrich(ModelInfo::new("muse-spark-1.2"), Some(card));
         let arch = architecture_value(Some(&info), info.modality);
 
+        // The public Model API docs list audio among Muse Spark's published input modalities.
         assert_eq!(
             arch["input_modalities"],
-            json!(["text", "image", "video", "file"])
+            json!(["text", "image", "video", "audio", "file"])
         );
         assert_eq!(arch["output_modalities"], json!(["text"]));
         assert_eq!(info.max_context, Some(1_048_576));

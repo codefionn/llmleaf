@@ -1239,6 +1239,18 @@
       "max_output": 128000,
       "supports_reasoning": true
     },
+    "gpt-6-astra-law": {
+      "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 1.0,
+      "output_per_mtok": 50.0,
+      "modality": "llm"
+    },
+    "gpt-6-cyber": {
+      "input_per_mtok": 20.0,
+      "cached_input_per_mtok": 2.0,
+      "output_per_mtok": 100.0,
+      "modality": "llm"
+    },
     "gpt-6-luna": {
       "input_per_mtok": 0.1,
       "cached_input_per_mtok": 0.01,
@@ -1247,6 +1259,12 @@
       "max_context": 1050000,
       "max_output": 128000,
       "supports_reasoning": true
+    },
+    "gpt-6-rosalind": {
+      "input_per_mtok": 10.0,
+      "cached_input_per_mtok": 1.0,
+      "output_per_mtok": 50.0,
+      "modality": "llm"
     },
     "gpt-6-sol": {
       "input_per_mtok": 2.0,
@@ -1270,6 +1288,30 @@
       "input_per_mtok": 1.0,
       "cached_input_per_mtok": 0.05,
       "output_per_mtok": 5.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-6.2-astra": {
+      "input_per_mtok": 8.0,
+      "cached_input_per_mtok": 0.4,
+      "output_per_mtok": 40.0,
+      "modality": "llm",
+      "max_context": 1050000,
+      "max_output": 128000,
+      "supports_reasoning": true
+    },
+    "gpt-6.2-astra-law": {
+      "input_per_mtok": 8.0,
+      "cached_input_per_mtok": 0.4,
+      "output_per_mtok": 40.0,
+      "modality": "llm"
+    },
+    "gpt-6.2-sol": {
+      "input_per_mtok": 2.0,
+      "cached_input_per_mtok": 0.1,
+      "output_per_mtok": 10.0,
       "modality": "llm",
       "max_context": 1050000,
       "max_output": 128000,
@@ -1464,6 +1506,22 @@
       "modality": "llm",
       "max_context": 8192
     },
+    "muse-ember-1.0": {
+      "input_per_mtok": 0.1,
+      "cached_input_per_mtok": 0.004,
+      "output_per_mtok": 0.5,
+      "modality": "llm",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
+    },
     "muse-spark-1.1": {
       "input_per_mtok": 1.25,
       "cached_input_per_mtok": 0.15,
@@ -1475,6 +1533,7 @@
         "text",
         "image",
         "video",
+        "audio",
         "file"
       ],
       "output_modalities": [
@@ -1497,6 +1556,7 @@
         "text",
         "image",
         "video",
+        "audio",
         "file"
       ],
       "output_modalities": [
@@ -1519,6 +1579,7 @@
         "text",
         "image",
         "video",
+        "audio",
         "file"
       ],
       "output_modalities": [
@@ -1535,6 +1596,18 @@
       "cached_input_per_mtok": 0.15,
       "output_per_mtok": 4.25,
       "modality": "llm",
+      "max_context": 1048576,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ],
       "tier": "standard",
       "prompts_used_for_training": false
     },
@@ -1543,8 +1616,37 @@
       "cached_input_per_mtok": 0.002,
       "output_per_mtok": 0.2,
       "modality": "llm",
+      "max_context": 1048576,
+      "supports_reasoning": true,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ],
       "tier": "contributor",
       "prompts_used_for_training": true
+    },
+    "muse-wonder-1.0": {
+      "input_per_mtok": 4.0,
+      "cached_input_per_mtok": 0.2,
+      "output_per_mtok": 20.0,
+      "modality": "llm",
+      "max_context": 1048576,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "output_modalities": [
+        "text"
+      ]
     },
     "o1": {
       "input_per_mtok": 15.0,

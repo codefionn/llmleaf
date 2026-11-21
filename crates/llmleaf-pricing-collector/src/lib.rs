@@ -403,6 +403,12 @@ pub mod collect {
             )
             .into());
         }
+        // Meta's docs pages describe different aspects of the same catalog (cards, Spark
+        // variants, family pricing), so they are collected as one merged document set instead
+        // of one parser per URL.
+        if normalized_kind(&p.kind) == "meta" {
+            return collect_meta_docs(http, name, &urls).await;
+        }
         let mut infos = Vec::new();
         for url in &urls {
             let body = http
@@ -470,6 +476,36 @@ pub mod collect {
         Ok((format!("pricing-page:{}", urls.join(",")), infos))
     }
 
+    /// Collect Meta Model API models from the public docs pages. Only token-priced models are
+    /// kept: image, voice, and segmentation products bill per image/hour/frame, which this
+    /// dataset's per-MTok schema cannot represent (same rule as the Groq catalog).
+    async fn collect_meta_docs(
+        http: &reqwest::Client,
+        name: &str,
+        urls: &[String],
+    ) -> Result<(String, Vec<ModelInfo>), Box<dyn std::error::Error + Send + Sync>> {
+        let mut pages = Vec::new();
+        for url in urls {
+            let body = http
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            pages.push(parse_meta_docs_page(&body));
+        }
+        let infos = merge_meta_docs(pages);
+        if infos.is_empty() {
+            return Err(format!(
+                "{name} (meta) docs pages at {} exposed no token-priced model rows",
+                urls.join(", ")
+            )
+            .into());
+        }
+        Ok((format!("pricing-page:{}", urls.join(",")), infos))
+    }
+
     fn pricing_page_urls(p: &CollectorProvider) -> Vec<String> {
         if let Some(url) = &p.pricing_url {
             return vec![url.clone()];
@@ -491,6 +527,14 @@ pub mod collect {
             "moonshot" | "kimi" | "kimi-k2" => {
                 vec!["https://platform.kimi.ai/docs/pricing/chat".to_string()]
             }
+            // Meta publishes its Model API catalog and pay-as-you-go per-1M-token rates in
+            // public docs. The authenticated list endpoint (api.meta.ai/v1/models) remains
+            // available via an explicit `list_url` for runs that want its raw rows.
+            "meta" => vec![
+                "https://dev.meta.ai/docs/models".to_string(),
+                "https://dev.meta.ai/docs/muse-spark".to_string(),
+                "https://dev.meta.ai/docs/pricing-rate-limits".to_string(),
+            ],
             _ => Vec::new(),
         }
     }
@@ -1014,6 +1058,338 @@ pub mod collect {
             .collect()
     }
 
+    /// Per-family token pricing parsed from a "Usage" table on Meta's pricing docs page.
+    pub(crate) struct MetaFamilyPricing {
+        /// Normalized model-family heading, e.g. "musespark" for "Muse Spark".
+        pub family: String,
+        /// Rate-column labels after the "Usage" cell, e.g. "Standard mode (per 1M tokens)".
+        pub columns: Vec<String>,
+        /// Usage label ("Input", "Cached input", "Output") mapped to one price per column.
+        pub usage: Vec<(String, Vec<Option<f64>>)>,
+    }
+
+    /// One parsed Meta docs page: model cards plus any family pricing tables found on it.
+    pub(crate) struct MetaDocsPage {
+        pub infos: Vec<ModelInfo>,
+        pub families: Vec<MetaFamilyPricing>,
+    }
+
+    /// Parse one page of Meta's public Model API docs. The shape of each table identifies the
+    /// page: "Model ID" cards on /docs/models, the "Standard mode model IDs" spec table on
+    /// /docs/muse-spark, and "Usage" rate tables (scoped to their nearest heading) on
+    /// /docs/pricing-rate-limits.
+    pub(crate) fn parse_meta_docs_page(html: &str) -> MetaDocsPage {
+        let document = scraper::Html::parse_document(html);
+        let flow_selector = scraper::Selector::parse("h2, h3, table").expect("valid flow selector");
+        let mut page = MetaDocsPage {
+            infos: Vec::new(),
+            families: Vec::new(),
+        };
+        let mut family: Option<String> = None;
+        for element in document.select(&flow_selector) {
+            let tag = element.value().name();
+            if tag == "h2" || tag == "h3" {
+                family = Some(normalize_meta_key(&element.text().collect::<String>()));
+                continue;
+            }
+            let rows = table_rows(&element);
+            let Some(header) = rows.first() else { continue };
+            if header.first().map(String::as_str) == Some("Model ID") {
+                page.infos.extend(parse_meta_models_table(&rows));
+            } else if rows
+                .iter()
+                .any(|row| row.first().map(String::as_str) == Some("Standard mode model IDs"))
+            {
+                page.infos.extend(parse_meta_spark_table(&rows));
+            } else if header.first().map(String::as_str) == Some("Usage") {
+                if let Some(family) = &family {
+                    if let Some(pricing) = parse_meta_pricing_table(&rows, family.clone()) {
+                        page.families.push(pricing);
+                    }
+                }
+            }
+        }
+        page
+    }
+
+    /// "Model ID" card tables from /docs/models: one row per model (or comma-separated versions)
+    /// with input/output modalities and, where published, the context window.
+    fn parse_meta_models_table(rows: &[Vec<String>]) -> Vec<ModelInfo> {
+        let mut infos = Vec::new();
+        for row in &rows[1..] {
+            let Some(ids_cell) = row.first() else {
+                continue;
+            };
+            let input = row.get(1).cloned().unwrap_or_default();
+            let output = row.get(2).cloned().unwrap_or_default();
+            let max_context = row.get(3).and_then(|cell| parse_token_count(cell));
+            let input_modalities = meta_modalities(&input);
+            let output_modalities = meta_modalities(&output);
+            for id in ids_cell
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                let mut info = ModelInfo::new(id);
+                if output.trim() == "Text" {
+                    info.modality = Some(Modality::Llm);
+                } else if output.to_ascii_lowercase().contains("transcript") {
+                    info.modality = Some(Modality::Stt);
+                }
+                info.max_context = max_context;
+                if !input_modalities.is_empty() || !output_modalities.is_empty() {
+                    info.extra.insert(
+                        "architecture".into(),
+                        serde_json::json!({
+                            "input_modalities": input_modalities,
+                            "output_modalities": output_modalities,
+                        }),
+                    );
+                }
+                infos.push(info);
+            }
+        }
+        infos
+    }
+
+    /// The /docs/muse-spark spec table: standard and contributor model IDs, shared context
+    /// window, reasoning effort, and modalities.
+    fn parse_meta_spark_table(rows: &[Vec<String>]) -> Vec<ModelInfo> {
+        let mut standard: Vec<String> = Vec::new();
+        let mut contributor: Vec<String> = Vec::new();
+        let mut max_context = None;
+        let mut supports_reasoning = None;
+        let mut input_modalities: Vec<String> = Vec::new();
+        let mut output_modalities: Vec<String> = Vec::new();
+        for row in rows {
+            let Some(label) = row.first() else { continue };
+            match label.as_str() {
+                "Standard mode model IDs" => {
+                    standard = split_id_list(row.get(1).map(String::as_str).unwrap_or(""));
+                }
+                "Contributor-mode variants" => {
+                    contributor = split_id_list(row.get(1).map(String::as_str).unwrap_or(""));
+                }
+                "Context window" => {
+                    max_context = row.get(1).and_then(|cell| parse_token_count(cell));
+                }
+                "Reasoning effort" => supports_reasoning = Some(true),
+                "Input" => {
+                    input_modalities =
+                        meta_modalities(row.get(1).map(String::as_str).unwrap_or(""));
+                }
+                "Output" => {
+                    output_modalities =
+                        meta_modalities(row.get(1).map(String::as_str).unwrap_or(""));
+                }
+                _ => {}
+            }
+        }
+        let mut infos = Vec::new();
+        for (ids, tier) in [(&standard, "standard"), (&contributor, "contributor")] {
+            for id in ids {
+                let mut info = ModelInfo::new(id.clone());
+                info.modality = Some(Modality::Llm);
+                info.max_context = max_context;
+                info.supports_reasoning = supports_reasoning;
+                info.extra.insert("tier".into(), Value::from(tier));
+                if !input_modalities.is_empty() || !output_modalities.is_empty() {
+                    info.extra.insert(
+                        "architecture".into(),
+                        serde_json::json!({
+                            "input_modalities": input_modalities,
+                            "output_modalities": output_modalities,
+                        }),
+                    );
+                }
+                infos.push(info);
+            }
+        }
+        infos
+    }
+
+    /// A "Usage" rate table from /docs/pricing-rate-limits, scoped to its family heading.
+    fn parse_meta_pricing_table(rows: &[Vec<String>], family: String) -> Option<MetaFamilyPricing> {
+        let header = rows.first()?;
+        let columns = header[1..].to_vec();
+        let mut usage = Vec::new();
+        for row in &rows[1..] {
+            let Some(label) = row.first() else { continue };
+            let prices = row[1..]
+                .iter()
+                .map(|cell| dollar_prices(cell).first().copied())
+                .collect();
+            usage.push((label.clone(), prices));
+        }
+        Some(MetaFamilyPricing {
+            family,
+            columns,
+            usage,
+        })
+    }
+
+    /// Assign each model the rates of its family table. The column follows the model's tier
+    /// (standard vs contributor) when the family publishes both. Tiered families (e.g. Muse
+    /// Ember's "Up to 200K" / "Over 200K" columns) record the base tier as the row rates; the
+    /// higher tier has no field in the dataset schema, so it is deliberately not recorded
+    /// rather than blended or guessed.
+    fn apply_meta_family_pricing(infos: &mut [ModelInfo], families: &[MetaFamilyPricing]) {
+        for info in infos.iter_mut() {
+            let id_key = normalize_meta_key(&info.id);
+            let Some(family) = families
+                .iter()
+                .find(|f| !f.family.is_empty() && id_key.starts_with(&f.family))
+            else {
+                continue;
+            };
+            let tier = info.extra.get("tier").and_then(Value::as_str);
+            let base_idx = if tier == Some("contributor") {
+                family
+                    .columns
+                    .iter()
+                    .position(|c| c.contains("Contributor mode"))
+                    .or_else(|| {
+                        family
+                            .columns
+                            .iter()
+                            .position(|c| c.contains("Standard mode"))
+                    })
+            } else {
+                family
+                    .columns
+                    .iter()
+                    .position(|c| c.contains("Standard mode"))
+                    .or_else(|| family.columns.iter().position(|c| c.contains("Up to")))
+            };
+            let Some(base_idx) = base_idx else { continue };
+            let rate = |usage: &str, idx: usize| {
+                family
+                    .usage
+                    .iter()
+                    .find(|(u, _)| u == usage)
+                    .and_then(|(_, v)| v.get(idx).copied().flatten())
+            };
+            if let Some(v) = rate("Input", base_idx) {
+                info.input_per_mtok = Some(v);
+            }
+            if let Some(v) = rate("Cached input", base_idx) {
+                info.cached_input_per_mtok = Some(v);
+            }
+            if let Some(v) = rate("Output", base_idx) {
+                info.output_per_mtok = Some(v);
+            }
+        }
+    }
+
+    /// Merge parsed Meta docs pages into one model list: overlay rows per id, apply family
+    /// pricing, and keep only token-priced models (image/voice/segmentation products bill per
+    /// image/hour/frame, which this dataset's per-MTok schema cannot represent).
+    pub(crate) fn merge_meta_docs(pages: Vec<MetaDocsPage>) -> Vec<ModelInfo> {
+        let mut by_id: Vec<ModelInfo> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        let mut families: Vec<MetaFamilyPricing> = Vec::new();
+        for page in pages {
+            for family in page.families {
+                if !families.iter().any(|f| f.family == family.family) {
+                    families.push(family);
+                }
+            }
+            for info in page.infos {
+                match index.get(&info.id) {
+                    Some(&i) => overlay_model_info(&mut by_id[i], info),
+                    None => {
+                        index.insert(info.id.clone(), by_id.len());
+                        by_id.push(info);
+                    }
+                }
+            }
+        }
+        apply_meta_family_pricing(&mut by_id, &families);
+        by_id
+            .into_iter()
+            .filter(|info| info.input_per_mtok.is_some() || info.output_per_mtok.is_some())
+            .collect()
+    }
+
+    fn normalize_meta_key(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    }
+
+    fn split_id_list(cell: &str) -> Vec<String> {
+        cell.split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Map a docs modality cell ("Text, image, video, audio, and PDF") to canonical modality
+    /// names. PDF inputs are the API's `file` modality.
+    fn meta_modalities(cell: &str) -> Vec<String> {
+        cell.split(',')
+            .flat_map(|part| part.split(" and "))
+            .filter_map(|word| match word.trim().to_ascii_lowercase().as_str() {
+                "text" => Some("text".to_string()),
+                "image" => Some("image".to_string()),
+                "video" => Some("video".to_string()),
+                "audio" => Some("audio".to_string()),
+                "pdf" => Some("file".to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Overlay `overlay` onto `base`: every field the overlay actually carries wins; absent
+    /// fields never clear what the base already has.
+    fn overlay_model_info(base: &mut ModelInfo, overlay: ModelInfo) {
+        macro_rules! overlay_opt {
+            ($field:ident) => {
+                if overlay.$field.is_some() {
+                    base.$field = overlay.$field;
+                }
+            };
+        }
+        if overlay.name.is_some() {
+            base.name = overlay.name;
+        }
+        overlay_opt!(modality);
+        overlay_opt!(max_context);
+        overlay_opt!(max_output);
+        overlay_opt!(max_thinking);
+        overlay_opt!(supports_reasoning);
+        overlay_opt!(supports_compaction);
+        overlay_opt!(input_per_mtok);
+        overlay_opt!(cached_input_per_mtok);
+        overlay_opt!(output_per_mtok);
+        overlay_opt!(allow_pricing_enrichment);
+        overlay_opt!(supported_parameters);
+        if !overlay.unsupported_parameters.is_empty() {
+            base.unsupported_parameters = overlay.unsupported_parameters;
+        }
+        if !overlay.default_parameters.is_empty() {
+            base.default_parameters = overlay.default_parameters;
+        }
+        for (key, value) in overlay.extra {
+            base.extra.insert(key, value);
+        }
+    }
+
+    fn table_rows(table: &scraper::ElementRef) -> Vec<Vec<String>> {
+        let row_selector = scraper::Selector::parse("tr").expect("valid row selector");
+        let cell_selector = scraper::Selector::parse("th, td").expect("valid cell selector");
+        table
+            .select(&row_selector)
+            .map(|row| {
+                row.select(&cell_selector)
+                    .map(|cell| cell.text().collect::<String>().trim().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
     fn list_endpoint_items(value: Value) -> Vec<Value> {
         match value {
             Value::Array(arr) => arr,
@@ -1085,12 +1461,16 @@ pub mod collect {
         per_token_key: &str,
         per_mtok_key: &str,
     ) -> Option<f64> {
-        if let Some(x) = p.get(per_token_key).and_then(json_f64) {
-            return (x >= 0.0).then_some(x * 1_000_000.0);
+        // Round away binary-float noise from the per-token -> per-MTok scaling (e.g.
+        // $0.00000099/token must serialize as 0.99, not 0.9900000000000001). Published rates
+        // never carry more than a few decimal places per MTok, so 10 places is lossless.
+        fn clean(x: f64) -> Option<f64> {
+            (x >= 0.0 && x.is_finite()).then_some((x * 1e10).round() / 1e10)
         }
-        p.get(per_mtok_key)
-            .and_then(json_f64)
-            .and_then(|x| (x >= 0.0).then_some(x))
+        if let Some(x) = p.get(per_token_key).and_then(json_f64) {
+            return clean(x * 1_000_000.0);
+        }
+        p.get(per_mtok_key).and_then(json_f64).and_then(clean)
     }
 
     fn list_item_modality(obj: &Map<String, Value>) -> Option<Modality> {
@@ -1449,54 +1829,120 @@ pub mod collect {
     /// The API pricing page publishes a small category table for models omitted from the model
     /// overview (notably chat-latest and restricted research models). Read only its Standard
     /// input/cache/output columns; other tables include long-context, batch, and fast rates.
+    /// The API pricing page groups every rate table in a content switcher with panes for
+    /// Standard, Batch, Flex, Fast, and Ultrafast. Only the Standard pane is the rate this
+    /// dataset represents, matching the previous behavior. Tables whose rates are not plain
+    /// per-MTok text rates (per-modality rows, fine-tuning, per-minute audio, tools) are
+    /// skipped: a single token rate cannot represent them.
     pub(crate) fn parse_openai_category_pricing_html(html: &str) -> Vec<ModelInfo> {
         let document = scraper::Html::parse_document(html);
+        let root_selector =
+            scraper::Selector::parse("[data-content-switcher-root]").expect("valid root selector");
+        let pane_selector =
+            scraper::Selector::parse("[data-content-switcher-pane]").expect("valid pane selector");
         let table_selector = scraper::Selector::parse("table").expect("valid table selector");
-        let row_selector = scraper::Selector::parse("tr").expect("valid row selector");
-        let cell_selector = scraper::Selector::parse("th, td").expect("valid cell selector");
-        document
-            .select(&table_selector)
-            .filter(|table| {
-                table
-                    .select(&row_selector)
-                    .next()
-                    .map(|row| {
-                        row.select(&cell_selector)
-                            .map(|cell| cell.text().collect::<String>().trim().to_string())
-                            .collect::<Vec<_>>()
-                            == ["Category", "Model", "Input", "Cached input", "Output"]
-                    })
-                    .unwrap_or(false)
-            })
-            // The same heading also appears in the Fast pane. Standard is first in the
-            // official switcher and is the rate represented by this dataset.
-            .take(1)
-            .flat_map(|table| table.select(&row_selector).skip(1))
-            .filter_map(|row| {
-                let cells = row.select(&cell_selector).collect::<Vec<_>>();
-                if cells.len() != 5 {
-                    return None;
+
+        let roots: Vec<_> = document.select(&root_selector).collect();
+        // Without explicit switcher markup (legacy pages), the first matching table in the
+        // document is the Standard one.
+        let legacy_single_table = roots.is_empty();
+        let scopes: Vec<scraper::ElementRef> = if roots.is_empty() {
+            vec![document.root_element()]
+        } else {
+            roots
+                .iter()
+                .map(|root| {
+                    let initial = root
+                        .value()
+                        .attr("data-content-switcher-initial")
+                        .unwrap_or("standard");
+                    let panes: Vec<_> = root.select(&pane_selector).collect();
+                    panes
+                        .iter()
+                        .find(|pane| pane.value().attr("data-value") == Some(initial))
+                        .or_else(|| panes.first())
+                        .copied()
+                        .unwrap_or(*root)
+                })
+                .collect()
+        };
+
+        let mut out = Vec::new();
+        'scopes: for scope in &scopes {
+            for table in scope.select(&table_selector) {
+                if let Some(infos) = parse_openai_pricing_table(&table) {
+                    out.extend(infos);
+                    if legacy_single_table {
+                        break 'scopes;
+                    }
                 }
-                let id = cells[1].text().collect::<String>().trim().to_string();
-                if !is_openai_api_model_id(&id) {
-                    return None;
-                }
-                let prices = cells[2..]
-                    .iter()
-                    .map(|cell| {
-                        dollar_prices(&cell.text().collect::<String>())
-                            .first()
-                            .copied()
-                    })
-                    .collect::<Vec<_>>();
-                let mut info = ModelInfo::new(id);
-                info.modality = Some(Modality::Llm);
-                info.input_per_mtok = prices[0];
-                info.cached_input_per_mtok = prices[1];
-                info.output_per_mtok = prices[2];
-                (info.input_per_mtok.is_some() && info.output_per_mtok.is_some()).then_some(info)
-            })
-            .collect()
+            }
+        }
+        out
+    }
+
+    /// One rate table: the header row is the one naming the Model/Input/Output columns, and
+    /// columns are mapped by title so both the legacy 5-column and the current 7-column
+    /// (with prompt-cache write columns) layouts parse identically.
+    fn parse_openai_pricing_table(table: &scraper::ElementRef) -> Option<Vec<ModelInfo>> {
+        const SKIP_COLUMNS: &[&str] = &[
+            "Modality",
+            "Training",
+            "Active rate",
+            "Estimated cost",
+            "Use case",
+            "Details",
+            "Pricing",
+        ];
+        let rows = table_rows(table);
+        let header_pos = rows.iter().position(|row| {
+            let has = |label: &str| row.iter().any(|cell| cell == label);
+            has("Model") && has("Input") && has("Output")
+        })?;
+        let header = &rows[header_pos];
+        if header
+            .iter()
+            .any(|cell| SKIP_COLUMNS.contains(&cell.as_str()))
+        {
+            return None;
+        }
+        let column = |label: &str| header.iter().position(|cell| cell == label);
+        let model_idx = column("Model")?;
+        let input_idx = column("Input")?;
+        let output_idx = column("Output")?;
+        let cached_idx = column("Cached input");
+
+        let mut infos = Vec::new();
+        for row in &rows[header_pos + 1..] {
+            // Rows under a "Category" column may omit the empty category cell entirely,
+            // shifting the remaining cells left by one; detect that by a valid model id in
+            // the first cell.
+            let shifted = column("Category").is_some()
+                && row
+                    .first()
+                    .map(|cell| is_openai_api_model_id(cell))
+                    .unwrap_or(false);
+            let cell_at = |idx: usize| row.get(if shifted { idx.saturating_sub(1) } else { idx });
+            let Some(id) = cell_at(model_idx).filter(|id| is_openai_api_model_id(id)) else {
+                continue;
+            };
+            let price = |idx: Option<usize>| {
+                idx.and_then(cell_at)
+                    .and_then(|cell| dollar_prices(cell).first().copied())
+            };
+            let input = price(Some(input_idx));
+            let output = price(Some(output_idx));
+            if input.is_none() || output.is_none() {
+                continue;
+            }
+            let mut info = ModelInfo::new(id.clone());
+            info.modality = Some(Modality::Llm);
+            info.input_per_mtok = input;
+            info.cached_input_per_mtok = price(cached_idx);
+            info.output_per_mtok = output;
+            infos.push(info);
+        }
+        (!infos.is_empty()).then_some(infos)
     }
 
     fn openai_detail_price(lines: &[String], label: &str) -> Option<f64> {
@@ -2141,12 +2587,28 @@ pub mod collect {
         out.trim_matches('-').to_string()
     }
 
-    fn dedup_model_infos(infos: Vec<ModelInfo>) -> Vec<ModelInfo> {
-        let mut by_id = HashMap::new();
+    /// Merge collected rows per model id, keeping first-seen order. Fields an overlay row
+    /// actually carries win; absent fields never clear what an earlier row supplied, so a
+    /// sparse page cannot erase the metadata a richer page contributed for the same model.
+    pub(crate) fn dedup_model_infos(infos: Vec<ModelInfo>) -> Vec<ModelInfo> {
+        let mut order: Vec<String> = Vec::new();
+        let mut by_id: HashMap<String, ModelInfo> = HashMap::new();
         for info in infos {
-            by_id.insert(info.id.clone(), info);
+            match by_id.remove(&info.id) {
+                Some(mut base) => {
+                    overlay_model_info(&mut base, info);
+                    by_id.insert(base.id.clone(), base);
+                }
+                None => {
+                    order.push(info.id.clone());
+                    by_id.insert(info.id.clone(), info);
+                }
+            }
         }
-        by_id.into_values().collect()
+        order
+            .into_iter()
+            .map(|id| by_id.remove(&id).expect("id tracked above"))
+            .collect()
     }
 
     fn strip_parenthetical(s: &str) -> String {
@@ -2668,6 +3130,157 @@ mod tests {
         assert_eq!(rows[1].id, "gpt-rosalind-research");
         assert_eq!(rows[1].output_per_mtok, Some(25.0));
         assert!(!rows.iter().any(|row| row.id == "gpt-5.3-codex"));
+    }
+
+    #[test]
+    fn openai_category_parser_reads_only_the_standard_pane() {
+        let html = r#"
+        <div data-content-switcher-root="true" data-content-switcher-id="latest-pricing" data-content-switcher-initial="standard">
+          <div data-content-switcher-pane="true" data-value="standard">
+            <table><thead><tr><th></th><th>Prompt caching</th></tr>
+            <tr><th>Model</th><th>Input</th><th>Output</th><th>Cached input</th><th>30m write</th><th>12h write</th></tr></thead>
+            <tbody><tr><td>gpt-6.2-astra</td><td>$8.00</td><td>$40.00</td><td>$0.40</td><td>$10.00</td><td>$20.00</td></tr></tbody></table>
+            <table><thead><tr><th></th><th>Prompt caching</th></tr>
+            <tr><th>Category</th><th>Model</th><th>Input</th><th>Output</th><th>Cached input</th><th>30m write</th><th>12h write</th></tr></thead>
+            <tbody><tr><td>ChatGPT</td><td>chat-latest</td><td>$5.00</td><td>$30.00</td><td>$0.50</td><td>-</td><td>-</td></tr>
+            <tr><td>gpt-6-astra-law</td><td>$10.00</td><td>$50.00</td><td>$1.00</td><td>-</td><td>-</td></tr></tbody></table>
+            <table><thead><tr><th>Model</th><th>Modality</th><th>Input</th><th>Output</th><th>Cached input</th></tr></thead>
+            <tbody><tr><td>gpt-image-2.6-flare</td><td>Image</td><td>$8.00</td><td>$30.00</td><td>$2.00</td></tr></tbody></table>
+          </div>
+          <div data-content-switcher-pane="true" data-value="batch" hidden>
+            <table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached input</th></tr></thead>
+            <tbody><tr><td>gpt-6.2-astra</td><td>$4.00</td><td>$20.00</td><td>$0.20</td></tr></tbody></table>
+          </div>
+          <div data-content-switcher-pane="true" data-value="fast" hidden>
+            <table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached input</th></tr></thead>
+            <tbody><tr><td>gpt-6.2-astra</td><td>$16.00</td><td>$80.00</td><td>$0.80</td></tr></tbody></table>
+          </div>
+        </div>
+        <table><thead><tr><th>Model</th><th>Training</th><th>Input</th><th>Output</th><th>Cached input</th></tr></thead>
+        <tbody><tr><td>gpt-4.1-2025-04-14</td><td>$25.00</td><td>$3.00</td><td>$12.00</td><td>$0.75</td></tr></tbody></table>
+        "#;
+        let rows = collect::parse_openai_category_pricing_html(html);
+        assert_eq!(rows.len(), 3);
+        let astra = rows.iter().find(|row| row.id == "gpt-6.2-astra").unwrap();
+        assert_eq!(astra.input_per_mtok, Some(8.0));
+        assert_eq!(astra.output_per_mtok, Some(40.0));
+        assert_eq!(astra.cached_input_per_mtok, Some(0.4));
+        assert_eq!(astra.modality, Some(Modality::Llm));
+        let chat = rows.iter().find(|row| row.id == "chat-latest").unwrap();
+        assert_eq!(chat.input_per_mtok, Some(5.0));
+        assert_eq!(chat.cached_input_per_mtok, Some(0.5));
+        // Row with the empty category cell omitted (cells shifted left by one).
+        let law = rows.iter().find(|row| row.id == "gpt-6-astra-law").unwrap();
+        assert_eq!(law.input_per_mtok, Some(10.0));
+        assert_eq!(law.output_per_mtok, Some(50.0));
+        assert_eq!(law.cached_input_per_mtok, Some(1.0));
+        assert!(!rows.iter().any(|row| row.id == "gpt-image-2.6-flare"));
+        assert!(!rows.iter().any(|row| row.id == "gpt-4.1-2025-04-14"));
+    }
+
+    #[test]
+    fn meta_docs_pages_merge_into_token_priced_models() {
+        let models_page = r#"
+        <h2>Available models</h2>
+        <table><thead><tr><th>Model ID</th><th>Input</th><th>Output</th><th>Context window</th></tr></thead>
+        <tbody>
+        <tr><td>muse-wonder-1.0</td><td>Text, image, video, audio, PDF</td><td>Text</td><td>1,048,576 tokens</td></tr>
+        <tr><td>muse-spark-1.3, muse-spark-1.2, muse-spark-1.1</td><td>Text, image, video, audio, PDF</td><td>Text</td><td>1,048,576 tokens</td></tr>
+        <tr><td>muse-ember-1.0</td><td>Text, image, video, audio, PDF</td><td>Text</td><td></td></tr>
+        <tr><td>muse-image-1.0</td><td>Text, image</td><td>Image</td><td></td></tr>
+        </tbody></table>"#;
+        let spark_page = r#"
+        <table><tbody>
+        <tr><td>Standard mode model IDs</td><td>muse-spark-1.3, muse-spark-1.2, muse-spark-1.1</td></tr>
+        <tr><td>Contributor-mode variants</td><td>muse-spark-1.3-contributor, muse-spark-1.2-contributor</td></tr>
+        <tr><td>Input</td><td>Text, image, video, audio, and PDF</td></tr>
+        <tr><td>Output</td><td>Text</td></tr>
+        <tr><td>Context window</td><td>1,048,576 tokens</td></tr>
+        <tr><td>Reasoning effort</td><td>"minimal" to "max" on muse-spark-1.3</td></tr>
+        </tbody></table>"#;
+        let pricing_page = r#"
+        <h2>Model pricing</h2>
+        <h3>Muse Wonder</h3>
+        <table><thead><tr><th>Usage</th><th>Contributor mode (per 1M tokens)</th><th>Standard mode (per 1M tokens)</th></tr></thead>
+        <tbody>
+        <tr><td>Cached input</td><td>Not available</td><td>$0.20</td></tr>
+        <tr><td>Input</td><td>Not available</td><td>$4.00</td></tr>
+        <tr><td>Output</td><td>Not available</td><td>$20.00</td></tr>
+        </tbody></table>
+        <h3>Muse Spark</h3>
+        <table><thead><tr><th>Usage</th><th>Contributor mode (per 1M tokens)</th><th>Standard mode (per 1M tokens)</th></tr></thead>
+        <tbody>
+        <tr><td>Cached input</td><td>$0.002</td><td>$0.15</td></tr>
+        <tr><td>Input</td><td>$0.10</td><td>$1.25</td></tr>
+        <tr><td>Output</td><td>$0.20</td><td>$4.25</td></tr>
+        </tbody></table>
+        <h3>Muse Ember</h3>
+        <table><thead><tr><th>Usage</th><th>Up to 200K input tokens (per 1M tokens)</th><th>Over 200K input tokens (per 1M tokens)</th></tr></thead>
+        <tbody>
+        <tr><td>Cached input</td><td>$0.004</td><td>$0.012</td></tr>
+        <tr><td>Input</td><td>$0.10</td><td>$0.30</td></tr>
+        <tr><td>Output</td><td>$0.50</td><td>$1.50</td></tr>
+        </tbody></table>"#;
+
+        let pages = [
+            collect::parse_meta_docs_page(models_page),
+            collect::parse_meta_docs_page(spark_page),
+            collect::parse_meta_docs_page(pricing_page),
+        ];
+        let rows = collect::merge_meta_docs(Vec::from(pages));
+
+        // The image model has no token pricing and is dropped.
+        assert_eq!(rows.len(), 7);
+        assert!(!rows.iter().any(|row| row.id == "muse-image-1.0"));
+
+        let spark = rows.iter().find(|row| row.id == "muse-spark-1.3").unwrap();
+        assert_eq!(spark.input_per_mtok, Some(1.25));
+        assert_eq!(spark.cached_input_per_mtok, Some(0.15));
+        assert_eq!(spark.output_per_mtok, Some(4.25));
+        assert_eq!(spark.modality, Some(Modality::Llm));
+        assert_eq!(spark.max_context, Some(1_048_576));
+        assert_eq!(spark.supports_reasoning, Some(true));
+        assert_eq!(spark.extra["tier"], "standard");
+        assert_eq!(
+            spark.extra["architecture"]["input_modalities"],
+            serde_json::json!(["text", "image", "video", "audio", "file"])
+        );
+
+        let contributor = rows
+            .iter()
+            .find(|row| row.id == "muse-spark-1.3-contributor")
+            .unwrap();
+        assert_eq!(contributor.input_per_mtok, Some(0.10));
+        assert_eq!(contributor.cached_input_per_mtok, Some(0.002));
+        assert_eq!(contributor.output_per_mtok, Some(0.20));
+        assert_eq!(contributor.extra["tier"], "contributor");
+
+        let wonder = rows.iter().find(|row| row.id == "muse-wonder-1.0").unwrap();
+        assert_eq!(wonder.input_per_mtok, Some(4.0));
+        assert_eq!(wonder.cached_input_per_mtok, Some(0.2));
+        assert_eq!(wonder.output_per_mtok, Some(20.0));
+        assert_eq!(wonder.max_context, Some(1_048_576));
+
+        let ember = rows.iter().find(|row| row.id == "muse-ember-1.0").unwrap();
+        assert_eq!(ember.input_per_mtok, Some(0.10));
+        assert_eq!(ember.output_per_mtok, Some(0.50));
+        assert_eq!(ember.max_context, None);
+    }
+
+    #[test]
+    fn dedup_overlays_rows_instead_of_dropping_metadata() {
+        let mut rich = ModelInfo::new("gpt-6.2-astra");
+        rich.modality = Some(Modality::Llm);
+        rich.max_context = Some(1_000_000);
+        rich.supports_reasoning = Some(true);
+        let mut sparse = ModelInfo::new("gpt-6.2-astra");
+        sparse.input_per_mtok = Some(8.0);
+        sparse.output_per_mtok = Some(40.0);
+        let merged = collect::dedup_model_infos(vec![rich, sparse]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].input_per_mtok, Some(8.0));
+        assert_eq!(merged[0].max_context, Some(1_000_000));
+        assert_eq!(merged[0].supports_reasoning, Some(true));
     }
 
     #[test]

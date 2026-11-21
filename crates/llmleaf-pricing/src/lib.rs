@@ -231,9 +231,10 @@ mod tests {
             v11.unsupported_parameters.as_ref().unwrap().join(","),
             "stop"
         );
+        // The public Model API docs list audio among Muse Spark's published input modalities.
         assert_eq!(
             v11.input_modalities.as_ref().unwrap().join(","),
-            "text,image,video,file"
+            "text,image,video,audio,file"
         );
         assert_eq!(v11.output_modalities.as_ref().unwrap().join(","), "text");
 
@@ -244,7 +245,7 @@ mod tests {
         assert_token_priced("muse-spark-1.2", &v12);
         assert_eq!(
             v12.input_modalities.as_ref().unwrap().join(","),
-            "text,image,video,file"
+            "text,image,video,audio,file"
         );
 
         let contributor = pricing.card("muse-spark-1.2-contributor").unwrap();
