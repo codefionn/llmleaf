@@ -16,6 +16,12 @@
 //! These adjustments apply only when the caller opts in via `thinking`; a request without it is mapped
 //! verbatim (no silent mutation — principle 7).
 //!
+//! `max_tokens` is mandatory on the wire but optional canonically. A request that leaves it unset gets
+//! [`DEFAULT_MAX_TOKENS`] of response room on a Claude generation whose output limit is known, and
+//! [`FALLBACK_MAX_TOKENS`] otherwise. A Claude id newer than the newest known generation, or with no
+//! version in it, is mapped like the newest known one ([`LATEST_KNOWN_GENERATION`]). The total, thinking headroom included, is clamped to that limit.
+//! A caller that wants a tighter cap sets `max_tokens` itself.
+//!
 //! Prompt caching is another such quirk and stays here too. It is opt-in per provider instance via
 //! `settings = { prompt_cache = ... }` (config is the base — principle 6); when unset the wire request
 //! is left untouched (no silent mutation — principle 7). When enabled, `cache_control` breakpoints are
@@ -42,8 +48,15 @@ use crate::transport::{HttpRequest, HttpTransport, Transports};
 
 const DEFAULT_ENDPOINT: &str = "https://api.anthropic.com";
 const DEFAULT_VERSION: &str = "2023-06-01";
-/// Anthropic requires `max_tokens`; used when the canonical request leaves it unset.
-const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Anthropic requires `max_tokens`. When the canonical request leaves it unset the cap defaults to
+/// this much response room on a Claude model whose output limit is known (see [`output_limit`]), so
+/// an unset cap means "let the model finish", not "truncate at a few thousand tokens". Thinking counts
+/// toward the cap, so a small default cuts a turn off before any visible text.
+const DEFAULT_MAX_TOKENS: u32 = 64_000;
+/// The default for an id that does not parse as a known Claude generation (Claude 3 naming, or a
+/// non-Claude model behind an Anthropic-compatible endpoint). Its limit is unknown, and a cap above
+/// the limit is a 400, so this stays at the lowest limit any Messages model has had.
+const FALLBACK_MAX_TOKENS: u32 = 4096;
 const THRESHOLD_COMPACTION_BETA: &str = "compact-2026-01-12";
 const ON_DEMAND_COMPACTION_BETA: &str = "compact-2026-09-04";
 
@@ -309,13 +322,25 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
     // mapping, not silent magic (principle 7). Claude 4.6 and later reject `budget_tokens` and take
     // adaptive thinking plus an effort instead; their thinking still counts toward `max_tokens`, so the
     // budget stays as headroom on the cap.
-    let thinking_style = ThinkingStyle::for_model(&req.model);
-    let thinking_budget = req.thinking.map(crate::thinking::budget_tokens);
-    let effective_max = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-    let max_tokens = match thinking_budget {
+    //
+    // An unset cap defaults to generous response room rather than a small constant: a low default
+    // truncates long answers and large tool arguments, and with thinking on it can be spent entirely
+    // on thinking. Where the model's output limit is known the total is clamped to it (a cap above the
+    // limit is a 400), and a budget-style thinking budget is kept strictly below the cap.
+    let generation = claude_generation(&req.model);
+    let limit = generation.and_then(output_limit);
+    let thinking_style = ThinkingStyle::for_generation(generation);
+    let mut thinking_budget = req.thinking.map(crate::thinking::budget_tokens);
+    let default_max = limit.map_or(FALLBACK_MAX_TOKENS, |l| l.min(DEFAULT_MAX_TOKENS));
+    let effective_max = req.max_tokens.unwrap_or(default_max);
+    let mut max_tokens = match thinking_budget {
         Some(budget) => effective_max.saturating_add(budget),
         None => effective_max,
     };
+    if let Some(limit) = limit {
+        max_tokens = max_tokens.min(limit);
+        thinking_budget = thinking_budget.map(|b| b.min(max_tokens.saturating_sub(1)));
+    }
     obj.insert("max_tokens".into(), json!(max_tokens));
 
     // System messages are hoisted to the top-level `system` field, concatenated.
@@ -400,7 +425,7 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
             },
         );
     }
-    if let Some(t) = req.thinking {
+    if let (Some(t), Some(budget)) = (req.thinking, thinking_budget) {
         match thinking_style {
             ThinkingStyle::Adaptive { xhigh } => {
                 obj.insert("thinking".into(), json!({ "type": "adaptive" }));
@@ -412,7 +437,7 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
             ThinkingStyle::Budget => {
                 obj.insert(
                     "thinking".into(),
-                    json!({ "type": "enabled", "budget_tokens": crate::thinking::budget_tokens(t) }),
+                    json!({ "type": "enabled", "budget_tokens": budget }),
                 );
             }
         }
@@ -449,34 +474,59 @@ enum ThinkingStyle {
 }
 
 impl ThinkingStyle {
-    /// Read the generation from the model id: `claude-<family>-<major>[-<minor>]`, optionally behind a
-    /// platform prefix (`anthropic.`, `us.anthropic.`) or followed by a date or `@` snapshot suffix.
-    /// The Claude 3 naming (`claude-3-5-sonnet-…`) and ids that don't parse as Claude stay on budgets.
-    fn for_model(model: &str) -> Self {
-        let Some(start) = model.find("claude-") else {
-            return Self::Budget;
-        };
-        let rest = &model[start + "claude-".len()..];
-        let rest = rest.split('@').next().unwrap_or(rest);
-        let mut parts = rest.split('-');
-        let family = parts.next().unwrap_or_default();
-        if family.is_empty() || family.starts_with(|c: char| c.is_ascii_digit()) {
-            return Self::Budget;
+    /// Claude 3 naming (`claude-3-5-sonnet-…`) and ids that don't parse as Claude stay on budgets.
+    fn for_generation(generation: Option<(u32, u32)>) -> Self {
+        match generation {
+            None => Self::Budget,
+            Some(v) if v < (4, 6) => Self::Budget,
+            Some((4, 6)) => Self::Adaptive { xhigh: false },
+            Some(_) => Self::Adaptive { xhigh: true },
         }
-        let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
-            return Self::Budget;
-        };
-        // A minor version is one or two digits; a longer number is a date snapshot.
-        let minor = parts
-            .next()
-            .filter(|p| p.len() <= 2)
-            .and_then(|p| p.parse::<u32>().ok())
-            .unwrap_or(0);
-        match (major, minor) {
-            v if v < (4, 6) => Self::Budget,
-            (4, 6) => Self::Adaptive { xhigh: false },
-            _ => Self::Adaptive { xhigh: true },
-        }
+    }
+}
+
+/// The newest Claude generation this mapping was checked against (`GET /v1/models`). A Claude id that
+/// is newer, or carries no version at all, is mapped like this one: the newest known behaviour is a
+/// far better guess for an unreleased model than the legacy defaults.
+const LATEST_KNOWN_GENERATION: (u32, u32) = (5, 5);
+
+/// Read `(major, minor)` from the model id: `claude-<family>-<major>[-<minor>]`, optionally behind a
+/// platform prefix (`anthropic.`, `us.anthropic.`) or followed by a date or `@` snapshot suffix.
+/// A Claude family id with no parseable version (`claude-mythos-preview`) counts as
+/// [`LATEST_KNOWN_GENERATION`]. `None` for the Claude 3 naming (`claude-3-5-sonnet-…`) and for ids
+/// that don't parse as Claude.
+fn claude_generation(model: &str) -> Option<(u32, u32)> {
+    let start = model.find("claude-")?;
+    let rest = &model[start + "claude-".len()..];
+    let rest = rest.split('@').next().unwrap_or(rest);
+    let mut parts = rest.split('-');
+    let family = parts.next().unwrap_or_default();
+    if family.is_empty() || family.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let Some(major) = parts.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return Some(LATEST_KNOWN_GENERATION);
+    };
+    // A minor version is one or two digits; a longer number is a date snapshot.
+    let minor = parts
+        .next()
+        .filter(|p| p.len() <= 2)
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+/// The most output tokens a Claude generation accepts as `max_tokens`, as `GET /v1/models` reports
+/// it: 128k from Claude 4.6 on, which a generation newer than [`LATEST_KNOWN_GENERATION`] inherits,
+/// and 64k for the 4.5 models. Claude 4.0 to 4.4 are taken at the lowest limit in that range (Opus 4
+/// and 4.1, 32k) so no model in it is sent a cap it rejects. `None` before Claude 4, where the
+/// limits were as low as 4096.
+fn output_limit(generation: (u32, u32)) -> Option<u32> {
+    match generation {
+        v if v >= (4, 6) => Some(128_000),
+        v if v >= (4, 5) => Some(64_000),
+        v if v >= (4, 0) => Some(32_000),
+        _ => None,
     }
 }
 
@@ -1171,7 +1221,8 @@ mod tests {
         };
         let wire = request_to_anthropic(&req, None);
         assert_eq!(wire["system"], "be terse");
-        assert_eq!(wire["max_tokens"], DEFAULT_MAX_TOKENS);
+        // `claude-sonnet-4` sits in the 4.0 to 4.4 range, whose limit caps the default.
+        assert_eq!(wire["max_tokens"], 32_000);
         assert_eq!(wire["messages"].as_array().unwrap().len(), 1); // system not in messages
         assert_eq!(wire["messages"][0]["role"], "user");
     }
@@ -1241,12 +1292,73 @@ mod tests {
             ("claude-fable-5-1", Adaptive { xhigh: true }),
             ("claude-sonnet-5", Adaptive { xhigh: true }),
             ("claude-haiku-5-5", Adaptive { xhigh: true }),
+            ("claude-opus-5-5", Adaptive { xhigh: true }),
+            ("claude-fable-5-2", Adaptive { xhigh: true }),
+            // Newer than anything known, or unversioned: mapped like the latest known generation.
+            ("claude-opus-6", Adaptive { xhigh: true }),
+            ("claude-sonnet-7-1-20280101", Adaptive { xhigh: true }),
+            ("claude-mythos-preview", Adaptive { xhigh: true }),
         ];
         for (model, style) in cases {
-            assert_eq!(ThinkingStyle::for_model(model), style, "{model}");
+            assert_eq!(
+                ThinkingStyle::for_generation(claude_generation(model)),
+                style,
+                "{model}"
+            );
         }
         assert_eq!(adaptive_effort(Thinking::Highx, false), "high");
         assert_eq!(adaptive_effort(Thinking::Med, true), "medium");
+    }
+
+    #[test]
+    fn unset_cap_defaults_by_generation_and_clamps_to_the_output_limit() {
+        let wire_for = |model: &str, max: Option<u32>, thinking: Option<Thinking>| {
+            let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+            req.model = model.into();
+            req.max_tokens = max;
+            req.thinking = thinking;
+            request_to_anthropic(&req, None)
+        };
+        // Current Claude: generous room, plus the thinking headroom, under the 128k limit.
+        assert_eq!(wire_for("claude-opus-5-5", None, None)["max_tokens"], 64_000);
+        assert_eq!(
+            wire_for("claude-sonnet-5-5", None, Some(Thinking::Low))["max_tokens"],
+            64_000 + 1024
+        );
+        assert_eq!(
+            wire_for("claude-opus-5-5", Some(120_000), Some(Thinking::Max))["max_tokens"],
+            128_000
+        );
+        // Claude 4.5 tops out at 64k, so the headroom cannot push the cap past it.
+        let haiku = wire_for("claude-haiku-4-5-20251001", None, Some(Thinking::Max));
+        assert_eq!(haiku["max_tokens"], 64_000);
+        assert_eq!(haiku["thinking"]["budget_tokens"], 32_768);
+        // Claude 4.0 to 4.4: the 32k floor, with the budget kept strictly below the cap.
+        let opus4 = wire_for("claude-opus-4-1", None, Some(Thinking::Max));
+        assert_eq!(opus4["max_tokens"], 32_000);
+        assert_eq!(opus4["thinking"]["budget_tokens"], 31_999);
+        // Every current model, and a future or unversioned one, gets the latest known mapping.
+        for model in [
+            "claude-fable-5-2",
+            "claude-haiku-5-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+            "claude-opus-6",
+            "claude-mythos-preview",
+        ] {
+            let wire = wire_for(model, None, Some(Thinking::Low));
+            assert_eq!(wire["max_tokens"], 64_000 + 1024, "{model}");
+            assert_eq!(wire["thinking"], json!({ "type": "adaptive" }), "{model}");
+        }
+        assert_eq!(wire_for("claude-instant-1", None, None)["max_tokens"], 4096);
+        // Unknown limit: the conservative fallback, and no clamp on an explicit cap.
+        assert_eq!(wire_for("kimi-k2", None, None)["max_tokens"], 4096);
+        assert_eq!(
+            wire_for("claude-3-7-sonnet-20250219", None, None)["max_tokens"],
+            4096
+        );
+        assert_eq!(wire_for("kimi-k2", Some(200_000), None)["max_tokens"], 200_000);
     }
 
     #[test]
