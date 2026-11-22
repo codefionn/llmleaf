@@ -723,6 +723,11 @@ pub struct ResponseReasoningItem {
     pub content: Vec<ResponseReasoningText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_content: Option<String>,
+    /// The signature of the open reasoning in this item, set by providers that sign it
+    /// (Anthropic). Opaque, and like `encrypted_content` it MUST be echoed back verbatim:
+    /// Claude does not accept a replayed thinking block without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// A single content part of a Responses message. The wire `"type"` token matches the set

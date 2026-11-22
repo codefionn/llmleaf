@@ -192,6 +192,7 @@ fn responses_request_item_array_flat_tools_and_reasoning_replay() {
                 summary: vec![ResponseReasoningText::new("Think about weather.")],
                 content: vec![ResponseReasoningText::new("The user wants the weather.")],
                 encrypted_content: Some("opaque-blob".into()),
+                signature: Some("sig-1".into()),
             }),
             ResponseItem::function_call("call_1", "get_weather", "{\"city\":\"Paris\"}"),
             ResponseItem::function_call_output("call_1", "{\"temp_c\":21}"),
@@ -229,7 +230,8 @@ fn responses_request_item_array_flat_tools_and_reasoning_replay() {
             "id": "rs_1",
             "summary": [{ "type": "summary_text", "text": "Think about weather." }],
             "content": [{ "type": "reasoning_text", "text": "The user wants the weather." }],
-            "encrypted_content": "opaque-blob"
+            "encrypted_content": "opaque-blob",
+            "signature": "sig-1"
         })
     );
 
