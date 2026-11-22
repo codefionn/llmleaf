@@ -22,6 +22,13 @@
 //! version in it, is mapped like the newest known one ([`LATEST_KNOWN_GENERATION`]). The total, thinking headroom included, is clamped to that limit.
 //! A caller that wants a tighter cap sets `max_tokens` itself.
 //!
+//! Two more dialect mappings live here. A replayed thinking block is bound to the conversation it
+//! came from, and the default for a changed conversation is a 400, so requests ask Anthropic to drop
+//! such blocks instead ([`bind_thinking_blocks`]). And a JSON-schema structured-output request in
+//! another dialect's shape (Responses `text.format`, chat `response_format`) becomes
+//! `output_config.format`, without the schema keywords Anthropic rejects
+//! ([`structured_output_format`]).
+//!
 //! Prompt caching is another such quirk and stays here too. It is opt-in per provider instance via
 //! `settings = { prompt_cache = ... }` (config is the base — principle 6); when unset the wire request
 //! is left untouched (no silent mutation — principle 7). When enabled, `cache_control` breakpoints are
@@ -59,6 +66,21 @@ const DEFAULT_MAX_TOKENS: u32 = 64_000;
 const FALLBACK_MAX_TOKENS: u32 = 4096;
 const THRESHOLD_COMPACTION_BETA: &str = "compact-2026-01-12";
 const ON_DEMAND_COMPACTION_BETA: &str = "compact-2026-09-04";
+/// Lets a request set `thinking.block_binding` (see [`bind_thinking_blocks`]).
+const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
+/// The `anthropic-beta` values one wire body needs: its compaction betas plus the thinking-binding
+/// beta when the body sets `thinking.block_binding`.
+fn request_betas(req: &ChatRequest, body: &Value) -> Vec<&'static str> {
+    let mut betas: Vec<&'static str> = compaction_beta(req)
+        .into_iter()
+        .flat_map(|beta| beta.split(','))
+        .collect();
+    if body.pointer("/thinking/block_binding").is_some() {
+        betas.push(THINKING_BINDING_BETA);
+    }
+    betas
+}
 
 fn compaction_beta(req: &ChatRequest) -> Option<&'static str> {
     let on_demand = req.extra.contains_key("compaction")
@@ -199,11 +221,12 @@ impl Provider for AnthropicProvider {
         let mut body = request_to_anthropic(&req, prompt_cache(cx));
         body["stream"] = json!(use_stream);
 
+        let betas = request_betas(&req, &body);
         let mut http_req = HttpRequest::post(&url)
             .header("anthropic-version", version)
             .json(body);
-        if let Some(beta) = compaction_beta(&req) {
-            http_req = http_req.header("anthropic-beta", beta);
+        if !betas.is_empty() {
+            http_req = http_req.header("anthropic-beta", betas.join(","));
         }
         if let Some(cred) = &cx.credential {
             http_req = http_req.header("x-api-key", cred);
@@ -238,24 +261,21 @@ impl Provider for AnthropicProvider {
         }
         let url = format!("{}/v1/messages/batches", self.endpoint(cx));
         let cache = prompt_cache(cx);
-        let mut betas: Vec<&str> = req
-            .items
-            .iter()
-            .filter_map(|item| compaction_beta(&item.request))
-            .flat_map(|beta| beta.split(','))
-            .collect();
-        betas.sort_unstable();
-        betas.dedup();
+        let mut betas: Vec<&str> = Vec::new();
         let requests: Vec<Value> = req
             .items
             .iter()
             .map(|item| {
+                let params = request_to_anthropic(&item.request, cache);
+                betas.extend(request_betas(&item.request, &params));
                 json!({
                     "custom_id": item.custom_id,
-                    "params": request_to_anthropic(&item.request, cache),
+                    "params": params,
                 })
             })
             .collect();
+        betas.sort_unstable();
+        betas.dedup();
         let mut req = self.auth(
             HttpRequest::post(&url).json(json!({ "requests": requests })),
             cx,
@@ -369,7 +389,14 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
         .messages
         .iter()
         .filter(|m| m.role != Role::System)
-        .map(message_to_anthropic)
+        .map(|m| message_to_anthropic(m, generation.is_some()))
+        // A message left with no blocks (its only content was an unsigned thinking block) is
+        // invalid on its own, so it goes too.
+        .filter(|m| {
+            m["content"]
+                .as_array()
+                .is_none_or(|blocks| !blocks.is_empty())
+        })
         .collect();
     // Cache the running conversation: with the breakpoint on the final content block, the whole message
     // prefix is a cache read on the next turn (the standard multi-turn caching pattern).
@@ -442,7 +469,22 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
             }
         }
     }
+    bind_thinking_blocks(&mut obj, req, generation);
+    if let Some(format) = structured_output_format(&req.extra) {
+        let config = obj
+            .entry("output_config")
+            .or_insert_with(|| json!({}))
+            .as_object_mut();
+        if let Some(config) = config {
+            config.insert("format".into(), format);
+        }
+    }
     for (k, v) in &req.extra {
+        // The other dialects' structured-output fields were mapped above. Anthropic rejects them
+        // verbatim (`text: Extra inputs are not permitted`).
+        if k == "text" || k == "response_format" {
+            continue;
+        }
         match (obj.get_mut(k), v) {
             // A caller's own `output_config` (a structured-output `format`, an explicit `effort`) is
             // merged over the mapped effort rather than dropped.
@@ -458,6 +500,133 @@ fn request_to_anthropic(req: &ChatRequest, cache: Option<CacheTtl>) -> Value {
         }
     }
     Value::Object(obj)
+}
+
+/// Ask Anthropic to drop a replayed thinking block whose conversation changed, where the default is
+/// a 400. From Claude Fable 5.2 on (and on newer accounts from Opus 5.5) a thinking block is bound to
+/// the `system` prompt, the `tools` and every message before it, so a client that adds a tool, edits
+/// the system prompt or compacts its history mid-conversation gets `Invalid signature in thinking
+/// block` on the next request. A gateway cannot stop its callers editing history, so it opts into
+/// `drop_block`: the request proceeds without the stale blocks.
+///
+/// Applies to adaptive-thinking models when thinking is requested. From Claude 5 on, an omitted
+/// `thinking` already means adaptive, so there the field is also set when the history carries
+/// thinking blocks. A caller's own `thinking` in `extra` is left alone.
+fn bind_thinking_blocks(
+    obj: &mut Map<String, Value>,
+    req: &ChatRequest,
+    generation: Option<(u32, u32)>,
+) {
+    if req.extra.contains_key("thinking") {
+        return;
+    }
+    if !matches!(
+        ThinkingStyle::for_generation(generation),
+        ThinkingStyle::Adaptive { .. }
+    ) {
+        return;
+    }
+    let replays_thinking = || {
+        req.messages.iter().flat_map(|m| &m.content).any(|part| {
+            matches!(
+                part,
+                ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. }
+            )
+        })
+    };
+    let on_by_default = generation.is_some_and(|g| g >= (5, 0));
+    if req.thinking.is_none() && !(on_by_default && replays_thinking()) {
+        return;
+    }
+    obj.insert(
+        "thinking".into(),
+        json!({
+            "type": "adaptive",
+            "block_binding": { "prefix_mismatch_behavior": "drop_block" },
+        }),
+    );
+}
+
+/// Map another dialect's structured-output request onto Anthropic's `output_config.format`: the
+/// Responses `text.format` or the chat-completions `response_format`, when it is a JSON schema.
+/// `None` for plain text and for `json_object`, which Anthropic has no equivalent of.
+fn structured_output_format(extra: &Map<String, Value>) -> Option<Value> {
+    let responses = extra
+        .get("text")
+        .and_then(|t| t.get("format"))
+        .filter(|f| f.get("type").and_then(Value::as_str) == Some("json_schema"))
+        .and_then(|f| f.get("schema"));
+    let chat = extra
+        .get("response_format")
+        .filter(|f| f.get("type").and_then(Value::as_str) == Some("json_schema"))
+        .and_then(|f| f.pointer("/json_schema/schema"));
+    let mut schema = responses.or(chat)?.clone();
+    relax_schema(&mut schema);
+    Some(json!({ "type": "json_schema", "schema": schema }))
+}
+
+/// JSON Schema keywords Anthropic's structured outputs reject with a 400.
+const UNSUPPORTED_SCHEMA_KEYWORDS: &[&str] = &[
+    "maxItems",
+    "uniqueItems",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minProperties",
+    "maxProperties",
+];
+
+/// Remove the constraints Anthropic's structured outputs reject and restate each in the schema's
+/// `description`, so the model still sees the limit although the decoder no longer enforces it.
+/// `minItems` is kept at 0 or 1, the only values accepted.
+fn relax_schema(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    let mut notes = Vec::new();
+    for key in UNSUPPORTED_SCHEMA_KEYWORDS {
+        if let Some(value) = obj.remove(*key) {
+            notes.push(format!("{key}: {value}"));
+        }
+    }
+    if obj
+        .get("minItems")
+        .and_then(Value::as_u64)
+        .is_some_and(|n| n > 1)
+    {
+        if let Some(value) = obj.remove("minItems") {
+            notes.push(format!("minItems: {value}"));
+        }
+    }
+    if !notes.is_empty() {
+        let note = format!("({})", notes.join(", "));
+        let description = match obj.get("description").and_then(Value::as_str) {
+            Some(existing) if !existing.is_empty() => format!("{existing} {note}"),
+            _ => note,
+        };
+        obj.insert("description".into(), json!(description));
+    }
+    // Recurse into subschemas only. `properties` and `$defs` map names to schemas, so a property
+    // that happens to be called `maximum` is not mistaken for the keyword.
+    for key in ["properties", "$defs", "definitions"] {
+        if let Some(children) = obj.get_mut(key).and_then(Value::as_object_mut) {
+            children.values_mut().for_each(relax_schema);
+        }
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(child) = obj.get_mut(key) {
+            relax_schema(child);
+        }
+    }
+    for key in ["anyOf", "allOf", "oneOf"] {
+        if let Some(children) = obj.get_mut(key).and_then(Value::as_array_mut) {
+            children.iter_mut().for_each(relax_schema);
+        }
+    }
 }
 
 /// How a model takes extended thinking. Claude 4.6 and later want `{ type: "adaptive" }` with
@@ -543,7 +712,12 @@ fn adaptive_effort(t: Thinking, xhigh: bool) -> &'static str {
     }
 }
 
-fn message_to_anthropic(msg: &Message) -> Value {
+/// `signed_thinking_only` (set for Claude models) leaves out a thinking block that carries no
+/// `signature`. Claude rejects such a block with `thinking.signature: Field required`, which fails
+/// the whole request, and a client whose SDK has no field for the Responses item-level `signature`
+/// replays every thinking block that way. Dropping the block costs the model its earlier reasoning
+/// and keeps the conversation alive.
+fn message_to_anthropic(msg: &Message, signed_thinking_only: bool) -> Value {
     // Tool results map to a `tool_result` content block carried by a user-role message.
     if msg.role == Role::Tool {
         return json!({
@@ -564,6 +738,16 @@ fn message_to_anthropic(msg: &Message) -> Value {
     let mut blocks: Vec<Value> = msg
         .content
         .iter()
+        .filter(|p| {
+            !(signed_thinking_only
+                && matches!(
+                    p,
+                    ContentPart::Thinking {
+                        signature: None,
+                        ..
+                    }
+                ))
+        })
         .map(|p| match p {
             ContentPart::Text { text } => json!({ "type": "text", "text": text }),
             ContentPart::ImageUrl { url, .. } => {
@@ -1255,7 +1439,7 @@ mod tests {
         req.thinking = Some(Thinking::Highx);
         let wire = request_to_anthropic(&req, None);
 
-        assert_eq!(wire["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(wire["thinking"]["type"], "adaptive");
         assert_eq!(wire["output_config"], json!({ "effort": "xhigh" }));
         // Adaptive thinking still counts toward max_tokens, so the budget stays as headroom.
         assert_eq!(wire["max_tokens"], 1000 + 16384);
@@ -1352,7 +1536,7 @@ mod tests {
         ] {
             let wire = wire_for(model, None, Some(Thinking::Low));
             assert_eq!(wire["max_tokens"], 64_000 + 1024, "{model}");
-            assert_eq!(wire["thinking"], json!({ "type": "adaptive" }), "{model}");
+            assert_eq!(wire["thinking"]["type"], "adaptive", "{model}");
         }
         assert_eq!(wire_for("claude-instant-1", None, None)["max_tokens"], 4096);
         // Unknown limit: the conservative fallback, and no clamp on an explicit cap.
@@ -1365,6 +1549,161 @@ mod tests {
             wire_for("kimi-k2", Some(200_000), None)["max_tokens"],
             200_000
         );
+    }
+
+    #[test]
+    fn replayed_thinking_blocks_are_dropped_not_rejected_on_a_changed_conversation() {
+        let binding = json!({ "prefix_mismatch_behavior": "drop_block" });
+        let thinking_part = ContentPart::Thinking {
+            thinking: String::new(),
+            signature: Some("sig".into()),
+        };
+        let mut history = Message::text(Role::Assistant, "earlier");
+        history.content.insert(0, thinking_part);
+
+        // Thinking requested on an adaptive model: the binding rides along, with its beta.
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-fable-5-2".into();
+        req.thinking = Some(Thinking::Low);
+        let wire = request_to_anthropic(&req, None);
+        assert_eq!(wire["thinking"]["type"], "adaptive");
+        assert_eq!(wire["thinking"]["block_binding"], binding);
+        assert_eq!(request_betas(&req, &wire), vec![THINKING_BINDING_BETA]);
+
+        // No effort set, but Claude 5 thinks by default and the history replays a block.
+        let mut req = chat_req(vec![history.clone()], vec![]);
+        req.model = "claude-opus-5-5".into();
+        let wire = request_to_anthropic(&req, None);
+        assert_eq!(wire["thinking"]["block_binding"], binding);
+        assert!(wire.get("output_config").is_none());
+
+        // Nothing to bind: no thinking field, no beta.
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-opus-5-5".into();
+        let wire = request_to_anthropic(&req, None);
+        assert!(wire.get("thinking").is_none());
+        assert!(request_betas(&req, &wire).is_empty());
+
+        // Claude 4.6 to 4.8 run without thinking unless asked, so a replayed block alone must not
+        // turn it on. Budget-style models never take the field.
+        let mut req = chat_req(vec![history], vec![]);
+        req.model = "claude-opus-4-8".into();
+        assert!(request_to_anthropic(&req, None).get("thinking").is_none());
+        req.model = "claude-haiku-4-5".into();
+        req.thinking = Some(Thinking::Low);
+        let wire = request_to_anthropic(&req, None);
+        assert!(wire["thinking"].get("block_binding").is_none());
+
+        // A caller's own `thinking` wins.
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-opus-5-5".into();
+        req.thinking = Some(Thinking::Low);
+        req.extra
+            .insert("thinking".into(), json!({ "type": "adaptive" }));
+        let wire = request_to_anthropic(&req, None);
+        assert!(wire["thinking"].get("block_binding").is_none());
+    }
+
+    #[test]
+    fn unsigned_thinking_is_not_replayed_to_claude() {
+        let unsigned = ContentPart::Thinking {
+            thinking: String::new(),
+            signature: None,
+        };
+        let signed = ContentPart::Thinking {
+            thinking: "kept".into(),
+            signature: Some("sig".into()),
+        };
+        let mut with_call = Message::text(Role::Assistant, "calling");
+        with_call.content.insert(0, unsigned.clone());
+        with_call.content.insert(1, signed);
+        let mut only_thinking = Message::text(Role::Assistant, "");
+        only_thinking.content = vec![unsigned.clone()];
+        let mut req = chat_req(
+            vec![
+                Message::text(Role::User, "hi"),
+                with_call.clone(),
+                only_thinking,
+                Message::text(Role::User, "go on"),
+            ],
+            vec![],
+        );
+        req.model = "claude-opus-5-5".into();
+        let wire = request_to_anthropic(&req, None);
+        let messages = wire["messages"].as_array().unwrap();
+        // The unsigned block is gone, the signed one stays, and the message that held nothing
+        // else is dropped instead of being sent empty.
+        assert_eq!(messages.len(), 3);
+        let blocks = messages[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["signature"], "sig");
+        assert_eq!(blocks[1]["type"], "text");
+
+        // A non-Claude model behind this dialect keeps its unsigned reasoning.
+        let mut req = chat_req(vec![with_call], vec![]);
+        req.model = "kimi-k2".into();
+        let wire = request_to_anthropic(&req, None);
+        assert_eq!(wire["messages"][0]["content"][0]["type"], "thinking");
+        assert!(wire["messages"][0]["content"][0].get("signature").is_none());
+    }
+
+    #[test]
+    fn structured_output_from_other_dialects_maps_to_output_config_format() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "maxLength": 60, "description": "The title." },
+                "maximum": { "type": "integer", "minimum": 0 },
+                "tags": { "type": "array", "maxItems": 3, "minItems": 1, "items": { "type": "string", "maxLength": 24 } }
+            },
+            "required": ["title", "tags"],
+            "additionalProperties": false
+        });
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.model = "claude-opus-5-5".into();
+        req.thinking = Some(Thinking::Low);
+        req.extra.insert(
+            "text".into(),
+            json!({ "format": { "type": "json_schema", "name": "meta", "strict": true, "schema": schema } }),
+        );
+        let wire = request_to_anthropic(&req, None);
+        // The Responses field never reaches the wire; the schema does, next to the mapped effort.
+        assert!(wire.get("text").is_none());
+        assert_eq!(wire["output_config"]["effort"], "low");
+        let format = &wire["output_config"]["format"];
+        assert_eq!(format["type"], "json_schema");
+        let props = &format["schema"]["properties"];
+        // Rejected keywords move into the description; a property merely named like one stays.
+        assert!(props["title"].get("maxLength").is_none());
+        assert_eq!(props["title"]["description"], "The title. (maxLength: 60)");
+        assert_eq!(props["maximum"]["type"], "integer");
+        assert!(props["maximum"].get("minimum").is_none());
+        assert!(props["tags"].get("maxItems").is_none());
+        assert_eq!(props["tags"]["minItems"], 1);
+        assert_eq!(props["tags"]["description"], "(maxItems: 3)");
+        assert!(props["tags"]["items"].get("maxLength").is_none());
+        assert_eq!(format["schema"]["additionalProperties"], false);
+
+        // The chat-completions shape maps the same way, with no effort to merge into.
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.extra.insert(
+            "response_format".into(),
+            json!({ "type": "json_schema", "json_schema": { "name": "m", "schema": { "type": "object" } } }),
+        );
+        let wire = request_to_anthropic(&req, None);
+        assert!(wire.get("response_format").is_none());
+        assert_eq!(wire["output_config"]["format"]["schema"]["type"], "object");
+
+        // Plain text and `json_object` have no Anthropic equivalent: dropped, nothing invented.
+        let mut req = chat_req(vec![Message::text(Role::User, "hi")], vec![]);
+        req.extra
+            .insert("text".into(), json!({ "format": { "type": "text" } }));
+        req.extra
+            .insert("response_format".into(), json!({ "type": "json_object" }));
+        let wire = request_to_anthropic(&req, None);
+        assert!(wire.get("text").is_none());
+        assert!(wire.get("response_format").is_none());
+        assert!(wire.get("output_config").is_none());
     }
 
     #[test]
@@ -1721,7 +2060,10 @@ mod tests {
             tool_call_id: None,
             name: None,
         };
-        let req = chat_req(vec![assistant], vec![]);
+        // A non-Claude model: Claude itself is never sent an unsigned block (see
+        // `unsigned_thinking_is_not_replayed_to_claude`).
+        let mut req = chat_req(vec![assistant], vec![]);
+        req.model = "kimi-k2".into();
         let wire = request_to_anthropic(&req, None);
         let block = &wire["messages"][0]["content"][0];
         assert_eq!(block["type"], "thinking");
